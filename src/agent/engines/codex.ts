@@ -17,6 +17,56 @@ import type { Engine, EngineEnvelope } from '../engine.ts';
 
 let schemaSeq = 0;
 
+// Codex's `--output-schema` is OpenAI strict structured output: every object's
+// `required` must list every key in `properties`, and every object must forbid
+// extra keys. Our canonical schemas (schemas.ts) are standard JSON Schema with
+// genuinely-optional fields — Claude accepts them, codex rejects the whole
+// request with a 400 (`invalid_json_schema`), which the fallback chain then
+// silently demotes to Claude. So the OpenAI-ism lives here, at the codex
+// perimeter, not in the shared schema: `strictify` makes every object strict —
+// all keys required, no extras — and re-expresses each originally-optional key
+// as nullable, preserving "may be absent" as "may be null" (the interior reads
+// these through `?.`/`??`, so null and absent are equivalent to it).
+function strictify(node: any): any {
+  if (Array.isArray(node)) return node.map(strictify);
+  if (!node || typeof node !== 'object') return node;
+  const out: any = { ...node };
+  if (out.properties && typeof out.properties === 'object') {
+    const keys = Object.keys(out.properties);
+    const required = new Set(Array.isArray(out.required) ? out.required : []);
+    out.properties = Object.fromEntries(keys.map(k => {
+      const child = strictify(out.properties[k]);
+      return [k, required.has(k) ? child : nullable(child)];
+    }));
+    out.required = keys;
+    out.additionalProperties = false;
+  }
+  if (out.items) out.items = strictify(out.items);
+  return out;
+}
+
+// Widen a schema node's type to admit null, so a key that was optional upstream
+// can be returned as null under strict mode's all-keys-required rule.
+function nullable(node: any): any {
+  if (!node || typeof node !== 'object' || !('type' in node)) return node;
+  const t = node.type;
+  if (Array.isArray(t)) return t.includes('null') ? node : { ...node, type: [...t, 'null'] };
+  return t === 'null' ? node : { ...node, type: [t, 'null'] };
+}
+
+// The read half of the same adaptation: `strictify` forces every optional key
+// to be present, so codex returns it as null. Drop those nulls back out so the
+// parsed object is shape-identical to Claude's (optional key simply absent) —
+// the interior distinguishes null from absent in places (`{depends_on: [], ...t}`
+// would let a null override the default), so the boundary erases the difference.
+function stripNulls(v: any): any {
+  if (Array.isArray(v)) return v.map(stripNulls);
+  if (!v || typeof v !== 'object') return v;
+  const out: any = {};
+  for (const [k, val] of Object.entries(v)) if (val !== null) out[k] = stripNulls(val);
+  return out;
+}
+
 export const codex: Engine = {
   bin: 'codex',
   buildArgv({ prompt, model, cwd, schema, bypassPermissions }) {
@@ -24,7 +74,7 @@ export const codex: Engine = {
     let cleanup: (() => void) | undefined;
     if (schema) {
       const file = path.join(os.tmpdir(), `loop-schema-${process.pid}-${schemaSeq++}.json`);
-      fs.writeFileSync(file, JSON.stringify(schema));
+      fs.writeFileSync(file, JSON.stringify(strictify(schema)));
       argv.push('--output-schema', file);
       cleanup = () => { try { fs.unlinkSync(file); } catch { /* already gone */ } };
     }
@@ -59,10 +109,14 @@ export const codex: Engine = {
         }
       },
       finalize(): EngineEnvelope | null {
-        // Structured output is delivered as the message text (constrained by
-        // --output-schema); agent.ts parses it against the schema. No native
-        // structured field, no cost.
-        return saw ? { text, tokens, costUsd: 0, isError, errorTransient, errorText } : null;
+        if (!saw) return null;
+        // Structured output arrives as the message text (constrained by
+        // --output-schema). Parse and strip the strict-mode nulls here so the
+        // coordinator receives the same shape it gets from Claude; on a parse
+        // miss, leave it to agent.ts to parse the raw text. No cost from codex.
+        let structured: unknown;
+        if (text && !isError) { try { structured = stripNulls(JSON.parse(text)); } catch { /* not JSON; agent.ts handles text */ } }
+        return { structured, text, tokens, costUsd: 0, isError, errorTransient, errorText };
       },
     };
   },
