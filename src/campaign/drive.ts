@@ -223,7 +223,10 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     backlogWrite(['set-status', id, 'blocked', '--note', `worker blocked: ${reply.reason}`,
       '--data', JSON.stringify(telemetry)]);
     removeWorktree(id); deleteBranch(id);
-    await triage({ kind: 'worker-blocked', ticketId: id, reason: reply.reason });
+    await triage({
+      kind: 'worker-blocked', ticketId: id, reason: reply.reason,
+      instruction: 'First test whether the block is a defect in a completed dependency: read the cited spec section and the delivered code. If a merged/closed ticket was built wrong or under-built against the locked spec, author a repair ticket (origin "repair: <what> under-built vs spec §…"), scoped to fix it at source, and rewire this ticket onto it — the escaped-bug rule applies, exactly as phase-gate-red does. Escalate only if the block needs a decision the locked spec does not already answer.',
+    });
     return false;
   }
 
