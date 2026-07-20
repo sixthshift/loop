@@ -53,21 +53,45 @@ loop status               render the live backlog tree (progress.mjs)
 `loop` is the family name — the loop-engineering toolkit; `campaign` is its
 first verb, and future artifacts of the discipline get their own verbs
 rather than their own naming debates. `install.sh` links `bin/loop.mjs` to
-`~/.local/bin/loop`. Env: `AILOOP_WORKERS` (parallel workers, default 3).
+`~/.local/bin/loop` and runs `bun install` in `loop/` (the dashboard is
+Ink/JSX, so the runtime is bun — it transpiles `.tsx` natively, no build
+step; deps resolve from the symlink's realpath). Env: `AILOOP_WORKERS`
+(initial worker cap, default 3 — adjustable live from the dashboard).
 
 Escalations exit 2 with the reason and leave `.ailoop/run/` intact; resolve
 and `loop resume`. A refused intake (exit 3) leaves no state at all.
 
-## Display
+## Dashboard
 
-On a TTY, `loop campaign` runs a live dashboard for the life of the run
-(`tui.mjs`): per-phase progress bars with gate state, the live agent pane
-with per-agent elapsed time, a spend tally (cost / tokens / agent calls),
-and the journal as the scrolling event feed — the files are the loop's
-memory, so the renderer mostly just polls them. When stdout isn't a TTY
-(piped, CI, devcontainer logs) the same events fall back to plain
-timestamped lines. The dashboard never owns state: kill it, `loop resume`,
-and the picture rebuilds from the journal.
+On a TTY, `loop campaign` runs an interactive dashboard for the life of the
+run (`dashboard.tsx`, mounted by the `tui.mjs` bridge): per-phase progress
+bars with gate state, live agents each showing a one-line tail of what it's
+doing, the spend tally, and the journal as a scrollable, filterable feed.
+Reading is free-roam — `t` browses tickets (enter: acceptance, checks,
+attempt history), enter on an agent tails its transcript live (workers
+stream over `--output-format stream-json --include-partial-messages`; the
+per-agent ring is a window, not a record — the journal stays the record).
+The tail's bottom region is the model's raw token stream — thinking and
+text as they generate, cleared when the finished message lands as a
+transcript line — and while an agent is mid-generation its main-screen row
+shows the newest output (`✍ …`) instead of a stale last event. Delta
+re-renders are throttled to ~7fps and the journal parse is mtime-cached, so
+the firehose stays cheap. Each agent row carries its
+last event's age plus a measured liveness cell (`liveness.mjs` samples the
+agent's process-subtree CPU from /proc): transcript silence is a false hang
+signal — a long e2e run is silent by design — so ▶ means the subtree
+burned CPU in the last 30s, and "no cpu" ages toward red. Linux/devcontainer
+only; elsewhere the cell stays blank rather than guess. Acting is deliberately
+narrow: `p` pauses dispatch, `+`/`-` moves the worker cap, `r` queues a
+reviewer pass, `x` kills a worker (journaled as a failed attempt; the
+ticket redispatches fresh), `q` quits with state intact. Every mutation is
+a `control.mjs` flag the drive loop honors at its next decision point, or a
+child-process kill that settles through the ordinary failed-attempt path —
+the dashboard never writes campaign state: kill it, `loop resume`, and the
+picture rebuilds from the journal. `?` lists the keys.
+
+When stdout isn't a TTY (piped, CI, devcontainer logs) the same events fall
+back to plain timestamped lines and ink is never loaded.
 
 ## Model tiering
 

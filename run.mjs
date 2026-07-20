@@ -46,10 +46,20 @@ export function ticket(id) {
   return t;
 }
 
+// Parsed-journal cache keyed on size+mtime: the dashboard re-renders many
+// times a second while agents stream, and an append-only jsonl only needs
+// re-parsing when it actually grew.
+let journalCache = { key: '', entries: [] };
+
 export function journalEntries() {
   const file = path.join(RUN, 'journal.jsonl');
   if (!fs.existsSync(file)) return [];
-  return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const st = fs.statSync(file);
+  const key = `${st.size}:${st.mtimeMs}`;
+  if (journalCache.key !== key) {
+    journalCache = { key, entries: fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) };
+  }
+  return journalCache.entries;
 }
 
 export function journalTail(n = 40) {

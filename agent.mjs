@@ -2,19 +2,25 @@
 // Judgment lives in agents; this module only carries prompts out and
 // structured verdicts back. `schema` forces CLI-side JSON validation, so the
 // coordinator never parses free text.
+//
+// Output rides stream-json (NDJSON events, final `result` event = the same
+// envelope the old json format returned) so the dashboard can tail what an
+// agent is doing while it runs, instead of staring at a black box.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as tui from './tui.mjs';
+import { registerKill, unregisterKill } from './control.mjs';
 
 const PROMPTS = fileURLToPath(new URL('./prompts/', import.meta.url));
 
 export class AgentError extends Error {
-  constructor(message, { transient = false } = {}) {
+  constructor(message, { transient = false, killed = false } = {}) {
     super(message);
     this.transient = transient;
+    this.killed = killed; // operator intent — never auto-retried
   }
 }
 
@@ -37,7 +43,7 @@ export async function agent({
   timeoutMs = 60 * 60 * 1000,
   label = 'agent',
 }) {
-  const argv = ['-p', prompt, '--output-format', 'json', '--model', model, '--no-session-persistence'];
+  const argv = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--no-session-persistence'];
   if (schema) argv.push('--json-schema', JSON.stringify(schema));
   if (tools !== undefined) argv.push('--tools', tools);
   if (bypassPermissions) argv.push('--dangerously-skip-permissions');
@@ -58,19 +64,40 @@ export async function agent({
 async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
   const envelope = await new Promise((resolve, reject) => {
     const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
+    let buf = '', err = '', result = null, killed = false;
+    registerKill(label, () => { killed = true; child.kill('SIGKILL'); });
+    tui.agentPid(label, child.pid);
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       reject(new AgentError(`${label}: timed out after ${Math.round(timeoutMs / 60000)}m`, { transient: true }));
     }, timeoutMs);
-    child.stdout.on('data', d => { out += d; });
+
+    child.stdout.on('data', d => {
+      buf += d;
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep the partial tail
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev;
+        try { ev = JSON.parse(line); } catch { continue; } // never die on a garbled event
+        if (ev.type === 'result') result = ev;
+        if (ev.type === 'stream_event') {
+          const d = ev.event?.delta;
+          if (d?.type === 'text_delta') tui.agentDelta(label, d.text, false);
+          else if (d?.type === 'thinking_delta') tui.agentDelta(label, d.thinking, true);
+          continue;
+        }
+        for (const t of transcript(ev)) tui.agentEvent(label, t);
+      }
+    });
     child.stderr.on('data', d => { err += d; });
-    child.on('error', e => { clearTimeout(timer); reject(new AgentError(`${label}: ${e.message}`, { transient: true })); });
+    child.on('error', e => { clearTimeout(timer); unregisterKill(label); reject(new AgentError(`${label}: ${e.message}`, { transient: true })); });
     child.on('close', code => {
       clearTimeout(timer);
-      if (code !== 0 && !out.trim()) return reject(new AgentError(`${label}: exit ${code}: ${err.slice(-2000)}`, { transient: true }));
-      try { resolve(JSON.parse(out)); }
-      catch { reject(new AgentError(`${label}: unparseable envelope: ${out.slice(-500)}`, { transient: true })); }
+      unregisterKill(label);
+      if (killed) return reject(new AgentError(`${label}: killed by operator`, { killed: true }));
+      if (result) return resolve(result);
+      reject(new AgentError(`${label}: exit ${code} with no result event: ${err.slice(-2000)}`, { transient: true }));
     });
   });
 
@@ -86,8 +113,29 @@ async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
   };
 }
 
+// Stream event → human lines for the live tail pane. Lossy on purpose:
+// enough to answer "what is this agent doing", not a session replay.
+function transcript(ev) {
+  if (ev.type === 'system' && ev.subtype === 'init') return ['· session started'];
+  if (ev.type !== 'assistant' && ev.type !== 'user') return [];
+  const out = [];
+  for (const c of ev.message?.content ?? []) {
+    if (c.type === 'text' && c.text?.trim()) out.push(oneLine(c.text));
+    if (c.type === 'tool_use') out.push(`→ ${c.name} ${oneLine(JSON.stringify(c.input ?? {}))}`);
+    if (c.type === 'tool_result') {
+      const body = typeof c.content === 'string' ? c.content
+        : (c.content ?? []).map(b => b.text ?? '').join(' ');
+      out.push(`←${c.is_error ? ' ✗' : ''} ${oneLine(body) || '(empty)'}`);
+    }
+  }
+  return out;
+}
+
+const oneLine = s => String(s).replace(/\s+/g, ' ').trim().slice(0, 300);
+
 // One retry on transient failures (timeout, spawn error, garbled envelope) —
-// a *judgment* we disagree with is never retried, only a channel failure.
+// a *judgment* we disagree with is never retried, and neither is an
+// operator kill: that rejection is intent, not noise.
 export async function agentRetry(opts) {
   try { return await agent(opts); }
   catch (e) {

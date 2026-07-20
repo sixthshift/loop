@@ -12,10 +12,11 @@ import { triage, renumber, backlogSummary } from './triage.mjs';
 import { escalate } from './escalate.mjs';
 import { readLearnings } from './run.mjs';
 import * as tui from './tui.mjs';
+import { control } from './control.mjs';
 
-const MAX_WORKERS = parseInt(process.env.AILOOP_WORKERS ?? '3', 10);
 const REVIEW_EVERY = 5;
 const WORKER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const idle = () => new Promise(r => setTimeout(r, 1500));
 
 export async function drive(ctx) {
   const workers = new Map(); // id -> { promise, dir, branch, baseSha }
@@ -24,6 +25,12 @@ export async function drive(ctx) {
   await reconcileStale(ctx, workers);
 
   while (true) {
+    if (control.forceReview) { // operator asked from the dashboard
+      control.forceReview = false;
+      await runReview(ctx);
+      closesSinceReview = 0;
+    }
+
     let f = frontier();
 
     if (f.problems.length || f.cycles.length) {
@@ -55,15 +62,18 @@ export async function drive(ctx) {
       f = frontier();
     }
 
-    for (const id of f.dispatchable) {
-      if (workers.size >= MAX_WORKERS) break;
-      if (!workers.has(id)) dispatch(ctx, workers, id);
+    if (!control.paused) {
+      for (const id of f.dispatchable) {
+        if (workers.size >= control.workerCap) break;
+        if (!workers.has(id)) dispatch(ctx, workers, id);
+      }
     }
 
     if (workers.size === 0) {
       // No work in flight and nothing dispatched: either the graph is blocked
       // or state is wedged. Never report done over live blocked tickets.
       if (f.complete) return;
+      if (control.paused) { await idle(); continue; } // operator pause, not a stall
       await triage({ kind: 'stalled', frontier: f });
       const f2 = frontier();
       const canProgress = f2.dispatchable.length || f2.phasesDrained.some(p => !phaseClosed(p))
@@ -128,8 +138,12 @@ async function settle(ctx, done, meta) {
 
   if (done.err) {
     backlogWrite(['attempt', id, '--failed', 'worker-channel',
-      '--hypothesis', `worker session died: ${done.err.message.slice(0, 300)}`,
-      '--fix', 'fresh dispatch; investigate if it recurs']);
+      '--hypothesis', done.err.killed
+        ? 'killed by the operator from the dashboard'
+        : `worker session died: ${done.err.message.slice(0, 300)}`,
+      '--fix', done.err.killed
+        ? 'not a code failure — redispatches when the frontier next offers it'
+        : 'fresh dispatch; investigate if it recurs']);
     removeWorktree(id); deleteBranch(id);
     return false;
   }
