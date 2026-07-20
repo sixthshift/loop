@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // loop — the loop-engineering toolkit. `campaign` is its first verb: the
 // script-coordinator that drives a locked build spec to green.
 //
