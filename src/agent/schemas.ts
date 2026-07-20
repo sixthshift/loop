@@ -1,6 +1,114 @@
 // JSON Schemas for every agent verdict. Passed to `claude -p --json-schema`,
 // so the CLI validates before the coordinator ever sees the reply — the
-// boundary to a model's output is defended here, once.
+// boundary to a model's output is defended here, once. Each schema's TS type
+// lives beside it in this file: the schema is the runtime guard, the type is
+// the same contract pushed into the interior — adjacency keeps them in sync.
+
+export type Severity = 'low' | 'medium' | 'high';
+export type ModelName = 'opus' | 'sonnet' | 'haiku';
+export type Check = { name: string; cmd: string };
+
+export type TicketDraft = {
+  id: string;
+  title: string;
+  phase: string;
+  depends_on?: string[];
+  files: string[];
+  resources?: string[];
+  origin: string;
+  context: string;
+  acceptance: string;
+  acceptanceChecks: Check[];
+  model?: ModelName;
+};
+
+export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin'>>;
+
+export type SeedVerdict = {
+  blockers: { item: string; needed: string }[];
+  fastChecks: Check[];
+  phases: { id: string; delivers: string; gate: Check[] }[];
+  outOfScope: string[];
+  notes: string;
+};
+
+export type DecomposeVerdict = { tickets: TicketDraft[] };
+
+export type CriticVerdict = {
+  tickets: {
+    ticketId: string;
+    findings: { question: 'gaming' | 'blindness' | 'coverage' | 'dependency' | 'scope'; issue: string; severity: Severity }[];
+    patch?: TicketPatch;
+    acceptedRisks: { issue: string; severity: Severity; why: string }[];
+  }[];
+};
+
+export type WorkerVerdict = {
+  done?: boolean;
+  summary?: string;
+  tooBig?: boolean;
+  proposedTickets?: TicketDraft[];
+  blocked?: boolean;
+  reason?: string;
+};
+
+export type GamingVerdict = { flags: { issue: string; why: string; severity: Severity }[] };
+
+export type JudgeVerdict = {
+  verdict: 'close' | 'retry' | 'gamed' | 'flake-probe' | 'amend-typo' | 'escalate';
+  note?: string;
+  failing?: string[];
+  hypothesis?: string;
+  fixNote?: string;
+  sharpenChecks?: Check[];
+  probeCmd?: string;
+  fixedChecks?: Check[];
+  reason?: string;
+};
+
+export type TriageAction = {
+  command: 'update' | 'set-status' | 'add' | 'note' | 'repair';
+  ticketId?: string;
+  patch?: TicketPatch;
+  to?: string;
+  tickets?: TicketDraft[];
+  kind?: string;
+  subject?: string;
+  body?: string;
+  note?: string;
+  instruction?: string;
+};
+
+export type TriageVerdict = { actions: TriageAction[]; escalate?: string; summary: string };
+
+export type RepairVerdict = { resolved: boolean; summary: string };
+
+export type ReviewerProposal = {
+  type: 'note' | 'ticket' | 'sharpen' | 'escalate';
+  kind?: string;
+  subject?: string;
+  body?: string;
+  ticket?: TicketDraft;
+  ticketId?: string;
+  patch?: TicketPatch;
+  note?: string;
+  reason?: string;
+};
+
+export type ReviewerVerdict = { proposals: ReviewerProposal[]; summary: string };
+
+export type ReintegrateVerdict = { composes: boolean; tripwire?: string; repairs: TicketDraft[]; notes: string };
+
+export type CoverageVerdict = { done: boolean; missing: TicketDraft[]; summary: string };
+
+export type HarvestVerdict = {
+  checks: { name: string; cmd: string; tier: 'fast' | 'gate'; note?: string; retire?: boolean }[];
+  flakes: { test: string; cmd?: string; mode?: string; discriminator: string; retire?: boolean }[];
+  sizingMd: string;
+  gamingMd: string;
+  landminesMd: string;
+  report: string;
+};
 
 const CHECK = {
   type: 'object',
@@ -191,7 +299,7 @@ export const TRIAGE = {
       items: {
         type: 'object',
         properties: {
-          command: { type: 'string', enum: ['update', 'set-status', 'add', 'note'] },
+          command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'repair'] },
           ticketId: { type: 'string' },
           patch: TICKET_PATCH,
           to: { type: 'string' },
@@ -200,6 +308,7 @@ export const TRIAGE = {
           subject: { type: 'string' },
           body: { type: 'string' },
           note: { type: 'string' },
+          instruction: { type: 'string' },
         },
         required: ['command'],
         additionalProperties: false,
@@ -209,6 +318,16 @@ export const TRIAGE = {
     summary: { type: 'string' },
   },
   required: ['actions', 'summary'],
+  additionalProperties: false,
+};
+
+export const REPAIR = {
+  type: 'object',
+  properties: {
+    resolved: { type: 'boolean' },
+    summary: { type: 'string' },
+  },
+  required: ['resolved', 'summary'],
   additionalProperties: false,
 };
 

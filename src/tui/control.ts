@@ -13,25 +13,25 @@ export const control = {
   forceReview: false,     // run the reviewer at the next loop turn
 };
 
-// label -> kill fn, registered by agent.mjs for the life of the child.
+// label -> kill fn, registered by agent.ts for the life of the child.
 // Kill is operator-intent, not a channel flake: the rejection it causes is
 // marked non-transient so agentRetry never silently re-runs killed work.
-const killers = new Map();
+const killers = new Map<string, () => void>();
 
-export function registerKill(label, kill) {
+export function registerKill(label: string, kill: () => void): void {
   killers.set(label, kill);
 }
 
-export function unregisterKill(label) {
+export function unregisterKill(label: string): void {
   killers.delete(label);
 }
 
-export function killAgent(label) {
+export function killAgent(label: string): boolean {
   const kill = killers.get(label);
   if (kill) kill();
   return Boolean(kill);
 }
 
-export function killAllAgents() {
+export function killAllAgents(): void {
   for (const kill of killers.values()) kill();
 }

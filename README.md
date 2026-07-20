@@ -25,20 +25,26 @@ run, deterministic resume, campaigns that outlive a session.
 
 ## The two gaps a script must close, and how
 
-- **Unenumerated situations** → `triage.mjs`, the universal `else`. Every
+- **Unenumerated situations** → `triage.ts`, the universal `else`. Every
   unhandled frontier problem, refused mutation, blocked worker, or stall
-  routes to a fresh agent whose only actuators are legal `backlog-write.mjs`
+  routes to a fresh agent — and so does every unenumerated *throw*: the drive
+  loop is wrapped in a crash membrane that journals the error and triages it
+  rather than dying (the same error twice escalates — a repeated crash is a
+  missing arm, not a flake). Triage's actuators are legal `backlog-write.mjs`
   commands — it can propose any lawful mutation but cannot corrupt state —
-  and whose exit is escalation. Every invocation is journaled: the triage log
-  is the coordinator's own escaped-bug record. A recurring triage kind should
-  be promoted to a real arm in `drive.mjs`.
+  plus one delegation: `repair`, a fresh full-tool agent for machine-level
+  faults (missing installs, stale ports, a dirty mainline checkout) that
+  fixes the environment but never the work. Its exit is escalation. Every
+  invocation is journaled: the triage log is the coordinator's own
+  escaped-bug record. A recurring triage kind should be promoted to a real
+  arm in `drive.ts`.
 - **Opportunistic noticing** → the reviewer (`prompts/reviewer.md`), run
   every 5 closes and at every phase close: one agent over the journal since
   the last review, asking what no individual verdict sees.
 
 ## Shared state protocol
 
-`.ailoop/run/` and the six mechanical scripts are copied from the **skill's**
+`.ailoop/campaign/` and the six mechanical scripts are copied from the **skill's**
 `templates/` at intake — one source of truth, two drivers. Either coordinator
 can resume the other's campaign; `.ailoop/learnings/` is shared verbatim.
 
@@ -52,40 +58,44 @@ loop status               render the live backlog tree (progress.mjs)
 
 `loop` is the family name — the loop-engineering toolkit; `campaign` is its
 first verb, and future artifacts of the discipline get their own verbs
-rather than their own naming debates. `install.sh` links `bin/loop.mjs` to
+rather than their own naming debates. `install.sh` links `src/index.ts` to
 `~/.local/bin/loop` and runs `bun install` in `loop/` (the dashboard is
 Ink/JSX, so the runtime is bun — it transpiles `.tsx` natively, no build
 step; deps resolve from the symlink's realpath). Env: `AILOOP_WORKERS`
 (initial worker cap, default 3 — adjustable live from the dashboard).
 
-Escalations exit 2 with the reason and leave `.ailoop/run/` intact; resolve
+Escalations exit 2 with the reason and leave `.ailoop/campaign/` intact; resolve
 and `loop resume`. A refused intake (exit 3) leaves no state at all.
 
 ## Dashboard
 
 On a TTY, `loop campaign` runs an interactive dashboard for the life of the
-run (`dashboard.tsx`, mounted by the `tui.mjs` bridge): per-phase progress
-bars with gate state, live agents each showing a one-line tail of what it's
-doing, the spend tally, and the journal as a scrollable, filterable feed.
-Reading is free-roam — `t` browses tickets (enter: acceptance, checks,
-attempt history), enter on an agent tails its transcript live (workers
-stream over `--output-format stream-json --include-partial-messages`; the
-per-agent ring is a window, not a record — the journal stays the record).
-The tail's bottom region is the model's raw token stream — thinking and
-text as they generate, cleared when the finished message lands as a
-transcript line — and while an agent is mid-generation its main-screen row
-shows the newest output (`✍ …`) instead of a stale last event. Delta
-re-renders are throttled to ~7fps and the journal parse is mtime-cached, so
-the firehose stays cheap. Each agent row carries its
-last event's age plus a measured liveness cell (`liveness.mjs` samples the
-agent's process-subtree CPU from /proc): transcript silence is a false hang
-signal — a long e2e run is silent by design — so ▶ means the subtree
-burned CPU in the last 30s, and "no cpu" ages toward red. Linux/devcontainer
-only; elsewhere the cell stays blank rather than guess. Acting is deliberately
-narrow: `p` pauses dispatch, `+`/`-` moves the worker cap, `r` queues a
-reviewer pass, `x` kills a worker (journaled as a failed attempt; the
-ticket redispatches fresh), `q` quits with state intact. Every mutation is
-a `control.mjs` flag the drive loop honors at its next decision point, or a
+run (`dashboard.tsx`, mounted by the `tui.ts` bridge). The main screen is the
+**active work**: per-phase progress bars with gate state, the spend tally, and
+a live list of every process running right now — both agents (`⚙`) and scripts
+(`$`, e.g. `verify:T007`, `gate:P1:e2e`), each with a one-line tail of what
+it's doing. The **journal** lives one `tab` away as a scrollable, filterable
+feed. Reading is free-roam: `t` browses tickets (enter: acceptance, checks,
+attempt history), and enter on any process in the active list tails its live
+output — an agent's transcript (workers stream over `--output-format
+stream-json --include-partial-messages`) or a script's stdout/stderr as it
+runs. Both per-process rings are windows, not records — the journal stays the
+record. An agent tail's bottom region is the model's raw token stream —
+thinking and text as they generate, cleared when the finished message lands as
+a transcript line; a script tail's bottom region is the current unterminated
+line (a progress bar, a prompt). While a process is mid-output its main-screen
+row shows the newest text (`✍ …` / the live line) instead of a stale event.
+Delta re-renders are throttled to ~7fps and the journal parse is mtime-cached,
+so the firehose stays cheap. Each row carries its last event's age plus a
+measured liveness cell (`liveness.ts` samples the process-subtree CPU from
+/proc): output silence is a false hang signal — a long e2e run is silent by
+design — so ▶ means the subtree burned CPU in the last 30s, and "no cpu" ages
+toward red. Linux/devcontainer only; elsewhere the cell stays blank rather
+than guess. Acting is deliberately narrow: `p` pauses dispatch, `+`/`-` moves
+the worker cap, `r` queues a reviewer pass, `x` kills a worker (journaled as a
+failed attempt; the ticket redispatches fresh — scripts and verdict agents
+settle on their own), `q` quits with state intact. Every mutation is a
+`control.ts` flag the drive loop honors at its next decision point, or a
 child-process kill that settles through the ordinary failed-attempt path —
 the dashboard never writes campaign state: kill it, `loop resume`, and the
 picture rebuilds from the journal. `?` lists the keys.
@@ -96,7 +106,7 @@ back to plain timestamped lines and ink is never loaded.
 ## Model tiering
 
 Workers take the ticket's `model` tag (opus default). Critic and gaming run
-sonnet — narrow questions, explicit rubrics. Judge, triage, reviewer,
+sonnet — narrow questions, explicit rubrics. Judge, triage, repair, reviewer,
 reintegration, coverage, and harvest run opus. `verify.mjs` costs no model.
 
 ## Known limits

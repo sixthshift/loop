@@ -1,7 +1,8 @@
 // Spawn one Claude agent (`claude -p`) and return its result + telemetry.
 // Judgment lives in agents; this module only carries prompts out and
 // structured verdicts back. `schema` forces CLI-side JSON validation, so the
-// coordinator never parses free text.
+// coordinator never parses free text — callers name the verdict type the
+// schema guarantees via the generic.
 //
 // Output rides stream-json (NDJSON events, final `result` event = the same
 // envelope the old json format returned) so the dashboard can tail what an
@@ -11,22 +12,49 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import * as tui from './tui.mjs';
-import { registerKill, unregisterKill } from './control.mjs';
+import * as tui from '../tui/tui.ts';
+import { registerKill, unregisterKill } from '../tui/control.ts';
 
 const PROMPTS = fileURLToPath(new URL('./prompts/', import.meta.url));
 
+export type AgentOptions = {
+  prompt: string;
+  model?: string;
+  schema?: object;
+  cwd?: string;
+  tools?: string;              // e.g. 'Read,Glob,Grep' — omit for the full set
+  bypassPermissions?: boolean;
+  timeoutMs?: number;
+  label?: string;
+};
+
+export type AgentResult<T> = { output: T; tokens: number; seconds: number; costUsd: number };
+
+// The final `result` event off the CLI stream — an external contract, so
+// every field is optional until checked.
+type ResultEnvelope = {
+  type: 'result';
+  is_error?: boolean;
+  result?: string;
+  structured_output?: unknown;
+  usage?: { output_tokens?: number };
+  duration_ms?: number;
+  total_cost_usd?: number;
+};
+
 export class AgentError extends Error {
-  constructor(message, { transient = false, killed = false } = {}) {
+  transient: boolean;
+  killed: boolean; // operator intent — never auto-retried
+  constructor(message: string, { transient = false, killed = false }: { transient?: boolean; killed?: boolean } = {}) {
     super(message);
     this.transient = transient;
-    this.killed = killed; // operator intent — never auto-retried
+    this.killed = killed;
   }
 }
 
 // {{key}} substitution; objects render as pretty JSON. A missing key is a
 // programming error, not a prompt to silently ship with a hole in it.
-export function renderPrompt(name, vars = {}) {
+export function renderPrompt(name: string, vars: Record<string, unknown> = {}): string {
   let text = fs.readFileSync(path.join(PROMPTS, `${name}.md`), 'utf8');
   text = text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
     if (!(key in vars)) throw new Error(`prompt ${name}: missing var ${key}`);
@@ -36,13 +64,13 @@ export function renderPrompt(name, vars = {}) {
   return text;
 }
 
-export async function agent({
+export async function agent<T = string>({
   prompt, model = 'opus', schema, cwd = '.',
-  tools,                    // e.g. 'Read,Glob,Grep' — omit for the full set
+  tools,
   bypassPermissions = false,
   timeoutMs = 60 * 60 * 1000,
   label = 'agent',
-}) {
+}: AgentOptions): Promise<AgentResult<T>> {
   const argv = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--no-session-persistence'];
   if (schema) argv.push('--json-schema', JSON.stringify(schema));
   if (tools !== undefined) argv.push('--tools', tools);
@@ -52,7 +80,7 @@ export async function agent({
   // tally hook here, so no caller carries display concerns.
   tui.agentStart(label, model);
   try {
-    const result = await runAgent({ argv, cwd, schema, timeoutMs, label });
+    const result = await runAgent<T>({ argv, cwd, schema, timeoutMs, label });
     tui.agentEnd(label, result);
     return result;
   } catch (e) {
@@ -61,10 +89,12 @@ export async function agent({
   }
 }
 
-async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
-  const envelope = await new Promise((resolve, reject) => {
+async function runAgent<T>({ argv, cwd, schema, timeoutMs, label }: {
+  argv: string[]; cwd: string; schema?: object; timeoutMs: number; label: string;
+}): Promise<AgentResult<T>> {
+  const envelope = await new Promise<ResultEnvelope>((resolve, reject) => {
     const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let buf = '', err = '', result = null, killed = false;
+    let buf = '', err = '', result: ResultEnvelope | null = null, killed = false;
     registerKill(label, () => { killed = true; child.kill('SIGKILL'); });
     tui.agentPid(label, child.pid);
     const timer = setTimeout(() => {
@@ -75,10 +105,10 @@ async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
     child.stdout.on('data', d => {
       buf += d;
       const lines = buf.split('\n');
-      buf = lines.pop(); // keep the partial tail
+      buf = lines.pop() ?? ''; // keep the partial tail
       for (const line of lines) {
         if (!line.trim()) continue;
-        let ev;
+        let ev: any;
         try { ev = JSON.parse(line); } catch { continue; } // never die on a garbled event
         if (ev.type === 'result') result = ev;
         if (ev.type === 'stream_event') {
@@ -102,9 +132,9 @@ async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
   });
 
   if (envelope.is_error) throw new AgentError(`${label}: ${String(envelope.result).slice(0, 2000)}`);
-  const output = schema
-    ? (envelope.structured_output ?? JSON.parse(envelope.result))
-    : envelope.result;
+  const output = (schema
+    ? (envelope.structured_output ?? JSON.parse(envelope.result ?? ''))
+    : envelope.result) as T;
   return {
     output,
     tokens: envelope.usage?.output_tokens ?? 0,
@@ -115,31 +145,31 @@ async function runAgent({ argv, cwd, schema, timeoutMs, label }) {
 
 // Stream event → human lines for the live tail pane. Lossy on purpose:
 // enough to answer "what is this agent doing", not a session replay.
-function transcript(ev) {
+function transcript(ev: any): string[] {
   if (ev.type === 'system' && ev.subtype === 'init') return ['· session started'];
   if (ev.type !== 'assistant' && ev.type !== 'user') return [];
-  const out = [];
+  const out: string[] = [];
   for (const c of ev.message?.content ?? []) {
     if (c.type === 'text' && c.text?.trim()) out.push(oneLine(c.text));
     if (c.type === 'tool_use') out.push(`→ ${c.name} ${oneLine(JSON.stringify(c.input ?? {}))}`);
     if (c.type === 'tool_result') {
       const body = typeof c.content === 'string' ? c.content
-        : (c.content ?? []).map(b => b.text ?? '').join(' ');
+        : (c.content ?? []).map((b: any) => b.text ?? '').join(' ');
       out.push(`←${c.is_error ? ' ✗' : ''} ${oneLine(body) || '(empty)'}`);
     }
   }
   return out;
 }
 
-const oneLine = s => String(s).replace(/\s+/g, ' ').trim().slice(0, 300);
+const oneLine = (s: unknown) => String(s).replace(/\s+/g, ' ').trim().slice(0, 300);
 
 // One retry on transient failures (timeout, spawn error, garbled envelope) —
 // a *judgment* we disagree with is never retried, and neither is an
 // operator kill: that rejection is intent, not noise.
-export async function agentRetry(opts) {
-  try { return await agent(opts); }
+export async function agentRetry<T = string>(opts: AgentOptions): Promise<AgentResult<T>> {
+  try { return await agent<T>(opts); }
   catch (e) {
     if (!(e instanceof AgentError) || !e.transient) throw e;
-    return agent(opts);
+    return agent<T>(opts);
   }
 }

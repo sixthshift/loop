@@ -1,15 +1,18 @@
 // The critic pass — how draft tickets get vetted. One agent, five questions,
 // patches applied through the sole writer, accepted risks on the record.
 
-import { backlog, backlogWrite, readLearnings } from './run.mjs';
-import { agentRetry, renderPrompt } from './agent.mjs';
-import { CRITIC } from './schemas.mjs';
-import { triage } from './triage.mjs';
-import { escalate } from './escalate.mjs';
+import { backlog, backlogWrite } from './backlog.ts';
+import { readLearnings } from './state.ts';
+import type { JournalEntry } from './journal.ts';
+import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { CRITIC } from '../agent/schemas.ts';
+import type { CriticVerdict } from '../agent/schemas.ts';
+import { triage } from './triage.ts';
+import { escalate } from './escalate.ts';
 
-const rounds = new Map(); // ticketId -> critic rounds consumed
+const rounds = new Map<string, number>(); // ticketId -> critic rounds consumed
 
-export async function vetDrafts() {
+export async function vetDrafts(): Promise<void> {
   const drafts = backlog().tickets.filter(t => t.status === 'draft');
   if (!drafts.length) return;
 
@@ -19,7 +22,7 @@ export async function vetDrafts() {
 
   const learnings = readLearnings();
   const b = backlog();
-  const res = await agentRetry({
+  const res = await agentRetry<CriticVerdict>({
     prompt: renderPrompt('critic', {
       tickets: drafts,
       outOfScope: b.outOfScope ?? [],
@@ -38,7 +41,7 @@ export async function vetDrafts() {
     if (item.patch && Object.keys(item.patch).length) {
       try {
         backlogWrite(['update', item.ticketId, '-', '--note', 'critic pass'], item.patch);
-      } catch (e) {
+      } catch (e: any) {
         await triage({ kind: 'critic-patch-refused', ticketId: item.ticketId, patch: item.patch, refusal: e.message });
         continue; // next critic round re-reads whatever triage decided
       }
@@ -51,7 +54,7 @@ export async function vetDrafts() {
       backlogWrite(['vet', item.ticketId, '--note',
         `critic pass: ${item.findings.length} finding(s), ${item.acceptedRisks.length} accepted risk(s)`]);
       rounds.delete(item.ticketId);
-    } catch (e) {
+    } catch (e: any) {
       await triage({ kind: 'vet-refused', ticketId: item.ticketId, refusal: e.message });
     }
   }
@@ -59,6 +62,6 @@ export async function vetDrafts() {
 
 // Accepted risks feed the judge — a green check doesn't clear a blindness the
 // critic already flagged.
-export function acceptedRisks(journal, ticketId) {
-  return journal.filter(j => j.kind === 'accepted-risk' && j.subject === ticketId).map(j => j.body);
+export function acceptedRisks(journal: JournalEntry[], ticketId: string): string[] {
+  return journal.filter(j => j.kind === 'accepted-risk' && j.subject === ticketId).map(j => j.body ?? '');
 }

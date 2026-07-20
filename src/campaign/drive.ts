@@ -3,100 +3,143 @@
 // spawns a fresh-context agent for every verdict. The coordinator itself
 // never judges a diff — context-poisoning is structural, not a discipline.
 
-import { backlog, backlogWrite, frontier, verify, flakeProbe, journalEntries, journalTail, sh, shAsync, ticket } from './run.mjs';
-import { agentRetry, renderPrompt } from './agent.mjs';
-import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from './schemas.mjs';
-import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.mjs';
-import { vetDrafts, acceptedRisks } from './critic.mjs';
-import { triage, renumber, backlogSummary } from './triage.mjs';
-import { escalate } from './escalate.mjs';
-import { readLearnings } from './run.mjs';
-import * as tui from './tui.mjs';
-import { control } from './control.mjs';
+import { backlog, backlogWrite, ticket } from './backlog.ts';
+import { journalEntries, journalTail } from './journal.ts';
+import { frontier, verify, flakeProbe, sh, shAsync, readLearnings } from './state.ts';
+import type { CampaignContext, Frontier, VerifyVerdict, FlakeVerdict } from './state.ts';
+import { agentRetry, renderPrompt, AgentError } from '../agent/agent.ts';
+import type { AgentResult } from '../agent/agent.ts';
+import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from '../agent/schemas.ts';
+import type { WorkerVerdict, GamingVerdict, JudgeVerdict, ReviewerVerdict, ReintegrateVerdict, Check } from '../agent/schemas.ts';
+import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
+import { vetDrafts, acceptedRisks } from './critic.ts';
+import { triage, renumber, backlogSummary } from './triage.ts';
+import { escalate, Escalation } from './escalate.ts';
+import * as tui from '../tui/tui.ts';
+import { control } from '../tui/control.ts';
 
 const REVIEW_EVERY = 5;
 const WORKER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const idle = () => new Promise(r => setTimeout(r, 1500));
 
-export async function drive(ctx) {
-  const workers = new Map(); // id -> { promise, dir, branch, baseSha }
-  let closesSinceReview = 0;
+// A settled worker channel: the verdict envelope, or the error that ended it.
+type WorkerDone =
+  | { id: string; res: AgentResult<WorkerVerdict>; err?: undefined }
+  | { id: string; err: AgentError; res?: undefined };
+type WorkerMeta = { promise: Promise<WorkerDone>; dir: string; branch: string; baseSha: string };
+type Workers = Map<string, WorkerMeta>;
+type DriveState = { closesSinceReview: number };
+type Telemetry = { workerTokens: number; workerSeconds: number; workerCostUsd: number };
 
-  await reconcileStale(ctx, workers);
+export async function drive(ctx: CampaignContext): Promise<void> {
+  const workers: Workers = new Map();
+  const state: DriveState = { closesSinceReview: 0 };
+  let reconciled = false;
+  let lastCrash: string | null = null;
 
+  // The crash membrane — the universal else, error edition. An unenumerated
+  // throw anywhere in a turn is an anomaly like any other: journal it, hand
+  // it to a fresh triage agent, keep driving. The same error twice is a
+  // missing arm, not a flake — that escalates. Escalations pass through
+  // untouched: they are the honest exit, not a crash.
   while (true) {
-    if (control.forceReview) { // operator asked from the dashboard
-      control.forceReview = false;
-      await runReview(ctx);
-      closesSinceReview = 0;
-    }
-
-    let f = frontier();
-
-    if (f.problems.length || f.cycles.length) {
-      await triage({ kind: 'frontier-problems', problems: f.problems, cycles: f.cycles });
-      f = frontier();
-      if (f.problems.length || f.cycles.length) escalate('frontier problems persist after triage', f);
-    }
-
-    if (f.capBreaches.length || f.thrashBreaches.length) {
-      escalate('attempt cap / thrash wall', {
-        capBreaches: f.capBreaches,
-        thrashBreaches: f.thrashBreaches,
-        attempts: [...f.capBreaches, ...f.thrashBreaches].map(x => ({ id: x.ticket, log: ticket(x.ticket).attempts })),
-      });
-    }
-
-    const unclosed = f.phasesDrained.filter(p => !phaseClosed(p));
-    if (unclosed.length) {
-      await closePhase(ctx, unclosed[0]);
-      await runReview(ctx); // phase close is a mandatory review checkpoint
-      closesSinceReview = 0;
-      continue;
-    }
-
-    if (f.complete && workers.size === 0) return; // → termination
-
-    if (backlog().tickets.some(t => t.status === 'draft')) {
-      await vetDrafts();
-      f = frontier();
-    }
-
-    if (!control.paused) {
-      for (const id of f.dispatchable) {
-        if (workers.size >= control.workerCap) break;
-        if (!workers.has(id)) dispatch(ctx, workers, id);
+    try {
+      if (!reconciled) { await reconcileStale(ctx, workers); reconciled = true; }
+      if (await turn(ctx, workers, state)) return;
+    } catch (e: any) {
+      if (e instanceof Escalation) throw e;
+      const sig = String(e.message ?? e).slice(0, 300);
+      if (sig === lastCrash) escalate(`coordinator error repeated — needs a real arm: ${sig}`, { stack: e.stack });
+      lastCrash = sig;
+      tui.log(`⚠ coordinator error → triage: ${sig}`);
+      try {
+        backlogWrite(['note', '--kind', 'coordinator-error', '--subject', 'drive',
+          '--body', `${sig}\n${(e.stack ?? '').slice(0, 1500)}`]);
+      } catch { /* journaling failed; triage below still gets the error */ }
+      try {
+        await triage({ kind: 'coordinator-error', error: sig, stack: (e.stack ?? '').slice(0, 1500) });
+      } catch (t: any) {
+        if (t instanceof Escalation) throw t;
+        escalate(`coordinator error, and triage on it failed too: ${sig}`, { triageError: t.message });
       }
-    }
-
-    if (workers.size === 0) {
-      // No work in flight and nothing dispatched: either the graph is blocked
-      // or state is wedged. Never report done over live blocked tickets.
-      if (f.complete) return;
-      if (control.paused) { await idle(); continue; } // operator pause, not a stall
-      await triage({ kind: 'stalled', frontier: f });
-      const f2 = frontier();
-      const canProgress = f2.dispatchable.length || f2.phasesDrained.some(p => !phaseClosed(p))
-        || backlog().tickets.some(t => t.status === 'draft') || f2.complete;
-      if (!canProgress) escalate('stalled: no dispatchable work and triage freed none', f2);
-      continue;
-    }
-
-    const done = await Promise.race([...workers.values()].map(w => w.promise));
-    const meta = workers.get(done.id);
-    workers.delete(done.id);
-    const closed = await settle(ctx, done, meta);
-    if (closed) closesSinceReview++;
-    if (closesSinceReview >= REVIEW_EVERY) {
-      await runReview(ctx);
-      closesSinceReview = 0;
     }
   }
 }
 
+// One turn of the decision spine. Returns true when the campaign is complete.
+async function turn(ctx: CampaignContext, workers: Workers, state: DriveState): Promise<boolean> {
+  if (control.forceReview) { // operator asked from the dashboard
+    control.forceReview = false;
+    await runReview(ctx);
+    state.closesSinceReview = 0;
+  }
+
+  let f = frontier();
+
+  if (f.problems.length || f.cycles.length) {
+    await triage({ kind: 'frontier-problems', problems: f.problems, cycles: f.cycles });
+    f = frontier();
+    if (f.problems.length || f.cycles.length) escalate('frontier problems persist after triage', f);
+  }
+
+  if (f.capBreaches.length || f.thrashBreaches.length) {
+    escalate('attempt cap / thrash wall', {
+      capBreaches: f.capBreaches,
+      thrashBreaches: f.thrashBreaches,
+      attempts: [...f.capBreaches, ...f.thrashBreaches].map(x => ({ id: x.ticket, log: ticket(x.ticket).attempts })),
+    });
+  }
+
+  const unclosed = f.phasesDrained.filter(p => !phaseClosed(p));
+  if (unclosed.length) {
+    await closePhase(ctx, unclosed[0]!);
+    await runReview(ctx); // phase close is a mandatory review checkpoint
+    state.closesSinceReview = 0;
+    return false;
+  }
+
+  if (f.complete && workers.size === 0) return true; // → termination
+
+  if (backlog().tickets.some(t => t.status === 'draft')) {
+    await vetDrafts();
+    f = frontier();
+  }
+
+  if (!control.paused) {
+    for (const id of f.dispatchable) {
+      if (workers.size >= control.workerCap) break;
+      if (!workers.has(id)) dispatch(ctx, workers, id);
+    }
+  }
+
+  if (workers.size === 0) {
+    // No work in flight and nothing dispatched: either the graph is blocked
+    // or state is wedged. Never report done over live blocked tickets.
+    if (f.complete) return true;
+    if (control.paused) { await idle(); return false; } // operator pause, not a stall
+    await triage({ kind: 'stalled', frontier: f });
+    const f2 = frontier();
+    const canProgress = f2.dispatchable.length || f2.phasesDrained.some(p => !phaseClosed(p))
+      || backlog().tickets.some(t => t.status === 'draft') || f2.complete;
+    if (!canProgress) escalate('stalled: no dispatchable work and triage freed none', f2);
+    return false;
+  }
+
+  const done = await Promise.race([...workers.values()].map(w => w.promise));
+  const meta = workers.get(done.id)!;
+  workers.delete(done.id);
+  const closed = await settle(ctx, done, meta);
+  if (closed) state.closesSinceReview++;
+  if (state.closesSinceReview >= REVIEW_EVERY) {
+    await runReview(ctx);
+    state.closesSinceReview = 0;
+  }
+  return false;
+}
+
 // --- dispatch -------------------------------------------------------------
 
-function dispatch(ctx, workers, id) {
+function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   const t = ticket(id);
   const { dir, branch, baseSha } = createWorktree(id);
   backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch}`,
@@ -117,7 +160,7 @@ function dispatch(ctx, workers, id) {
       : '',
   });
 
-  const promise = agentRetry({
+  const promise: Promise<WorkerDone> = agentRetry<WorkerVerdict>({
     prompt,
     model: t.model || 'opus',
     schema: WORKER,
@@ -125,7 +168,7 @@ function dispatch(ctx, workers, id) {
     bypassPermissions: true,
     timeoutMs: WORKER_TIMEOUT_MS,
     label: `worker:${id}`,
-  }).then(res => ({ id, res }), err => ({ id, err }));
+  }).then(res => ({ id, res }), (err: AgentError) => ({ id, err }));
 
   workers.set(id, { promise, dir, branch, baseSha });
   tui.log(`⇢ dispatched ${id} (${t.model || 'opus'}): ${t.title}`);
@@ -133,7 +176,7 @@ function dispatch(ctx, workers, id) {
 
 // --- settle: verify → gaming → judge → apply -------------------------------
 
-async function settle(ctx, done, meta) {
+async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta): Promise<boolean> {
   const { id } = done;
 
   if (done.err) {
@@ -149,7 +192,7 @@ async function settle(ctx, done, meta) {
   }
 
   const reply = done.res.output ?? {};
-  const telemetry = { workerTokens: done.res.tokens, workerSeconds: done.res.seconds, workerCostUsd: done.res.costUsd };
+  const telemetry: Telemetry = { workerTokens: done.res.tokens, workerSeconds: done.res.seconds, workerCostUsd: done.res.costUsd };
 
   if (reply.tooBig) {
     const children = renumber((reply.proposedTickets ?? []).map(c => ({
@@ -177,16 +220,16 @@ async function settle(ctx, done, meta) {
 
 // The three layers, then the verdict loop. Also the resume path for a
 // surviving branch whose worker session is gone.
-export async function judgeReturn(ctx, id, meta, workerSummary, telemetry) {
+export async function judgeReturn(ctx: CampaignContext, id: string, meta: { dir: string; baseSha: string }, workerSummary: string, telemetry: Telemetry): Promise<boolean> {
   tui.log(`verifying ${id}…`);
   let v = await verify({ id, dir: meta.dir, base: meta.baseSha });
-  let gaming = { flags: [] };
+  let gaming: GamingVerdict = { flags: [] };
   if (v.pass) gaming = await gamingCheck(id, v.diff);
 
-  let probeResult = null;
+  let probeResult: FlakeVerdict | null = null;
   for (let round = 0; round < 4; round++) {
     const t = ticket(id);
-    const verdict = (await agentRetry({
+    const verdict = (await agentRetry<JudgeVerdict>({
       prompt: renderPrompt('judge', {
         ticket: t,
         workerSummary,
@@ -220,7 +263,7 @@ export async function judgeReturn(ctx, id, meta, workerSummary, telemetry) {
       case 'flake-probe': {
         if (probeResult) { escalate(`judge asked for a second flake probe on ${id}`, verdict); }
         tui.log(`flake probe on ${id}: ${verdict.probeCmd}`);
-        probeResult = await flakeProbe({ cmd: verdict.probeCmd, dir: meta.dir });
+        probeResult = await flakeProbe({ cmd: verdict.probeCmd!, dir: meta.dir, id });
         backlogWrite(['note', '--kind', 'flake-probe', '--subject', id,
           '--body', `${verdict.probeCmd} → ${probeResult.verdict}`]);
         continue; // re-judge with the probe facts
@@ -243,15 +286,15 @@ export async function judgeReturn(ctx, id, meta, workerSummary, telemetry) {
   escalate(`judge(${id}) did not converge after 4 rounds`);
 }
 
-function riskAppendix(id) {
+function riskAppendix(id: string): string {
   const risks = acceptedRisks(journalEntries(), id);
   return risks.length ? `\n\n## Accepted risks on this ticket (from the critic)\n\n- ${risks.join('\n- ')}\n` : '';
 }
 
-async function gamingCheck(id, diffPath) {
+async function gamingCheck(id: string, diffPath: string): Promise<GamingVerdict> {
   const b = backlog();
   const learnings = readLearnings();
-  return (await agentRetry({
+  return (await agentRetry<GamingVerdict>({
     prompt: renderPrompt('gaming', {
       ticket: ticket(id),
       outOfScope: b.outOfScope ?? [],
@@ -267,7 +310,7 @@ async function gamingCheck(id, diffPath) {
   })).output;
 }
 
-function recordAttempt(id, v, verdict, telemetry) {
+function recordAttempt(id: string, v: VerifyVerdict, verdict: JudgeVerdict, telemetry: Telemetry): void {
   const failing = verdict.failing?.length ? verdict.failing : (v.failing.length ? v.failing : ['judge-rejected']);
   backlogWrite(['attempt', id,
     '--failed', failing.join(','),
@@ -278,15 +321,21 @@ function recordAttempt(id, v, verdict, telemetry) {
 
 // Check amendments ride backlog-write's legal transitions:
 // in-flight → vetted → (update demotes) draft → vet → vetted.
-function amendChecks(id, checks, note) {
+function amendChecks(id: string, checks: Check[] | undefined, note: string): void {
   backlogWrite(['set-status', id, 'vetted', '--note', 'check amendment']);
   backlogWrite(['update', id, '-', '--note', note], { acceptanceChecks: checks });
   backlogWrite(['vet', id, '--note', 'check amendment — prior critic vet carries over']);
 }
 
-async function closeTicket(id, meta, v, verdict, telemetry, workerSummary) {
+async function closeTicket(id: string, meta: { dir: string; baseSha: string }, v: VerifyVerdict, verdict: JudgeVerdict, telemetry: Telemetry, workerSummary: string): Promise<boolean> {
   const shaBeforeMerge = mainSha();
-  const merged = mergeBranch(id);
+  let merged = mergeBranch(id);
+  if (!merged.ok && merged.dirty) {
+    // A dirty mainline blocks every merge identically — repairing it keeps a
+    // judged-close branch that the failed-attempt path below would burn.
+    await triage({ kind: 'dirty-mainline', ticketId: id, conflict: merged.conflict });
+    merged = mergeBranch(id);
+  }
   if (!merged.ok) {
     // Reject rather than accept-and-revert: a conflicted merge is a failed
     // attempt, and a fresh dispatch starts from the moved mainline.
@@ -318,29 +367,29 @@ async function closeTicket(id, meta, v, verdict, telemetry, workerSummary) {
   return true;
 }
 
-async function runFastChecks() {
-  const red = [];
+async function runFastChecks(): Promise<string[]> {
+  const red: string[] = [];
   for (const c of backlog().fastChecks ?? []) {
-    if ((await shAsync(c.cmd)).status !== 0) red.push(c.name);
+    if ((await shAsync(c.cmd, '.', { label: `fastcheck:${c.name}` })).status !== 0) red.push(c.name);
   }
   return red;
 }
 
 // --- phase close ------------------------------------------------------------
 
-function phaseClosed(phaseId) {
+function phaseClosed(phaseId: string): boolean {
   return journalEntries().some(j => j.kind === 'phase-close' && j.subject === phaseId);
 }
 
-async function closePhase(ctx, phaseId) {
+async function closePhase(ctx: CampaignContext, phaseId: string): Promise<void> {
   const b = backlog();
-  const phase = b.phases.find(p => p.id === phaseId);
+  const phase = b.phases.find(p => p.id === phaseId)!;
   const closed = b.tickets.filter(t => t.phase === phaseId && t.status === 'closed');
 
-  const results = [];
+  const results: { name: string; ok: boolean; tail: string }[] = [];
   for (const g of phase.gate ?? []) {
     tui.log(`phase ${phaseId} gate: ${g.name}…`);
-    const r = await shAsync(g.cmd);
+    const r = await shAsync(g.cmd, '.', { label: `gate:${phaseId}:${g.name}` });
     results.push({ name: g.name, ok: r.status === 0, tail: (r.stdout + r.stderr).slice(-1500) });
   }
   const red = results.filter(r => !r.ok);
@@ -359,7 +408,7 @@ async function closePhase(ctx, phaseId) {
     return;
   }
 
-  const re = (await agentRetry({
+  const re = (await agentRetry<ReintegrateVerdict>({
     prompt: renderPrompt('reintegrate', {
       phase,
       specSection: ctx.spec,
@@ -390,13 +439,13 @@ async function closePhase(ctx, phaseId) {
 
 // --- reviewer: the scheduled substitute for ambient attention ---------------
 
-async function runReview(ctx) {
+async function runReview(ctx: CampaignContext): Promise<void> {
   const entries = journalEntries();
   const lastReview = [...entries].reverse().find(j => j.kind === 'review');
-  const since = entries.filter(j => j.seq > (lastReview?.seq ?? 0));
+  const since = entries.filter(j => (j.seq ?? 0) > (lastReview?.seq ?? 0));
   if (since.length < 3) return;
 
-  const res = (await agentRetry({
+  const res = (await agentRetry<ReviewerVerdict>({
     prompt: renderPrompt('reviewer', {
       outOfScope: backlog().outOfScope ?? [],
       backlogSummary: backlogSummary(),
@@ -413,8 +462,8 @@ async function runReview(ctx) {
     try {
       if (p.type === 'note') backlogWrite(['note', '--kind', p.kind ?? 'review-note', '--subject', p.subject ?? 'campaign', '--body', p.body ?? '']);
       if (p.type === 'ticket' && p.ticket) backlogWrite(['add', '-'], renumber([p.ticket]));
-      if (p.type === 'sharpen') backlogWrite(['update', p.ticketId, '-', '--note', p.note ?? 'reviewer'], p.patch ?? {});
-    } catch (e) {
+      if (p.type === 'sharpen') backlogWrite(['update', p.ticketId!, '-', '--note', p.note ?? 'reviewer'], p.patch ?? {});
+    } catch (e: any) {
       backlogWrite(['note', '--kind', 'review-refused', '--subject', p.ticketId ?? p.type, '--body', e.message]);
     }
   }
@@ -423,7 +472,7 @@ async function runReview(ctx) {
 
 // --- resume: stale in-flight reconciliation ---------------------------------
 
-async function reconcileStale(ctx, workers) {
+async function reconcileStale(ctx: CampaignContext, workers: Workers): Promise<void> {
   const stale = backlog().tickets.filter(t => t.status === 'in-flight' && !workers.has(t.id));
   for (const t of stale) {
     const dispatchEntry = [...journalEntries()].reverse()

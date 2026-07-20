@@ -10,17 +10,19 @@
 
 import fs from 'node:fs';
 
+export type Liveness = { idleForMs: number };
+
 const SWEEP_MS = 3000;
 const linux = fs.existsSync('/proc/self/stat');
 
 let lastSweepAt = 0;
-const subtreeJiffies = new Map(); // pid -> last summed subtree jiffies
-const lastActiveAt = new Map();   // pid -> ts of last observed cpu movement
+const subtreeJiffies = new Map<number, number>(); // pid -> last summed subtree jiffies
+const lastActiveAt = new Map<number, number>();   // pid -> ts of last observed cpu movement
 
 // pids -> Map(pid -> { idleForMs }). Throttled: at most one /proc sweep per
 // SWEEP_MS regardless of render cadence.
-export function liveness(pids) {
-  const out = new Map();
+export function liveness(pids: number[]): Map<number, Liveness> {
+  const out = new Map<number, Liveness>();
   if (!linux || !pids.length) return out;
   const now = Date.now();
   if (now - lastSweepAt >= SWEEP_MS) { sweep(pids, now); lastSweepAt = now; }
@@ -31,20 +33,20 @@ export function liveness(pids) {
   return out;
 }
 
-function sweep(pids, now) {
-  const byParent = new Map(); // ppid -> child pids
-  const own = new Map();      // pid -> own utime+stime
+function sweep(pids: number[], now: number): void {
+  const byParent = new Map<number, number[]>(); // ppid -> child pids
+  const own = new Map<number, number>();        // pid -> own utime+stime
   for (const entry of fs.readdirSync('/proc')) {
     if (!/^\d+$/.test(entry)) continue;
-    let stat;
+    let stat: string;
     try { stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8'); } catch { continue; } // raced an exit
     const m = stat.match(/^\d+ \(.*\) (.+)$/s); // comm is parenthesized and may contain spaces
     if (!m) continue;
-    const f = m[1].split(' '); // f[1]=ppid, f[11]=utime, f[12]=stime
+    const f = m[1]!.split(' '); // f[1]=ppid, f[11]=utime, f[12]=stime
     const pid = Number(entry), ppid = Number(f[1]);
     own.set(pid, Number(f[11]) + Number(f[12]));
     if (!byParent.has(ppid)) byParent.set(ppid, []);
-    byParent.get(ppid).push(pid);
+    byParent.get(ppid)!.push(pid);
   }
 
   const keep = new Set(pids);
@@ -56,7 +58,7 @@ function sweep(pids, now) {
     let total = 0;
     const stack = [pid];
     while (stack.length) {
-      const p = stack.pop();
+      const p = stack.pop()!;
       total += own.get(p) ?? 0;
       for (const c of byParent.get(p) ?? []) stack.push(c);
     }

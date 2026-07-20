@@ -4,16 +4,20 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { RUN, LEARNINGS, WORKTREES, backlog, backlogWrite, journalEntries, sh } from './run.mjs';
-import { agentRetry, renderPrompt } from './agent.mjs';
-import { COVERAGE, HARVEST } from './schemas.mjs';
-import { renumber } from './triage.mjs';
-import { escalate } from './escalate.mjs';
-import * as tui from './tui.mjs';
+import { backlog, backlogWrite } from './backlog.ts';
+import { journalEntries } from './journal.ts';
+import { RUN, LEARNINGS, WORKTREES, sh } from './state.ts';
+import type { CampaignContext } from './state.ts';
+import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { COVERAGE, HARVEST } from '../agent/schemas.ts';
+import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
+import { renumber } from './triage.ts';
+import { escalate } from './escalate.ts';
+import * as tui from '../tui/tui.ts';
 
 // Returns { resume: true } when coverage found unmapped requirements —
 // the drive picks the new tickets up and the campaign continues.
-export async function retrospective(ctx) {
+export async function retrospective(ctx: CampaignContext): Promise<{ resume: boolean }> {
   const b = backlog();
   const phaseCloses = journalEntries().filter(j => j.kind === 'phase-close');
   const unGated = b.phases.filter(p => !phaseCloses.some(j => j.subject === p.id));
@@ -21,7 +25,7 @@ export async function retrospective(ctx) {
 
   tui.log('retrospective: coverage pass…');
   const closed = b.tickets.filter(t => t.status === 'closed');
-  const cov = (await agentRetry({
+  const cov = (await agentRetry<CoverageVerdict>({
     prompt: renderPrompt('coverage', {
       spec: ctx.spec,
       tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, evidence: t.evidence })),
@@ -43,12 +47,12 @@ export async function retrospective(ctx) {
   }
 
   tui.log('retrospective: harvest…');
-  const prose = {};
+  const prose: Record<string, string> = {};
   for (const f of ['sizing.md', 'gaming.md', 'landmines.md']) {
     const p = path.join(LEARNINGS, f);
     prose[f] = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '(empty — first campaign)';
   }
-  const h = (await agentRetry({
+  const h = (await agentRetry<HarvestVerdict>({
     prompt: renderPrompt('harvest', {
       campaign: b.project,
       proseFacets: prose,
@@ -70,10 +74,10 @@ export async function retrospective(ctx) {
   fs.writeFileSync(path.join(LEARNINGS, 'gaming.md'), h.gamingMd);
   fs.writeFileSync(path.join(LEARNINGS, 'landmines.md'), h.landminesMd);
 
-  // Post-mortem BEFORE run/ deletion — the HTML is the journal's survival.
+  // Post-mortem BEFORE campaign/ deletion — the HTML is the journal's survival.
   const postmortem = ctx.specPath.replace(/\.md$/, '') + '.postmortem.html';
   const pm = sh(`node ${path.join(RUN, 'postmortem.mjs')} --out ${postmortem}`);
-  if (pm.status !== 0) escalate(`postmortem.mjs failed — refusing to delete run/ without the archive: ${pm.stderr}`);
+  if (pm.status !== 0) escalate(`postmortem.mjs failed — refusing to delete campaign/ without the archive: ${pm.stderr}`);
 
   flipSpecDone(ctx.specPath);
   backlogWrite(['note', '--kind', 'campaign-close', '--subject', 'campaign', '--body', 'complete; all gates green']);
@@ -89,7 +93,7 @@ export async function retrospective(ctx) {
   return { resume: false };
 }
 
-function flipSpecDone(specPath) {
+function flipSpecDone(specPath: string): void {
   const text = fs.readFileSync(specPath, 'utf8');
   if (!text.startsWith('---')) return; // no frontmatter — nothing to flip
   const updated = text.replace(/^(---[\s\S]*?)status:\s*\S+([\s\S]*?---)/, '$1status: done$2');

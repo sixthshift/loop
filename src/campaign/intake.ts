@@ -1,22 +1,24 @@
-// Stage 1 — intake. Only runs when .ailoop/run/ is absent. The refuse-to-
+// Stage 1 — intake. Only runs when .ailoop/campaign/ is absent. The refuse-to-
 // start gate is the ONLY permitted human interruption in a healthy run —
 // spend it here, never mid-drive.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { RUN, TEMPLATES, backlogWrite, specSha, readLearnings } from './run.mjs';
-import { agentRetry, renderPrompt } from './agent.mjs';
-import { SEED, DECOMPOSE } from './schemas.mjs';
-import { escalate } from './escalate.mjs';
-import * as tui from './tui.mjs';
+import { backlogWrite } from './backlog.ts';
+import { RUN, TEMPLATES, specSha, readLearnings } from './state.ts';
+import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { SEED, DECOMPOSE } from '../agent/schemas.ts';
+import type { SeedVerdict, DecomposeVerdict } from '../agent/schemas.ts';
+import { escalate } from './escalate.ts';
+import * as tui from '../tui/tui.ts';
 
-export async function intake(specPath) {
+export async function intake(specPath: string): Promise<void> {
   const spec = fs.readFileSync(specPath, 'utf8');
   const sha = specSha(specPath);
   const learnings = readLearnings();
 
   tui.log('intake: gate + toolchain detection…');
-  const seed = (await agentRetry({
+  const seed = (await agentRetry<SeedVerdict>({
     prompt: renderPrompt('seed', {
       spec, specPath,
       learnings: learnings?.['checks.json']
@@ -38,7 +40,7 @@ export async function intake(specPath) {
   }
 
   // State exists only past the gate — a refused intake leaves no residue.
-  // Templates land first: backlog-write.mjs must exist in run/ before init
+  // Templates land first: backlog-write.mjs must exist in campaign/ before init
   // can be a command against it.
   const project = path.basename(specPath).replace(/\.[^.]+$/, '');
   fs.mkdirSync(RUN, { recursive: true });
@@ -57,7 +59,7 @@ export async function intake(specPath) {
   tui.log('intake: decomposing spec into tickets…');
   let feedback = '';
   for (let attempt = 0; ; attempt++) {
-    const res = (await agentRetry({
+    const res = (await agentRetry<DecomposeVerdict>({
       prompt: renderPrompt('decompose', {
         spec,
         phaseIds: seed.phases.map(p => p.id).join(', '),
@@ -83,15 +85,15 @@ export async function intake(specPath) {
         '--body', `${res.tickets.length} draft ticket(s). ${preflight}${seed.notes ? ` — ${seed.notes}` : ''}`]);
       tui.log(`intake complete: ${res.tickets.length} draft ticket(s)`);
       return;
-    } catch (e) {
+    } catch (e: any) {
       if (attempt >= 2) escalate(`intake: decomposition refused twice by backlog-write`, e.message);
       feedback = `## Your previous ticket set was REFUSED by validation — fix and resend the full set\n\n${e.message}`;
     }
   }
 }
 
-function ensureGitignore() {
-  const lines = ['.ailoop/run/', '.ailoop/worktrees/'];
+function ensureGitignore(): void {
+  const lines = ['.ailoop/campaign/', '.ailoop/worktrees/'];
   const existing = fs.existsSync('.gitignore') ? fs.readFileSync('.gitignore', 'utf8') : '';
   const missing = lines.filter(l => !existing.split('\n').includes(l));
   if (missing.length) fs.appendFileSync('.gitignore', (existing.endsWith('\n') || !existing ? '' : '\n') + missing.join('\n') + '\n');

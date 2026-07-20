@@ -4,12 +4,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { sh, WORKTREES } from './run.mjs';
+import { sh, WORKTREES } from './state.ts';
 
-const branchOf = id => `ailoop/${id}`;
-const dirOf = id => path.join(WORKTREES, id);
+export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
 
-export function createWorktree(id) {
+const branchOf = (id: string) => `ailoop/${id}`;
+const dirOf = (id: string) => path.join(WORKTREES, id);
+
+export function createWorktree(id: string): { dir: string; branch: string; baseSha: string } {
   fs.mkdirSync(WORKTREES, { recursive: true });
   removeWorktree(id); // a stale worktree from a dead run must not block re-dispatch
   const dir = dirOf(id);
@@ -21,7 +23,7 @@ export function createWorktree(id) {
   return { dir, branch, baseSha };
 }
 
-export function attachWorktree(id) { // resume: rebuild a worktree from a surviving branch
+export function attachWorktree(id: string): { dir: string; branch: string } | null { // resume: rebuild a worktree from a surviving branch
   const branch = branchOf(id);
   if (sh(`git rev-parse --verify ${branch}`).status !== 0) return null;
   fs.mkdirSync(WORKTREES, { recursive: true });
@@ -32,23 +34,27 @@ export function attachWorktree(id) { // resume: rebuild a worktree from a surviv
   return { dir, branch };
 }
 
-export function removeWorktree(id) {
+export function removeWorktree(id: string): void {
   sh(`git worktree remove --force ${dirOf(id)}`);
   sh('git worktree prune');
 }
 
-export function deleteBranch(id) {
+export function deleteBranch(id: string): void {
   sh(`git branch -D ${branchOf(id)}`);
 }
 
-export function mergeBranch(id) {
+export function mergeBranch(id: string): MergeResult {
   const branch = branchOf(id);
   const r = sh(`git merge --no-ff --no-edit -m "loop: merge ${id}" ${branch}`);
   if (r.status === 0) return { ok: true };
   sh('git merge --abort');
-  return { ok: false, conflict: (r.stdout + r.stderr).slice(-2000) };
+  const out = r.stdout + r.stderr;
+  // "would be overwritten" is git refusing over a dirty mainline checkout —
+  // an environment fault, distinct from a real divergence: rebuilding the
+  // ticket against HEAD can't fix it, only cleaning the tree can.
+  return { ok: false, dirty: /would be overwritten/.test(out), conflict: out.slice(-2000) };
 }
 
-export function mainSha() {
+export function mainSha(): string {
   return sh('git rev-parse HEAD').stdout.trim();
 }

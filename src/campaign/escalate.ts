@@ -1,16 +1,18 @@
 // Escalation: the loop's honest exit. An escalation closes nothing —
-// .ailoop/run/ stays put and the campaign resumes where it stopped.
+// .ailoop/campaign/ stays put and the campaign resumes where it stopped.
 
-import { backlogWrite, campaignExists } from './run.mjs';
+import { backlogWrite } from './backlog.ts';
+import { campaignExists } from './index.ts';
 
 export class Escalation extends Error {
-  constructor(reason, detail) {
+  detail: unknown;
+  constructor(reason: string, detail?: unknown) {
     super(reason);
     this.detail = detail;
   }
 }
 
-export function escalate(reason, detail) {
+export function escalate(reason: string, detail?: unknown): never {
   // The journal entry is bookkeeping around the escalation, not the
   // escalation itself — it must never mask the throw.
   if (campaignExists()) {
