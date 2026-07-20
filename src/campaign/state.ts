@@ -8,25 +8,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import * as tui from '../tui/tui.ts';
 
 export type ShResult = { status: number | null; stdout: string; stderr: string };
 
-// frontier.mjs's verdict — the fields the drive branches on.
+// The frontier gate's verdict — the derived facts the drive branches on,
+// computed natively in frontier.ts. The type is the whole contract.
 export type Frontier = {
+  problems: { ticket: string; issue: string }[];
+  cycles: string[][];
+  ready: string[];
   dispatchable: string[];
+  capped: { ticket: string; attempts: number }[];
+  stuck: { ticket: string; window: number }[];
+  phasesDone: string[];
+  inFlight: string[];
   complete: boolean;
-  problems: unknown[];
-  cycles: unknown[];
-  capBreaches: { ticket: string }[];
-  thrashBreaches: { ticket: string }[];
-  phasesDrained: string[];
+  counts: Record<string, number>;
 };
 
-// verify.mjs's verdict shapes: a ticket measurement and a flake probe.
-export type VerifyVerdict = { pass: boolean; failing: string[]; evidence: string; diff: string };
-export type FlakeVerdict = { verdict: string };
 
 // The identity a campaign runs under, established at intake and re-checked
 // (by spec sha) on every resume.
@@ -35,10 +35,6 @@ export type CampaignContext = { specPath: string; spec: string };
 export const RUN = '.ailoop/campaign';
 export const LEARNINGS = '.ailoop/learnings';
 export const WORKTREES = '.ailoop/worktrees';
-// The skill's templates are the shared substrate — one source of truth for
-// the mechanical scripts, two coordinators (skill and this one) driving them.
-export const TEMPLATES = fileURLToPath(new URL('../../../claude/skills/ailoop/templates/', import.meta.url));
-
 export function sh(cmd: string, cwd = '.'): ShResult {
   return spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
@@ -79,32 +75,6 @@ export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId
   });
 }
 
-export function frontier(): Frontier {
-  const r = sh(`node ${path.join(RUN, 'frontier.mjs')}`);
-  if (r.status !== 0) throw new Error(`frontier.mjs failed: ${r.stderr}`);
-  return JSON.parse(r.stdout);
-}
-
-export async function verify({ id, dir, base }: { id: string; dir: string; base: string }): Promise<VerifyVerdict> {
-  const r = await shAsync(`node ${path.join(process.cwd(), RUN, 'verify.mjs')} --ticket ${id} --dir ${dir} --base ${base} --run ${path.join(process.cwd(), RUN)}`,
-    '.', { label: `verify:${id}`, ticketId: id });
-  return parseVerdict(r, `verify ${id}`);
-}
-
-export async function flakeProbe({ cmd, dir, repeat = 5, id }: { cmd: string; dir: string; repeat?: number; id?: string }): Promise<FlakeVerdict> {
-  const quoted = cmd.replace(/'/g, `'\\''`);
-  const r = await shAsync(`node ${path.join(process.cwd(), RUN, 'verify.mjs')} --cmd '${quoted}' --repeat ${repeat} --dir ${dir} --run ${path.join(process.cwd(), RUN)}`,
-    '.', { label: id ? `flake:${id}` : 'flake', ticketId: id });
-  return parseVerdict(r, 'flake probe');
-}
-
-// verify.mjs prints a JSON verdict on both pass and fail; anything else
-// (usage error, timeout kill) is a measurement failure — name it, don't
-// let a bare JSON.parse crash carry the diagnosis.
-function parseVerdict<T>(r: ShResult, what: string): T {
-  try { return JSON.parse(r.stdout); }
-  catch { throw new Error(`${what}: verify.mjs returned no verdict (status ${r.status}): ${(r.stderr || r.stdout).slice(-500)}`); }
-}
 
 // Single-coordinator lock. backlog-write.mjs validates transitions but has
 // no lock — two coordinators interleaving writes on one campaign is silent

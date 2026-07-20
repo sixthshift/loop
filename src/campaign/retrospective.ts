@@ -12,6 +12,8 @@ import { agentRetry, renderPrompt } from '../agent/agent.ts';
 import { COVERAGE, HARVEST } from '../agent/schemas.ts';
 import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
 import { renumber } from './triage.ts';
+import { mergeLearnings } from './learn.ts';
+import { writePostmortem } from './postmortem.ts';
 import { escalate } from './escalate.ts';
 import * as tui from '../tui/tui.ts';
 
@@ -68,16 +70,16 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   fs.mkdirSync(LEARNINGS, { recursive: true });
   const harvestFile = path.join(RUN, 'harvest.json');
   fs.writeFileSync(harvestFile, JSON.stringify({ checks: h.checks, flakes: h.flakes }, null, 2));
-  const merge = sh(`node ${path.join(RUN, 'learn.mjs')} merge --in ${harvestFile} --campaign ${b.project}`);
-  if (merge.status !== 0) console.error(`learn.mjs merge failed (non-fatal): ${merge.stderr}`);
+  try { mergeLearnings({ harvest: { checks: h.checks, flakes: h.flakes }, campaign: b.project }); }
+  catch (e: any) { console.error(`learnings merge failed (non-fatal): ${e.message}`); }
   fs.writeFileSync(path.join(LEARNINGS, 'sizing.md'), h.sizingMd);
   fs.writeFileSync(path.join(LEARNINGS, 'gaming.md'), h.gamingMd);
   fs.writeFileSync(path.join(LEARNINGS, 'landmines.md'), h.landminesMd);
 
   // Post-mortem BEFORE campaign/ deletion — the HTML is the journal's survival.
   const postmortem = ctx.specPath.replace(/\.md$/, '') + '.postmortem.html';
-  const pm = sh(`node ${path.join(RUN, 'postmortem.mjs')} --out ${postmortem}`);
-  if (pm.status !== 0) escalate(`postmortem.mjs failed — refusing to delete campaign/ without the archive: ${pm.stderr}`);
+  try { writePostmortem(postmortem); }
+  catch (e: any) { escalate(`post-mortem render failed — refusing to delete campaign/ without the archive: ${e.message}`); }
 
   flipSpecDone(ctx.specPath);
   backlogWrite(['note', '--kind', 'campaign-close', '--subject', 'campaign', '--body', 'complete; all gates green']);

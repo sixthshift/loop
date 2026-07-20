@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { backlogWrite } from './backlog.ts';
-import { RUN, TEMPLATES, specSha, readLearnings } from './state.ts';
+import { RUN, specSha, readLearnings } from './state.ts';
 import { agentRetry, renderPrompt } from '../agent/agent.ts';
 import { SEED, DECOMPOSE } from '../agent/schemas.ts';
 import type { SeedVerdict, DecomposeVerdict } from '../agent/schemas.ts';
@@ -40,13 +40,8 @@ export async function intake(specPath: string): Promise<void> {
   }
 
   // State exists only past the gate — a refused intake leaves no residue.
-  // Templates land first: backlog-write.mjs must exist in campaign/ before init
-  // can be a command against it.
   const project = path.basename(specPath).replace(/\.[^.]+$/, '');
   fs.mkdirSync(RUN, { recursive: true });
-  for (const f of fs.readdirSync(TEMPLATES).filter(f => f.endsWith('.mjs'))) {
-    fs.copyFileSync(path.join(TEMPLATES, f), path.join(RUN, f));
-  }
   backlogWrite(['init', '--project', project]);
   ensureGitignore();
   backlogWrite(['seed', '-'], { fastChecks: seed.fastChecks, phases: seed.phases, outOfScope: seed.outOfScope });

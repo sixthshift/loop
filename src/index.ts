@@ -4,13 +4,15 @@
 // This file is only the CLI shell — verb wiring and arg parsing; the
 // coordinator itself lives in campaign/.
 //
-// Same state protocol as the ailoop skill (.ailoop/campaign/, the six template
-// scripts): either coordinator can resume the other's campaign.
+// Shares the .ailoop/campaign/ state layout with the ailoop skill, but every
+// mechanical step is native TS now (src/campaign/), not the copied-in scripts.
+// The loop no longer provisions those scripts into the campaign dir, so a
+// campaign this coordinator starts is not one the skill can resume, and vice
+// versa — each coordinator drives its own campaigns end to end.
 
-import path from 'node:path';
 import { program } from 'commander';
-import { RUN, sh } from './campaign/state.ts';
 import { runCampaign } from './campaign/index.ts';
+import { renderProgress } from './campaign/progress.ts';
 
 program
   .name('loop')
@@ -29,11 +31,7 @@ program
 
 program
   .command('status')
-  .description('render the live backlog tree')
-  .action(() => {
-    const r = sh(`node ${path.join(RUN, 'progress.mjs')}`);
-    process.stdout.write(r.stdout + r.stderr);
-    process.exit(r.status ?? 0);
-  });
+  .description('render the backlog tree')
+  .action(() => { console.log(renderProgress()); });
 
 await program.parseAsync();

@@ -1,12 +1,15 @@
 // Stage 2 — the drive. Deterministic spine, delegated judgment: the loop
-// asks frontier.mjs what is true, scripts what has one right answer, and
+// asks the frontier what is true, scripts what has one right answer, and
 // spawns a fresh-context agent for every verdict. The coordinator itself
 // never judges a diff — context-poisoning is structural, not a discipline.
 
 import { backlog, backlogWrite, ticket } from './backlog.ts';
 import { journalEntries, journalTail } from './journal.ts';
-import { frontier, verify, flakeProbe, sh, shAsync, readLearnings } from './state.ts';
-import type { CampaignContext, Frontier, VerifyVerdict, FlakeVerdict } from './state.ts';
+import { shAsync, readLearnings } from './state.ts';
+import type { CampaignContext } from './state.ts';
+import { frontier } from './frontier.ts';
+import { verify, flakeProbe } from './verify.ts';
+import type { VerifyVerdict, FlakeVerdict } from './verify.ts';
 import { agentRetry, renderPrompt, AgentError } from '../agent/agent.ts';
 import type { AgentResult } from '../agent/agent.ts';
 import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from '../agent/schemas.ts';
@@ -28,24 +31,100 @@ type WorkerDone =
   | { id: string; err: AgentError; res?: undefined };
 type WorkerMeta = { promise: Promise<WorkerDone>; dir: string; branch: string; baseSha: string };
 type Workers = Map<string, WorkerMeta>;
-type DriveState = { closesSinceReview: number };
 type Telemetry = { workerTokens: number; workerSeconds: number; workerCostUsd: number };
 
+// Two predicates the ladder leans on more than once; every other rung reads
+// its fact inline off the destructured frontier below.
+const hasDrafts = () => backlog().tickets.some(t => t.status === 'draft');
+const isIdle = (workers: Workers) => workers.size === 0;
+
+// Stage 2 — the drive. One event loop: each pass reads the frontier once into
+// named locals, walks the priority ladder those locals feed, takes one action,
+// and loops. The two rungs that change state mid-pass (frontier repair, draft
+// vetting) re-read the frontier before the rungs below them run.
+// reconcileStale runs once on resume, before the first pass — surviving
+// in-flight work is judged like any other result.
+//
+// The whole body sits inside the crash membrane — the universal else, error
+// edition. An unenumerated throw anywhere in a pass is an anomaly like any
+// other: journal it, hand it to a fresh triage agent, keep driving. The same
+// error twice is a missing arm, not a flake — that escalates. Escalations pass
+// through untouched: they are the honest exit, not a crash.
 export async function drive(ctx: CampaignContext): Promise<void> {
   const workers: Workers = new Map();
-  const state: DriveState = { closesSinceReview: 0 };
+  let closesSinceReview = 0;
   let reconciled = false;
   let lastCrash: string | null = null;
 
-  // The crash membrane — the universal else, error edition. An unenumerated
-  // throw anywhere in a turn is an anomaly like any other: journal it, hand
-  // it to a fresh triage agent, keep driving. The same error twice is a
-  // missing arm, not a flake — that escalates. Escalations pass through
-  // untouched: they are the honest exit, not a crash.
   while (true) {
     try {
       if (!reconciled) { await reconcileStale(ctx, workers); reconciled = true; }
-      if (await turn(ctx, workers, state)) return;
+
+      if (control.forceReview) { // operator asked from the dashboard
+        control.forceReview = false;
+        await runReview(ctx);
+        closesSinceReview = 0;
+      }
+
+      let { problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = frontier();
+
+      if (problems.length || cycles.length) {
+        await triage({ kind: 'frontier-problems', problems, cycles });
+        const repaired = frontier();
+        ({ problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = repaired);
+        if (problems.length || cycles.length) escalate('frontier problems persist after triage', repaired);
+      }
+
+      if (capped.length || stuck.length) {
+        escalate('attempt cap / thrash wall', {
+          capped, stuck,
+          attempts: [...capped, ...stuck].map(x => ({ id: x.ticket, log: ticket(x.ticket).attempts })),
+        });
+      }
+
+      const toClose = phasesDone.filter(p => !phaseClosed(p));
+      if (toClose.length) {
+        await closePhase(ctx, toClose[0]!);
+        await runReview(ctx); // phase close is a mandatory review checkpoint
+        closesSinceReview = 0;
+        continue;
+      }
+
+      if (complete && isIdle(workers)) return; // → termination
+
+      if (hasDrafts()) {
+        await vetDrafts();
+        ({ problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = frontier());
+      }
+
+      if (!control.paused) {
+        for (const id of dispatchable) {
+          if (workers.size >= control.workerCap) break;
+          if (!workers.has(id)) dispatch(ctx, workers, id);
+        }
+      }
+
+      if (isIdle(workers)) {
+        // No work in flight and nothing dispatched: either the graph is blocked
+        // or state is wedged. Never report done over live blocked tickets.
+        if (complete) return;
+        if (control.paused) { await idle(); continue; } // operator pause, not a stall
+        await triage({ kind: 'stalled', frontier: frontier() }); // full snapshot; locals omit ready/inFlight/counts
+        const after = frontier();
+        const canProgress = after.dispatchable.length > 0 || after.phasesDone.some(p => !phaseClosed(p))
+          || hasDrafts() || after.complete;
+        if (!canProgress) escalate('stalled: no dispatchable work and triage freed none', after);
+        continue;
+      }
+
+      const done = await Promise.race([...workers.values()].map(w => w.promise));
+      const meta = workers.get(done.id)!;
+      workers.delete(done.id);
+      if (await settle(ctx, done, meta)) closesSinceReview++;
+      if (closesSinceReview >= REVIEW_EVERY) {
+        await runReview(ctx);
+        closesSinceReview = 0;
+      }
     } catch (e: any) {
       if (e instanceof Escalation) throw e;
       const sig = String(e.message ?? e).slice(0, 300);
@@ -64,77 +143,6 @@ export async function drive(ctx: CampaignContext): Promise<void> {
       }
     }
   }
-}
-
-// One turn of the decision spine. Returns true when the campaign is complete.
-async function turn(ctx: CampaignContext, workers: Workers, state: DriveState): Promise<boolean> {
-  if (control.forceReview) { // operator asked from the dashboard
-    control.forceReview = false;
-    await runReview(ctx);
-    state.closesSinceReview = 0;
-  }
-
-  let f = frontier();
-
-  if (f.problems.length || f.cycles.length) {
-    await triage({ kind: 'frontier-problems', problems: f.problems, cycles: f.cycles });
-    f = frontier();
-    if (f.problems.length || f.cycles.length) escalate('frontier problems persist after triage', f);
-  }
-
-  if (f.capBreaches.length || f.thrashBreaches.length) {
-    escalate('attempt cap / thrash wall', {
-      capBreaches: f.capBreaches,
-      thrashBreaches: f.thrashBreaches,
-      attempts: [...f.capBreaches, ...f.thrashBreaches].map(x => ({ id: x.ticket, log: ticket(x.ticket).attempts })),
-    });
-  }
-
-  const unclosed = f.phasesDrained.filter(p => !phaseClosed(p));
-  if (unclosed.length) {
-    await closePhase(ctx, unclosed[0]!);
-    await runReview(ctx); // phase close is a mandatory review checkpoint
-    state.closesSinceReview = 0;
-    return false;
-  }
-
-  if (f.complete && workers.size === 0) return true; // → termination
-
-  if (backlog().tickets.some(t => t.status === 'draft')) {
-    await vetDrafts();
-    f = frontier();
-  }
-
-  if (!control.paused) {
-    for (const id of f.dispatchable) {
-      if (workers.size >= control.workerCap) break;
-      if (!workers.has(id)) dispatch(ctx, workers, id);
-    }
-  }
-
-  if (workers.size === 0) {
-    // No work in flight and nothing dispatched: either the graph is blocked
-    // or state is wedged. Never report done over live blocked tickets.
-    if (f.complete) return true;
-    if (control.paused) { await idle(); return false; } // operator pause, not a stall
-    await triage({ kind: 'stalled', frontier: f });
-    const f2 = frontier();
-    const canProgress = f2.dispatchable.length || f2.phasesDrained.some(p => !phaseClosed(p))
-      || backlog().tickets.some(t => t.status === 'draft') || f2.complete;
-    if (!canProgress) escalate('stalled: no dispatchable work and triage freed none', f2);
-    return false;
-  }
-
-  const done = await Promise.race([...workers.values()].map(w => w.promise));
-  const meta = workers.get(done.id)!;
-  workers.delete(done.id);
-  const closed = await settle(ctx, done, meta);
-  if (closed) state.closesSinceReview++;
-  if (state.closesSinceReview >= REVIEW_EVERY) {
-    await runReview(ctx);
-    state.closesSinceReview = 0;
-  }
-  return false;
 }
 
 // --- dispatch -------------------------------------------------------------

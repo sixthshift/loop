@@ -1,6 +1,8 @@
-// journal.jsonl access — the campaign's append-only event log. Read-only here:
-// entries are appended only through backlogWrite (the sole writer), so this
-// module just parses the tail the dashboard and coordinator read back.
+// journal.jsonl access — the campaign's append-only event log. Backlog-state
+// entries are journaled by the sole writer as it mutates the backlog;
+// measurement telemetry (verify timings) appends directly through
+// appendJournal below — a fact about a run, never backlog state. Reads parse
+// the tail the dashboard and coordinator read back.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -26,4 +28,12 @@ export function journalEntries(): JournalEntry[] {
 
 export function journalTail(n = 40): JournalEntry[] {
   return journalEntries().slice(-n);
+}
+
+// Append a measurement fact. Seq is the 1-based line count; the size+mtime
+// cache above invalidates itself on the next read, so no explicit bust.
+export function appendJournal(entry: Omit<JournalEntry, 'seq' | 'ts'>): void {
+  const file = path.join(RUN, 'journal.jsonl');
+  const seq = (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0) + 1;
+  fs.appendFileSync(file, JSON.stringify({ seq, ts: new Date().toISOString(), ...entry }) + '\n');
 }
