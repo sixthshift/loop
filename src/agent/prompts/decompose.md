@@ -12,7 +12,6 @@ Every ticket must have:
 - `context`: everything a fresh worker with ZERO conversation memory needs to succeed. If you can't write it self-contained, the ticket is too big — split it.
 - `acceptance`: prose definition of done.
 - `acceptanceChecks`: runnable mirror of acceptance — `[{name, cmd}]`, exit codes decide. Prefer input→output contrast checks over artifact-existence checks — existence is the most gameable form.
-- `model`: "opus" default; opt DOWN to "sonnet" or "haiku" only for obviously mechanical work.
 
 Near-term phases get full detail; later phases may be coarser (they'll be refined during the drive).
 

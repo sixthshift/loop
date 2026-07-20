@@ -326,7 +326,7 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
         return (
           <Text key={t.id} inverse={start + i === sel}>
             {'  '}<Text color={color}>{glyph}</Text>
-            {` ${t.id}  ${t.phase.padEnd(4)} ${t.status.padEnd(11)} ${(t.model ?? 'opus').padEnd(6)} ${trunc(t.title, cols - 40)}`}
+            {` ${t.id}  ${t.phase.padEnd(4)} ${t.status.padEnd(11)} ${trunc(t.title, cols - 33)}`}
           </Text>
         );
       })}
@@ -342,7 +342,7 @@ function TicketDetailView({ rows, cols, confirm, ticket: t }: Frame & { ticket: 
     <Box flexDirection="column" width={cols}>
       <Text bold>{` ${t.id} — ${t.title}`}</Text>
       <Rule cols={cols} />
-      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text>{`   phase ${t.phase}   model ${t.model ?? 'opus'}   deps ${t.depends_on?.length ? t.depends_on.join(', ') : '(none)'}`}</Text>
+      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text>{`   phase ${t.phase}   deps ${t.depends_on?.length ? t.depends_on.join(', ') : '(none)'}`}</Text>
       <Text>{` files  ${t.files?.join(', ') || '(unscoped)'}`}</Text>
       {t.origin ? <Text dimColor>{` origin ${t.origin}`}</Text> : null}
       <Text> </Text>

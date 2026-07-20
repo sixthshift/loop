@@ -32,7 +32,7 @@ type WorkerDone =
   | { id: string; err: AgentError; res?: undefined };
 type WorkerMeta = { promise: Promise<WorkerDone>; dir: string; branch: string; baseSha: string };
 type Workers = Map<string, WorkerMeta>;
-type Telemetry = { workerTokens: number; workerSeconds: number; workerCostUsd: number };
+type Telemetry = { workerTokens: number; workerSeconds: number; workerCostUsd: number; model: string };
 
 // Two predicates the ladder leans on more than once; every other rung reads
 // its fact inline off the destructured frontier below.
@@ -169,12 +169,11 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
       : '',
   });
 
-  // A per-ticket model is the strong preference; the role chain stays behind it
-  // as fallback, so an override still degrades gracefully if its engine is down.
-  const models = t.model ? [t.model, ...MODELS.worker.filter(m => m !== t.model)] : MODELS.worker;
+  // Model selection is centralised in models.ts — every role, workers included,
+  // draws its chain from there; tickets carry no model of their own.
   const promise: Promise<WorkerDone> = agent<WorkerVerdict>({
     prompt,
-    models,
+    models: MODELS.worker,
     schema: WORKER,
     cwd: dir,
     bypassPermissions: true,
@@ -183,7 +182,7 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   }).then(res => ({ id, res }), (err: AgentError) => ({ id, err }));
 
   workers.set(id, { promise, dir, branch, baseSha });
-  tui.log(`⇢ dispatched ${id} (${models[0]}): ${t.title}`);
+  tui.log(`⇢ dispatched ${id} (${MODELS.worker[0]}): ${t.title}`);
 }
 
 // --- settle: verify → gaming → judge → apply -------------------------------
@@ -204,7 +203,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
   }
 
   const reply = done.res.output ?? {};
-  const telemetry: Telemetry = { workerTokens: done.res.tokens, workerSeconds: done.res.seconds, workerCostUsd: done.res.costUsd };
+  const telemetry: Telemetry = { workerTokens: done.res.tokens, workerSeconds: done.res.seconds, workerCostUsd: done.res.costUsd, model: done.res.model };
 
   if (reply.tooBig) {
     const children = renumber((reply.proposedTickets ?? []).map(c => ({
@@ -502,6 +501,6 @@ async function reconcileStale(ctx: CampaignContext, workers: Workers): Promise<v
     // Durable work survived the dead session — verify it like any result.
     await judgeReturn(ctx, t.id, { dir: wt.dir, baseSha: dispatchEntry.data.baseSha },
       'resumed: worker session lost, branch survived — judge on the evidence alone',
-      { workerTokens: 0, workerSeconds: 0, workerCostUsd: 0 });
+      { workerTokens: 0, workerSeconds: 0, workerCostUsd: 0, model: '' });
   }
 }

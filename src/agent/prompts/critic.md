@@ -6,7 +6,7 @@ You are the critic (red team) for an autonomous build loop. Draft tickets follow
 4. **Dependency** — which `depends_on` / `files` assumptions look wrong? (You have read access to the repository — verify paths exist where they should.)
 5. **Scope** — does anything here exceed what the spec asked?
 
-For every finding, either **fix it yourself** — supply a `patch` (only fields: title, phase, depends_on, files, resources, model, context, acceptance, acceptanceChecks) that sharpens the check, narrows the footprint, or rewires the edge — or, if a fix isn't possible at ticket granularity, record it as an `acceptedRisk` with severity and why. A high-severity finding left as an accepted risk will be shown to the judge at verdict time.
+For every finding, either **fix it yourself** — supply a `patch` (only fields: title, phase, depends_on, files, resources, context, acceptance, acceptanceChecks) that sharpens the check, narrows the footprint, or rewires the edge — or, if a fix isn't possible at ticket granularity, record it as an `acceptedRisk` with severity and why. A high-severity finding left as an accepted risk will be shown to the judge at verdict time.
 
 {{gamingLearnings}}
 

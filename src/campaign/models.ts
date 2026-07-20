@@ -17,7 +17,7 @@
 // tier both ways. Every chain carries the other engine as fallback, so a role
 // still runs when its preferred engine is down or absent.
 export const MODELS = {
-  worker: ['codex-gpt-5.6-terra', 'claude-opus'],   // per-ticket ticket.model overrides this
+  worker: ['codex-gpt-5.6-terra', 'claude-opus'],   // every worker; tickets carry no model of their own
   judge: ['claude-opus', 'codex-gpt-5.6-sol'],
   gaming: ['claude-sonnet', 'codex-gpt-5.6-terra'],
   reintegrate: ['claude-opus', 'codex-gpt-5.6-sol'],

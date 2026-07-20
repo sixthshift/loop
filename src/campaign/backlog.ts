@@ -152,7 +152,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const patchIn = readInput(pos[1]);
       if (patchIn.length !== 1) refuse('update takes a single patch object');
       const patch = patchIn[0];
-      const MUTABLE = ['title', 'phase', 'depends_on', 'files', 'resources', 'model', 'context', 'acceptance', 'acceptanceChecks'];
+      const MUTABLE = ['title', 'phase', 'depends_on', 'files', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
       const illegal = Object.keys(patch).filter(k => !MUTABLE.includes(k));
       if (illegal.length) refuse(`immutable or unknown field(s): ${illegal.join(', ')} — mutable: ${MUTABLE.join(', ')}`);
       Object.assign(t, patch);
@@ -171,7 +171,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const errs = incoming.flatMap((t: any) => validateTicket(t, ids));
       if (errs.length) refuse(errs.join('\n'));
       for (const t of incoming) {
-        b.tickets.push({ depends_on: [], resources: [], model: 'opus', redTeamed: false, attempts: [], evidence: null, ...t, status: 'draft' });
+        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, ...t, status: 'draft' });
         ids.add(t.id);
         journal('add', t.id, `${t.title} (origin: ${t.origin})`);
       }
@@ -242,7 +242,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);
       for (const c of children) {
-        b.tickets.push({ depends_on: [], resources: [], model: t.model || 'opus', redTeamed: false, attempts: [], evidence: null, phase: c.phase || t.phase, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'draft' });
+        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, phase: c.phase || t.phase, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'draft' });
         ids.add(c.id);
       }
       // rewire dependents of the parent onto ALL children (coordinator may narrow after)

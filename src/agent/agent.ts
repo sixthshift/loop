@@ -30,7 +30,7 @@ export type AgentOptions = {
   label?: string;
 };
 
-export type AgentResult<T> = { output: T; tokens: number; seconds: number; costUsd: number };
+export type AgentResult<T> = { output: T; model: string; tokens: number; seconds: number; costUsd: number };
 
 export class AgentError extends Error {
   transient: boolean;
@@ -129,6 +129,7 @@ async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResul
     : envelope.text) as T;
   return {
     output,
+    model,
     tokens: envelope.tokens,
     seconds: Math.round((Date.now() - startedAt) / 1000),
     costUsd: envelope.costUsd,

@@ -64,10 +64,15 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     .filter((t: any) => t.spans.length)
     .sort((a: any, z: any) => (a.spans[0].start < z.spans[0].start ? -1 : 1));
 
+  // The model that actually ran — recorded in worker telemetry at close/attempt
+  // (chain fallback and all), never a declared tag; tickets carry no model.
+  const runModel = (t: any): string =>
+    t.closeData?.model ?? t.spans.map((s: any) => s.data?.model).filter(Boolean).at(-1) ?? '';
+
   const estCost = (t: any) => {
     const tokens = t.closeData?.workerTokens ?? t.spans.reduce((s: number, sp: any) => s + (sp.data?.workerTokens || 0), 0);
     if (!tokens) return null;
-    return (tokens / 1e6) * priceFor(String(t.meta.model ?? ''));
+    return (tokens / 1e6) * priceFor(runModel(t));
   };
 
   const data = {
@@ -76,7 +81,7 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     wallMinutes: (t1 - t0) / 60000,
     tickets: rows.map((t: any) => ({
       id: t.id, phase: t.meta.phase || '', title: t.meta.title || '',
-      depends_on: t.meta.depends_on || [], model: t.meta.model || '',
+      depends_on: t.meta.depends_on || [], model: runModel(t),
       attempts: t.attempts, closedAt: t.closedAt || null,
       closeX: t.closedAt ? x(t.closedAt) : null,
       tokens: t.closeData?.workerTokens ?? null,
