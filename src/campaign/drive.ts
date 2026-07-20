@@ -10,8 +10,9 @@ import type { CampaignContext } from './state.ts';
 import { frontier } from './frontier.ts';
 import { verify, flakeProbe } from './verify.ts';
 import type { VerifyVerdict, FlakeVerdict } from './verify.ts';
-import { agentRetry, renderPrompt, AgentError } from '../agent/agent.ts';
+import { agent, renderPrompt, AgentError } from '../agent/agent.ts';
 import type { AgentResult } from '../agent/agent.ts';
+import { MODELS } from './models.ts';
 import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from '../agent/schemas.ts';
 import type { WorkerVerdict, GamingVerdict, JudgeVerdict, ReviewerVerdict, ReintegrateVerdict, Check } from '../agent/schemas.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
@@ -168,9 +169,12 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
       : '',
   });
 
-  const promise: Promise<WorkerDone> = agentRetry<WorkerVerdict>({
+  // A per-ticket model is the strong preference; the role chain stays behind it
+  // as fallback, so an override still degrades gracefully if its engine is down.
+  const models = t.model ? [t.model, ...MODELS.worker.filter(m => m !== t.model)] : MODELS.worker;
+  const promise: Promise<WorkerDone> = agent<WorkerVerdict>({
     prompt,
-    model: t.model || 'opus',
+    models,
     schema: WORKER,
     cwd: dir,
     bypassPermissions: true,
@@ -179,7 +183,7 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   }).then(res => ({ id, res }), (err: AgentError) => ({ id, err }));
 
   workers.set(id, { promise, dir, branch, baseSha });
-  tui.log(`⇢ dispatched ${id} (${t.model || 'opus'}): ${t.title}`);
+  tui.log(`⇢ dispatched ${id} (${models[0]}): ${t.title}`);
 }
 
 // --- settle: verify → gaming → judge → apply -------------------------------
@@ -237,7 +241,7 @@ export async function judgeReturn(ctx: CampaignContext, id: string, meta: { dir:
   let probeResult: FlakeVerdict | null = null;
   for (let round = 0; round < 4; round++) {
     const t = ticket(id);
-    const verdict = (await agentRetry<JudgeVerdict>({
+    const verdict = (await agent<JudgeVerdict>({
       prompt: renderPrompt('judge', {
         ticket: t,
         workerSummary,
@@ -246,7 +250,7 @@ export async function judgeReturn(ctx: CampaignContext, id: string, meta: { dir:
         probeResult: probeResult ?? '(none ran)',
         attempts: t.attempts?.length ? t.attempts : '(first attempt)',
       }) + riskAppendix(id),
-      model: 'opus',
+      models: MODELS.judge,
       schema: JUDGE,
       tools: 'Read,Glob,Grep',
       label: `judge:${id}`,
@@ -302,7 +306,7 @@ function riskAppendix(id: string): string {
 async function gamingCheck(id: string, diffPath: string): Promise<GamingVerdict> {
   const b = backlog();
   const learnings = readLearnings();
-  return (await agentRetry<GamingVerdict>({
+  return (await agent<GamingVerdict>({
     prompt: renderPrompt('gaming', {
       ticket: ticket(id),
       outOfScope: b.outOfScope ?? [],
@@ -311,7 +315,7 @@ async function gamingCheck(id: string, diffPath: string): Promise<GamingVerdict>
         ? `## Cheat shapes observed in past campaigns\n\n${learnings['gaming.md']}`
         : '',
     }),
-    model: 'sonnet',
+    models: MODELS.gaming,
     schema: GAMING,
     tools: 'Read',
     label: `gaming:${id}`,
@@ -416,14 +420,14 @@ async function closePhase(ctx: CampaignContext, phaseId: string): Promise<void> 
     return;
   }
 
-  const re = (await agentRetry<ReintegrateVerdict>({
+  const re = (await agent<ReintegrateVerdict>({
     prompt: renderPrompt('reintegrate', {
       phase,
       specSection: ctx.spec,
       tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, files: t.files })),
       outOfScope: b.outOfScope ?? [],
     }),
-    model: 'opus',
+    models: MODELS.reintegrate,
     schema: REINTEGRATE,
     tools: 'Read,Glob,Grep',
     label: `reintegrate:${phaseId}`,
@@ -453,13 +457,13 @@ async function runReview(ctx: CampaignContext): Promise<void> {
   const since = entries.filter(j => (j.seq ?? 0) > (lastReview?.seq ?? 0));
   if (since.length < 3) return;
 
-  const res = (await agentRetry<ReviewerVerdict>({
+  const res = (await agent<ReviewerVerdict>({
     prompt: renderPrompt('reviewer', {
       outOfScope: backlog().outOfScope ?? [],
       backlogSummary: backlogSummary(),
       journal: since.slice(-120),
     }),
-    model: 'opus',
+    models: MODELS.reviewer,
     schema: REVIEWER,
     tools: 'Read,Glob,Grep',
     label: 'reviewer',

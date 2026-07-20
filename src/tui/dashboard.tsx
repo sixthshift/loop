@@ -9,13 +9,15 @@
 import React, { useEffect, useState } from 'react';
 import { render, Box, Text, useInput, useStdout } from 'ink';
 import { store, subscribe, log, hhmm, dur } from './tui.ts';
-import type { AgentView, ScriptView } from './tui.ts';
+import type { ScriptView } from './tui.ts';
+import { fleet, subscribe as subscribeFleet, kill, killAll } from '../agent/fleet.ts';
+import type { LiveAgent } from '../agent/fleet.ts';
 import { backlog } from '../campaign/backlog.ts';
 import { campaignExists } from '../campaign/index.ts';
 import { journalTail } from '../campaign/journal.ts';
 import type { Backlog, Ticket } from '../campaign/backlog.ts';
 import type { JournalEntry } from '../campaign/journal.ts';
-import { control, killAgent, killAllAgents } from './control.ts';
+import { control } from './control.ts';
 import { liveness } from './liveness.ts';
 import type { Liveness as LivenessSample } from './liveness.ts';
 
@@ -25,7 +27,7 @@ export function mount() {
 
 // A live process the operator can inspect — a claude agent or an shAsync script.
 type Proc =
-  | { kind: 'agent'; label: string; a: AgentView }
+  | { kind: 'agent'; label: string; a: LiveAgent }
   | { kind: 'script'; label: string; s: ScriptView };
 
 type View =
@@ -59,7 +61,7 @@ const FILTERS: { name: string; test: (j: JournalEntry) => boolean }[] = [
 
 function procList(): Proc[] {
   return [
-    ...[...store.agents.entries()].map(([label, a]): Proc => ({ kind: 'agent', label, a })),
+    ...[...fleet.agents.entries()].map(([label, a]): Proc => ({ kind: 'agent', label, a })),
     ...[...store.scripts.entries()].map(([label, s]): Proc => ({ kind: 'script', label, s })),
   ];
 }
@@ -81,7 +83,7 @@ function Dashboard() {
   const tickets = ticketList(b);
 
   function quit() {
-    killAllAgents(); // stale in-flight reconciliation re-judges surviving branches on resume
+    killAll(); // stale in-flight reconciliation re-judges surviving branches on resume
     process.stdout.write('\x1b[?1049l\x1b[?25h');
     console.log('stopped by operator — campaign state intact; `loop resume` to continue.');
     process.exit(130);
@@ -89,11 +91,11 @@ function Dashboard() {
 
   // Only workers are killable; verdict agents and scripts settle on their own.
   function tryKill(label: string) {
-    if (!store.agents.has(label)) return log('only workers can be killed — scripts and verdicts settle on their own');
+    if (!fleet.agents.has(label)) return log('only workers can be killed — scripts and verdicts settle on their own');
     if (!label.startsWith('worker:')) return log('only workers can be killed — verdicts settle on their own');
     setConfirm({
       text: `kill ${label}? the attempt is journaled and the ticket redispatches fresh`,
-      onYes: () => { killAgent(label); setView(v => (v.name === 'inspect' ? { name: 'active' } : v)); },
+      onYes: () => { kill(label); setView(v => (v.name === 'inspect' ? { name: 'active' } : v)); },
     });
   }
 
@@ -268,7 +270,7 @@ function CountsLine({ b }: { b: Backlog }) {
     <Text>
       {' ' + ['draft', 'vetted', 'in-flight', 'closed', 'blocked', 'failed-wall']
         .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')}
-      {`   attempts ${attempts}   spend $${store.spend.costUsd.toFixed(2)} / ${Math.round(store.spend.tokens / 1000)}k tok / ${store.spend.calls} agents`}
+      {`   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`}
     </Text>
   );
 }
@@ -370,7 +372,7 @@ function InspectView({ rows, cols, confirm, kind, label }: Frame & { kind: 'agen
 }
 
 function AgentTailView({ rows, cols, confirm, label }: Frame & { label: string }) {
-  const a = store.agents.get(label);
+  const a = fleet.agents.get(label);
   if (!a) {
     return (
       <Box flexDirection="column" width={cols}>
@@ -508,7 +510,8 @@ function useTick() {
     const bump = () => setN(n => n + 1);
     const t = setInterval(bump, 1000);
     const unsub = subscribe(bump);
-    return () => { clearInterval(t); unsub(); };
+    const unsubFleet = subscribeFleet(bump);
+    return () => { clearInterval(t); unsub(); unsubFleet(); };
   }, []);
 }
 

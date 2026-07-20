@@ -5,7 +5,10 @@
 // the same contract pushed into the interior — adjacency keeps them in sync.
 
 export type Severity = 'low' | 'medium' | 'high';
-export type ModelName = 'opus' | 'sonnet' | 'haiku';
+// Engine-prefixed — `claude-opus`, `codex-gpt-5.6-terra`; a bare name is claude.
+// Open-ended (codex model names vary), so the engine prefix is validated at
+// spawn, not enumerated here.
+export type ModelName = string;
 export type Check = { name: string; cmd: string };
 
 export type TicketDraft = {
@@ -130,7 +133,7 @@ export const TICKET = {
     context: { type: 'string' },
     acceptance: { type: 'string' },
     acceptanceChecks: { type: 'array', items: CHECK },
-    model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'] },
+    model: { type: 'string', description: 'engine-prefixed model, e.g. claude-opus or codex-gpt-5.6-terra; a bare name defaults to claude' },
   },
   required: ['id', 'title', 'phase', 'files', 'origin', 'context', 'acceptance', 'acceptanceChecks'],
   additionalProperties: false,
@@ -146,7 +149,7 @@ const TICKET_PATCH = {
     depends_on: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
-    model: { type: 'string', enum: ['opus', 'sonnet', 'haiku'] },
+    model: { type: 'string', description: 'engine-prefixed model, e.g. claude-opus or codex-gpt-5.6-terra; a bare name defaults to claude' },
     context: { type: 'string' },
     acceptance: { type: 'string' },
     acceptanceChecks: { type: 'array', items: CHECK },

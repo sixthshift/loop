@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { backlogWrite } from './backlog.ts';
 import { RUN, specSha, readLearnings } from './state.ts';
-import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { agent, renderPrompt } from '../agent/agent.ts';
+import { MODELS } from './models.ts';
 import { SEED, DECOMPOSE } from '../agent/schemas.ts';
 import type { SeedVerdict, DecomposeVerdict } from '../agent/schemas.ts';
 import { escalate } from './escalate.ts';
@@ -18,14 +19,14 @@ export async function intake(specPath: string): Promise<void> {
   const learnings = readLearnings();
 
   tui.log('intake: gate + toolchain detection…');
-  const seed = (await agentRetry<SeedVerdict>({
+  const seed = (await agent<SeedVerdict>({
     prompt: renderPrompt('seed', {
       spec, specPath,
       learnings: learnings?.['checks.json']
         ? `## Verified toolchain commands from past campaigns (re-probe before trusting — a prior is a hypothesis)\n\n${learnings['checks.json']}`
         : '',
     }),
-    model: 'opus',
+    models: MODELS.seed,
     schema: SEED,
     tools: 'Read,Glob,Grep,Bash',
     bypassPermissions: true, // it must RUN candidate check commands to trust them
@@ -54,7 +55,7 @@ export async function intake(specPath: string): Promise<void> {
   tui.log('intake: decomposing spec into tickets…');
   let feedback = '';
   for (let attempt = 0; ; attempt++) {
-    const res = (await agentRetry<DecomposeVerdict>({
+    const res = (await agent<DecomposeVerdict>({
       prompt: renderPrompt('decompose', {
         spec,
         phaseIds: seed.phases.map(p => p.id).join(', '),
@@ -64,7 +65,7 @@ export async function intake(specPath: string): Promise<void> {
           : '',
         feedback,
       }),
-      model: 'opus',
+      models: MODELS.decompose,
       schema: DECOMPOSE,
       tools: 'Read,Glob,Grep',
       label: 'intake-decompose',

@@ -4,7 +4,8 @@
 import { backlog, backlogWrite } from './backlog.ts';
 import { readLearnings } from './state.ts';
 import type { JournalEntry } from './journal.ts';
-import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { agent, renderPrompt } from '../agent/agent.ts';
+import { MODELS } from './models.ts';
 import { CRITIC } from '../agent/schemas.ts';
 import type { CriticVerdict } from '../agent/schemas.ts';
 import { triage } from './triage.ts';
@@ -22,7 +23,7 @@ export async function vetDrafts(): Promise<void> {
 
   const learnings = readLearnings();
   const b = backlog();
-  const res = await agentRetry<CriticVerdict>({
+  const res = await agent<CriticVerdict>({
     prompt: renderPrompt('critic', {
       tickets: drafts,
       outOfScope: b.outOfScope ?? [],
@@ -30,7 +31,7 @@ export async function vetDrafts(): Promise<void> {
         ? `## Cheat shapes observed in past campaigns\n\n${learnings['gaming.md']}`
         : '',
     }),
-    model: 'sonnet',
+    models: MODELS.critic,
     schema: CRITIC,
     tools: 'Read,Glob,Grep',
     label: 'critic',

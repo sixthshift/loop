@@ -6,7 +6,8 @@
 
 import { backlog, backlogWrite, nextTicketIds } from './backlog.ts';
 import { journalTail } from './journal.ts';
-import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { agent, renderPrompt } from '../agent/agent.ts';
+import { MODELS } from './models.ts';
 import { TRIAGE, REPAIR } from '../agent/schemas.ts';
 import type { TriageAction, TriageVerdict, RepairVerdict, TicketDraft } from '../agent/schemas.ts';
 import { escalate } from './escalate.ts';
@@ -28,13 +29,13 @@ export function backlogSummary() {
 }
 
 export async function triage(anomaly: Anomaly): Promise<TriageVerdict> {
-  const res = await agentRetry<TriageVerdict>({
+  const res = await agent<TriageVerdict>({
     prompt: renderPrompt('triage', {
       anomaly,
       backlogSummary: backlogSummary(),
       journal: journalTail(60),
     }),
-    model: 'opus',
+    models: MODELS.triage,
     schema: TRIAGE,
     tools: 'Read,Glob,Grep',
     label: `triage:${anomaly.kind}`,
@@ -81,9 +82,9 @@ async function execAction(a: TriageAction, anomaly: Anomaly): Promise<string> {
       // It fixes the environment, never the work; its report is journaled
       // either way, and an unresolved repair is a refused action, not a shrug.
       if (!a.instruction) throw new Error('repair requires an instruction');
-      const r = (await agentRetry<RepairVerdict>({
+      const r = (await agent<RepairVerdict>({
         prompt: renderPrompt('repair', { instruction: a.instruction, anomaly }),
-        model: 'opus',
+        models: MODELS.repair,
         schema: REPAIR,
         bypassPermissions: true,
         label: `repair:${anomaly.kind}`,

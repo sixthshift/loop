@@ -8,7 +8,8 @@ import { backlog, backlogWrite } from './backlog.ts';
 import { journalEntries } from './journal.ts';
 import { RUN, LEARNINGS, WORKTREES, sh } from './state.ts';
 import type { CampaignContext } from './state.ts';
-import { agentRetry, renderPrompt } from '../agent/agent.ts';
+import { agent, renderPrompt } from '../agent/agent.ts';
+import { MODELS } from './models.ts';
 import { COVERAGE, HARVEST } from '../agent/schemas.ts';
 import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
 import { renumber } from './triage.ts';
@@ -27,13 +28,13 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
 
   tui.log('retrospective: coverage pass…');
   const closed = b.tickets.filter(t => t.status === 'closed');
-  const cov = (await agentRetry<CoverageVerdict>({
+  const cov = (await agent<CoverageVerdict>({
     prompt: renderPrompt('coverage', {
       spec: ctx.spec,
       tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, evidence: t.evidence })),
       phaseCloses,
     }),
-    model: 'opus',
+    models: MODELS.coverage,
     schema: COVERAGE,
     tools: 'Read,Glob,Grep',
     label: 'coverage',
@@ -54,13 +55,13 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
     const p = path.join(LEARNINGS, f);
     prose[f] = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '(empty — first campaign)';
   }
-  const h = (await agentRetry<HarvestVerdict>({
+  const h = (await agent<HarvestVerdict>({
     prompt: renderPrompt('harvest', {
       campaign: b.project,
       proseFacets: prose,
       journal: journalEntries(),
     }),
-    model: 'opus',
+    models: MODELS.harvest,
     schema: HARVEST,
     tools: 'Read',
     label: 'harvest',

@@ -1,25 +1,27 @@
-// Spawn one Claude agent (`claude -p`) and return its result + telemetry.
-// Judgment lives in agents; this module only carries prompts out and
-// structured verdicts back. `schema` forces CLI-side JSON validation, so the
-// coordinator never parses free text — callers name the verdict type the
-// schema guarantees via the generic.
+// Run an agent to a verdict, across whichever CLI its model names. This module
+// owns everything engine-agnostic — spawning the child, the timeout, feeding
+// the fleet, and the preference-ordered fallback across candidate models — and
+// delegates the CLI-specific parts (argv, stream schema, where the answer and
+// usage live) to the engine (engine.ts). `schema` forces the CLI to validate
+// its own output, so the coordinator never parses free text; callers name the
+// verdict type the schema guarantees via the generic.
 //
-// Output rides stream-json (NDJSON events, final `result` event = the same
-// envelope the old json format returned) so the dashboard can tail what an
-// agent is doing while it runs, instead of staring at a black box.
+// The live process — registry entry, transcript, spend, kill handle — belongs
+// to the fleet; this module only feeds it as the child comes and goes.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import * as tui from '../tui/tui.ts';
-import { registerKill, unregisterKill } from '../tui/control.ts';
+import * as fleet from './fleet.ts';
+import { engineFor, available } from './engine.ts';
+import type { EngineEnvelope } from './engine.ts';
 
 const PROMPTS = fileURLToPath(new URL('./prompts/', import.meta.url));
 
 export type AgentOptions = {
   prompt: string;
-  model?: string;
+  models: string[];            // preference order; first installed engine wins, next on transient failure
   schema?: object;
   cwd?: string;
   tools?: string;              // e.g. 'Read,Glob,Grep' — omit for the full set
@@ -29,18 +31,6 @@ export type AgentOptions = {
 };
 
 export type AgentResult<T> = { output: T; tokens: number; seconds: number; costUsd: number };
-
-// The final `result` event off the CLI stream — an external contract, so
-// every field is optional until checked.
-type ResultEnvelope = {
-  type: 'result';
-  is_error?: boolean;
-  result?: string;
-  structured_output?: unknown;
-  usage?: { output_tokens?: number };
-  duration_ms?: number;
-  total_cost_usd?: number;
-};
 
 export class AgentError extends Error {
   transient: boolean;
@@ -64,39 +54,44 @@ export function renderPrompt(name: string, vars: Record<string, unknown> = {}): 
   return text;
 }
 
-export async function agent<T = string>({
-  prompt, model = 'opus', schema, cwd = '.',
-  tools,
-  bypassPermissions = false,
-  timeoutMs = 60 * 60 * 1000,
-  label = 'agent',
-}: AgentOptions): Promise<AgentResult<T>> {
-  const argv = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--no-session-persistence'];
-  if (schema) argv.push('--json-schema', JSON.stringify(schema));
-  if (tools !== undefined) argv.push('--tools', tools);
-  if (bypassPermissions) argv.push('--dangerously-skip-permissions');
+// Walk the candidate chain: skip models whose engine isn't installed, then try
+// the rest in order. A transient failure (spawn, timeout, garbled stream, an
+// unauthed CLI, unparseable schema output) falls through to the next candidate;
+// an operator kill or a real error reply is intent, not a channel flake, and
+// stops the chain. A lone surviving candidate is retried once, so single-engine
+// resilience matches the retry this replaced.
+export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult<T>> {
+  const label = opts.label ?? 'agent';
+  const chain = opts.models.filter(available);
+  if (!chain.length) throw new AgentError(`${label}: no engine installed for [${opts.models.join(', ')}]`);
+  const attempts = chain.length === 1 ? [chain[0]!, chain[0]!] : chain;
 
-  // The one seam every agent passes through — the TUI's live pane and spend
-  // tally hook here, so no caller carries display concerns.
-  tui.agentStart(label, model);
-  try {
-    const result = await runAgent<T>({ argv, cwd, schema, timeoutMs, label });
-    tui.agentEnd(label, result);
-    return result;
-  } catch (e) {
-    tui.agentEnd(label, {});
-    throw e;
+  let last: unknown;
+  for (const model of attempts) {
+    try { return await runOnce<T>(model, opts); }
+    catch (e) {
+      if (e instanceof AgentError && (e.killed || !e.transient)) throw e;
+      last = e;
+    }
   }
+  throw last;
 }
 
-async function runAgent<T>({ argv, cwd, schema, timeoutMs, label }: {
-  argv: string[]; cwd: string; schema?: object; timeoutMs: number; label: string;
-}): Promise<AgentResult<T>> {
-  const envelope = await new Promise<ResultEnvelope>((resolve, reject) => {
-    const child = spawn('claude', argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
-    let buf = '', err = '', result: ResultEnvelope | null = null, killed = false;
-    registerKill(label, () => { killed = true; child.kill('SIGKILL'); });
-    tui.agentPid(label, child.pid);
+async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResult<T>> {
+  const { prompt, schema, cwd = '.', tools, bypassPermissions = false, timeoutMs = 60 * 60 * 1000, label = 'agent' } = opts;
+  const { engine, cliModel } = engineFor(model);
+  const { argv, cleanup } = engine.buildArgv({ prompt, model: cliModel, cwd, schema, tools, bypassPermissions });
+  const reader = engine.reader();
+  const startedAt = Date.now();
+
+  const envelope = await new Promise<EngineEnvelope>((resolve, reject) => {
+    const child = spawn(engine.bin, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let buf = '', err = '', killed = false;
+    // The child is live from here — the fleet owns it (transcript, pid, spend,
+    // kill handle) until close/error removes it. The full prefixed model is the
+    // display name, so the dashboard shows which engine is running.
+    fleet.register(label, { model, pid: child.pid, kill: () => { killed = true; child.kill('SIGKILL'); } });
+    const sink = { event: (l: string) => fleet.event(label, l), delta: (t: string, th: boolean) => fleet.delta(label, t, th) };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
       reject(new AgentError(`${label}: timed out after ${Math.round(timeoutMs / 60000)}m`, { transient: true }));
@@ -110,66 +105,32 @@ async function runAgent<T>({ argv, cwd, schema, timeoutMs, label }: {
         if (!line.trim()) continue;
         let ev: any;
         try { ev = JSON.parse(line); } catch { continue; } // never die on a garbled event
-        if (ev.type === 'result') result = ev;
-        if (ev.type === 'stream_event') {
-          const d = ev.event?.delta;
-          if (d?.type === 'text_delta') tui.agentDelta(label, d.text, false);
-          else if (d?.type === 'thinking_delta') tui.agentDelta(label, d.thinking, true);
-          continue;
-        }
-        for (const t of transcript(ev)) tui.agentEvent(label, t);
+        reader.handle(ev, sink);
       }
     });
     child.stderr.on('data', d => { err += d; });
-    child.on('error', e => { clearTimeout(timer); unregisterKill(label); reject(new AgentError(`${label}: ${e.message}`, { transient: true })); });
+    child.on('error', e => { clearTimeout(timer); cleanup?.(); fleet.remove(label); reject(new AgentError(`${label}: ${e.message}`, { transient: true })); });
     child.on('close', code => {
       clearTimeout(timer);
-      unregisterKill(label);
+      cleanup?.();
+      const env = reader.finalize();
+      // Tally spend only when a result actually landed; a kill or a resultless
+      // exit removes the agent with none.
+      fleet.remove(label, env ? { tokens: env.tokens, costUsd: env.costUsd } : undefined);
       if (killed) return reject(new AgentError(`${label}: killed by operator`, { killed: true }));
-      if (result) return resolve(result);
-      reject(new AgentError(`${label}: exit ${code} with no result event: ${err.slice(-2000)}`, { transient: true }));
+      if (env) return resolve(env);
+      reject(new AgentError(`${label}: exit ${code} with no result: ${err.slice(-2000)}`, { transient: true }));
     });
   });
 
-  if (envelope.is_error) throw new AgentError(`${label}: ${String(envelope.result).slice(0, 2000)}`);
+  if (envelope.isError) throw new AgentError(`${label}: ${String(envelope.errorText).slice(0, 2000)}`, { transient: Boolean(envelope.errorTransient) });
   const output = (schema
-    ? (envelope.structured_output ?? JSON.parse(envelope.result ?? ''))
-    : envelope.result) as T;
+    ? (envelope.structured ?? JSON.parse(envelope.text))
+    : envelope.text) as T;
   return {
     output,
-    tokens: envelope.usage?.output_tokens ?? 0,
-    seconds: Math.round((envelope.duration_ms ?? 0) / 1000),
-    costUsd: envelope.total_cost_usd ?? 0,
+    tokens: envelope.tokens,
+    seconds: Math.round((Date.now() - startedAt) / 1000),
+    costUsd: envelope.costUsd,
   };
-}
-
-// Stream event → human lines for the live tail pane. Lossy on purpose:
-// enough to answer "what is this agent doing", not a session replay.
-function transcript(ev: any): string[] {
-  if (ev.type === 'system' && ev.subtype === 'init') return ['· session started'];
-  if (ev.type !== 'assistant' && ev.type !== 'user') return [];
-  const out: string[] = [];
-  for (const c of ev.message?.content ?? []) {
-    if (c.type === 'text' && c.text?.trim()) out.push(oneLine(c.text));
-    if (c.type === 'tool_use') out.push(`→ ${c.name} ${oneLine(JSON.stringify(c.input ?? {}))}`);
-    if (c.type === 'tool_result') {
-      const body = typeof c.content === 'string' ? c.content
-        : (c.content ?? []).map((b: any) => b.text ?? '').join(' ');
-      out.push(`←${c.is_error ? ' ✗' : ''} ${oneLine(body) || '(empty)'}`);
-    }
-  }
-  return out;
-}
-
-const oneLine = (s: unknown) => String(s).replace(/\s+/g, ' ').trim().slice(0, 300);
-
-// One retry on transient failures (timeout, spawn error, garbled envelope) —
-// a *judgment* we disagree with is never retried, and neither is an
-// operator kill: that rejection is intent, not noise.
-export async function agentRetry<T = string>(opts: AgentOptions): Promise<AgentResult<T>> {
-  try { return await agent<T>(opts); }
-  catch (e) {
-    if (!(e instanceof AgentError) || !e.transient) throw e;
-    return agent<T>(opts);
-  }
 }

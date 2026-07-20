@@ -20,6 +20,10 @@ import { journalEntries } from './journal.ts';
 
 // $/MTok output rate, checked 2026-07 — refresh when models rotate
 const OUTPUT_PRICE: Record<string, number> = { opus: 25, sonnet: 15, haiku: 5 };
+// Cost estimate is claude-only: codex reports no cost and has no price here, so
+// it estimates to 0. A claude- prefix is stripped; a bare name is claude.
+const priceFor = (model: string): number =>
+  model.startsWith('codex-') ? 0 : (OUTPUT_PRICE[model.replace(/^claude-/, '')] ?? OUTPUT_PRICE.opus!);
 
 export function writePostmortem(out: string): { tickets: number; events: number } {
   const b = backlog();
@@ -63,7 +67,7 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   const estCost = (t: any) => {
     const tokens = t.closeData?.workerTokens ?? t.spans.reduce((s: number, sp: any) => s + (sp.data?.workerTokens || 0), 0);
     if (!tokens) return null;
-    return (tokens / 1e6) * (OUTPUT_PRICE[t.meta.model] ?? OUTPUT_PRICE.opus);
+    return (tokens / 1e6) * priceFor(String(t.meta.model ?? ''));
   };
 
   const data = {
