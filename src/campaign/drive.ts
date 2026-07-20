@@ -11,6 +11,7 @@ import { frontier } from './frontier.ts';
 import { verify, flakeProbe } from './verify.ts';
 import type { VerifyVerdict, FlakeVerdict } from './verify.ts';
 import { agent, renderPrompt, AgentError } from '../agent/agent.ts';
+import { available } from '../agent/engine.ts';
 import type { AgentResult } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
 import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from '../agent/schemas.ts';
@@ -182,7 +183,10 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   }).then(res => ({ id, res }), (err: AgentError) => ({ id, err }));
 
   workers.set(id, { promise, dir, branch, baseSha });
-  tui.log(`⇢ dispatched ${id} (${MODELS.worker[0]}): ${t.title}`);
+  // Name the model that will actually be tried first — the preference head is a
+  // lie when its engine isn't installed; agent() logs any later fall-through.
+  const lead = MODELS.worker.filter(available)[0] ?? MODELS.worker[0];
+  tui.log(`⇢ dispatched ${id} (${lead}): ${t.title}`);
 }
 
 // --- settle: verify → gaming → judge → apply -------------------------------

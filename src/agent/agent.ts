@@ -14,6 +14,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as fleet from './fleet.ts';
+import { log } from '../tui/tui.ts';
 import { engineFor, available } from './engine.ts';
 import type { EngineEnvelope } from './engine.ts';
 
@@ -67,11 +68,19 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
   const attempts = chain.length === 1 ? [chain[0]!, chain[0]!] : chain;
 
   let last: unknown;
-  for (const model of attempts) {
+  for (let i = 0; i < attempts.length; i++) {
+    const model = attempts[i]!;
     try { return await runOnce<T>(model, opts); }
     catch (e) {
       if (e instanceof AgentError && (e.killed || !e.transient)) throw e;
       last = e;
+      // A transient fall-through is never silent: a worker quietly demoted from
+      // its preferred engine to the fallback costs more and can collapse the
+      // author≠judge engine split, so the operator sees the swap on the record.
+      const next = attempts[i + 1];
+      const why = (e as Error).message?.slice(0, 120) ?? String(e);
+      if (next && next !== model) log(`⚠ ${label}: ${model} failed transiently → falling back to ${next} (${why})`);
+      else if (next) log(`⚠ ${label}: ${model} failed transiently → retrying (${why})`);
     }
   }
   throw last;
