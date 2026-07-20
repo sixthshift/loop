@@ -6,6 +6,7 @@ Legal actions (backlog commands execute via backlog-write.mjs, which validates a
 - `{"command": "update", "ticketId": "T0NN", "patch": {...}, "note": "why"}` — contract fields of a draft/vetted ticket (title, phase, depends_on, files, resources, context, acceptance, acceptanceChecks). A vetted ticket demotes to draft for re-vet.
 - `{"command": "set-status", "ticketId": "T0NN", "to": "<status>", "note": "why"}` — legal transitions only.
 - `{"command": "add", "tickets": [...], "note": "why"}` — new draft tickets (full schema incl. id, origin, non-empty files, acceptanceChecks). They go through the critic before dispatch.
+- `{"command": "gate", "phaseId": "N", "gates": [{"name": "...", "cmd": "..."}], "note": "why"}` — amend a phase's merged-tree gate (upsert by name). When a spec-mandated invariant is proven only per-ticket and never re-verified after merge, adding it to the phase gate is the escaped-bug rule in action — do this, don't escalate.
 - `{"command": "note", "kind": "<kind>", "subject": "<subj>", "body": "..."}` — journal-only.
 - `{"command": "repair", "instruction": "..."}` — spawn a fresh full-tool repair agent for an environment fault. Give it a concrete diagnosis and target (paths, ports, commands to re-run as proof) — it acts on your instruction, not on its own re-diagnosis. Its report is journaled; an unresolved repair fails the action.
 

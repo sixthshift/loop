@@ -1,7 +1,18 @@
-// Escalation: the loop's honest exit. An escalation closes nothing —
-// .ailoop/campaign/ stays put and the campaign resumes where it stopped.
+// How the loop yields to the human — two grades, and only one of them stops.
+//
+// `park` is the ordinary yield: a decision the loop genuinely can't make (or a
+// resolver proposal an auditor rejected) is journaled and, if it names a
+// ticket, that ticket is set `blocked` so the frontier stops offering it. Park
+// does NOT throw — the drive loop keeps driving every other ticket, and only
+// halts (gracefully, with a summary) once nothing autonomous is left. A single
+// parked decision never again kills a campaign with other work to do.
+//
+// `escalate` is the hard stop, reserved for a coordinator FAULT (a repeated
+// internal crash) — continuing there risks an infinite loop or corrupt state,
+// so it throws and the process exits. It is the only remaining hard exit.
 
-import { backlogWrite } from './backlog.ts';
+import { backlog, backlogWrite, ticket } from './backlog.ts';
+import { journalEntries } from './journal.ts';
 import { campaignExists } from './index.ts';
 
 export class Escalation extends Error {
@@ -21,4 +32,46 @@ export function escalate(reason: string, detail?: unknown): never {
     } catch { /* journaling failed; the throw below still surfaces the reason */ }
   }
   throw new Escalation(reason, detail);
+}
+
+// Park a decision for the human without stopping the campaign. Journals a
+// `parked` note keyed to the ticket/phase, and blocks a live ticket so the
+// frontier skips it. Best-effort: the note is the durable record even if the
+// status write is illegal for the ticket's current state.
+export function park(reason: string, opts?: { ticketId?: string; subject?: string; detail?: unknown }): void {
+  if (!campaignExists()) return;
+  const subject = opts?.ticketId ?? opts?.subject ?? 'campaign';
+  try {
+    backlogWrite(['note', '--kind', 'parked', '--subject', subject, '--body', reason]);
+    if (opts?.ticketId) {
+      const t = ticket(opts.ticketId);
+      // draft can't transition to blocked; only park what's in play.
+      if (t.status === 'in-flight' || t.status === 'vetted') {
+        backlogWrite(['set-status', opts.ticketId, 'blocked', '--note', 'parked for human decision']);
+      }
+    }
+  } catch { /* the parked note above is the record; a failed status write is not fatal */ }
+}
+
+// What currently awaits the human: tickets held out of dispatch, plus the phase
+// gates parked without a ticket to carry them. Drives the graceful-stop summary.
+export function parkedSummary(): { tickets: string[]; phases: string[] } {
+  const b = backlog();
+  const tickets = b.tickets.filter(t => t.status === 'blocked' || t.status === 'failed-wall').map(t => t.id);
+  const phases = (b.phases ?? []).filter(p => phaseParked(p.id)).map(p => p.id);
+  return { tickets, phases };
+}
+
+// A phase gate the loop couldn't get green and couldn't fix — parked, so the
+// close loop stops retrying it and moves on to any independent work. A phase is
+// parked once and unparked only by the human editing the gate and resuming, so
+// a later `gate-amendment` for the same phase clears an earlier `parked`.
+export function phaseParked(phaseId: string): boolean {
+  let parked = false;
+  for (const e of journalEntries()) {
+    if (e.subject !== phaseId) continue;
+    if (e.kind === 'parked') parked = true;
+    else if (e.kind === 'gate-amendment') parked = false;
+  }
+  return parked;
 }

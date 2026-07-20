@@ -24,6 +24,8 @@ export const MODELS = {
   reviewer: ['claude-opus', 'codex-gpt-5.6-sol'],
   critic: ['claude-sonnet', 'codex-gpt-5.6-terra'],
   triage: ['claude-opus', 'codex-gpt-5.6-sol'],
+  resolver: ['claude-opus', 'codex-gpt-5.6-sol'],   // full-tool fixer: decides + RUNS to verify before proposing
+  auditor: ['claude-opus', 'codex-gpt-5.6-sol'],    // independent read-only check that the fix didn't weaken meaning
   repair: ['codex-gpt-5.6-terra', 'claude-opus'],   // repair writes code — implementer, like worker
   seed: ['claude-opus', 'codex-gpt-5.6-sol'],
   decompose: ['claude-opus', 'codex-gpt-5.6-sol'],

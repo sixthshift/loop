@@ -178,6 +178,29 @@ export function backlogWrite(args: string[], input?: unknown): string {
       save(b);
       return `added ${incoming.length} draft ticket(s)`;
     }
+    case 'gate': {
+      // Amend a phase's merged-tree gate. The escaped-bug rule prescribes
+      // strengthening the gate when a defect slips past it; this is the
+      // actuator that makes that a mutation rather than an escalation. Upsert
+      // by name so re-running is idempotent and a cmd can be corrected in place.
+      const b = load();
+      const phase = b.phases.find(p => p.id === pos[0]);
+      if (!phase) refuse(`no phase ${pos[0]} — gate amends an existing phase`);
+      if (!opts.note) refuse('gate requires --note (the rationale is the record)');
+      const gates = readInput(pos[1]);
+      const errs = gates.flatMap((g: any) => (!g.name || !g.cmd) ? [`gate entry missing name or cmd: ${JSON.stringify(g)}`] : []);
+      if (errs.length) refuse(errs.join('\n'));
+      phase!.gate ??= [];
+      const touched: string[] = [];
+      for (const g of gates) {
+        const existing = phase!.gate.find(x => x.name === g.name);
+        if (existing) { existing.cmd = g.cmd; touched.push(`~${g.name}`); }
+        else { phase!.gate.push({ name: g.name, cmd: g.cmd }); touched.push(`+${g.name}`); }
+      }
+      journal('gate-amendment', phase!.id, `${opts.note} — gate [${touched.join(', ')}]`);
+      save(b);
+      return `phase ${phase!.id} gate amended [${touched.join(', ')}]`;
+    }
     case 'vet': {
       const b = load();
       const t = findTicket(b, pos[0]);

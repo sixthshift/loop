@@ -13,7 +13,8 @@ Proposals you may make:
 - `{"type": "note", "kind": "...", "subject": "...", "body": "..."}` — journal an observation.
 - `{"type": "ticket", "ticket": {...}}` — a new draft ticket (full schema; origin should say "reviewer: <why>").
 - `{"type": "sharpen", "ticketId": "T0NN", "patch": {...}, "note": "why"}` — sharpen a draft/vetted ticket's contract.
-- `{"type": "escalate", "reason": "..."}` — something the human must see now.
+- `{"type": "gate", "phaseId": "N", "gates": [{"name": "...", "cmd": "..."}], "note": "why"}` — strengthen a phase's merged-tree gate (upsert by name). A spec-mandated invariant proven only per-ticket and never re-run after merge is a coverage hole you close here — that is the escaped-bug rule, not a reason to escalate.
+- `{"type": "escalate", "reason": "..."}` — something the human must see now. Reserve it for a decision the locked spec cannot answer; conforming coverage to the spec's own guarantees is your mandate, not an escalation.
 
 ## Out of scope
 

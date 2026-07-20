@@ -65,11 +65,13 @@ export type JudgeVerdict = {
 };
 
 export type TriageAction = {
-  command: 'update' | 'set-status' | 'add' | 'note' | 'repair';
+  command: 'update' | 'set-status' | 'add' | 'note' | 'repair' | 'gate';
   ticketId?: string;
   patch?: TicketPatch;
   to?: string;
   tickets?: TicketDraft[];
+  phaseId?: string;
+  gates?: Check[];
   kind?: string;
   subject?: string;
   body?: string;
@@ -79,16 +81,24 @@ export type TriageAction = {
 
 export type TriageVerdict = { actions: TriageAction[]; escalate?: string; summary: string };
 
+// The resolver is triage with a runtime: it may run checks (full tools), so its
+// proposed actions come with the evidence that it ran them green. It never
+// applies — the coordinator applies only after the auditor clears the proposal.
+export type ResolveVerdict = { resolved: boolean; actions: TriageAction[]; evidence: string; reason?: string };
+export type AuditVerdict = { clean: boolean; why: string };
+
 export type RepairVerdict = { resolved: boolean; summary: string };
 
 export type ReviewerProposal = {
-  type: 'note' | 'ticket' | 'sharpen' | 'escalate';
+  type: 'note' | 'ticket' | 'sharpen' | 'gate' | 'escalate';
   kind?: string;
   subject?: string;
   body?: string;
   ticket?: TicketDraft;
   ticketId?: string;
   patch?: TicketPatch;
+  phaseId?: string;
+  gates?: Check[];
   note?: string;
   reason?: string;
 };
@@ -287,33 +297,57 @@ export const JUDGE = {
   additionalProperties: false,
 };
 
+// One legal backlog mutation — shared by the triage and resolver arms.
+const ACTION = {
+  type: 'object',
+  properties: {
+    command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'repair', 'gate'] },
+    ticketId: { type: 'string' },
+    patch: TICKET_PATCH,
+    to: { type: 'string' },
+    tickets: { type: 'array', items: TICKET },
+    phaseId: { type: 'string' },
+    gates: { type: 'array', items: CHECK },
+    kind: { type: 'string' },
+    subject: { type: 'string' },
+    body: { type: 'string' },
+    note: { type: 'string' },
+    instruction: { type: 'string' },
+  },
+  required: ['command'],
+  additionalProperties: false,
+};
+
 export const TRIAGE = {
   type: 'object',
   properties: {
-    actions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'repair'] },
-          ticketId: { type: 'string' },
-          patch: TICKET_PATCH,
-          to: { type: 'string' },
-          tickets: { type: 'array', items: TICKET },
-          kind: { type: 'string' },
-          subject: { type: 'string' },
-          body: { type: 'string' },
-          note: { type: 'string' },
-          instruction: { type: 'string' },
-        },
-        required: ['command'],
-        additionalProperties: false,
-      },
-    },
+    actions: { type: 'array', items: ACTION },
     escalate: { type: 'string' },
     summary: { type: 'string' },
   },
   required: ['actions', 'summary'],
+  additionalProperties: false,
+};
+
+export const RESOLVER = {
+  type: 'object',
+  properties: {
+    resolved: { type: 'boolean' },
+    actions: { type: 'array', items: ACTION },
+    evidence: { type: 'string' },
+    reason: { type: 'string' },
+  },
+  required: ['resolved', 'actions', 'evidence'],
+  additionalProperties: false,
+};
+
+export const AUDIT = {
+  type: 'object',
+  properties: {
+    clean: { type: 'boolean' },
+    why: { type: 'string' },
+  },
+  required: ['clean', 'why'],
   additionalProperties: false,
 };
 
@@ -335,13 +369,15 @@ export const REVIEWER = {
       items: {
         type: 'object',
         properties: {
-          type: { type: 'string', enum: ['note', 'ticket', 'sharpen', 'escalate'] },
+          type: { type: 'string', enum: ['note', 'ticket', 'sharpen', 'gate', 'escalate'] },
           kind: { type: 'string' },
           subject: { type: 'string' },
           body: { type: 'string' },
           ticket: TICKET,
           ticketId: { type: 'string' },
           patch: TICKET_PATCH,
+          phaseId: { type: 'string' },
+          gates: { type: 'array', items: CHECK },
           note: { type: 'string' },
           reason: { type: 'string' },
         },

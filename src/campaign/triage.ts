@@ -59,7 +59,7 @@ export async function triage(anomaly: Anomaly): Promise<TriageVerdict> {
   return res.output;
 }
 
-async function execAction(a: TriageAction, anomaly: Anomaly): Promise<string> {
+export async function execAction(a: TriageAction, anomaly: Anomaly): Promise<string> {
   switch (a.command) {
     case 'update':
       backlogWrite(['update', a.ticketId!, '-', '--note', a.note ?? 'triage'], a.patch ?? {});
@@ -75,6 +75,11 @@ async function execAction(a: TriageAction, anomaly: Anomaly): Promise<string> {
     case 'note':
       backlogWrite(['note', '--kind', a.kind ?? 'triage-note', '--subject', a.subject ?? 'campaign', '--body', a.body ?? '']);
       return 'note';
+    case 'gate': {
+      if (!a.phaseId || !a.gates?.length) throw new Error('gate requires phaseId and a non-empty gates array');
+      backlogWrite(['gate', a.phaseId, '-', '--note', a.note ?? `triage(${anomaly.kind})`], a.gates);
+      return `gate ${a.phaseId} [${a.gates.map(g => g.name).join(', ')}]`;
+    }
     case 'repair': {
       // Triage's one actuator beyond the backlog: a fresh full-tool agent for
       // machine-level faults (installs, stale ports, wedged git state) — the
