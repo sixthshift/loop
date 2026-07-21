@@ -97,12 +97,18 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
 async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResult<T>> {
   const { prompt, schema, cwd = '.', tools, bypassPermissions = false, timeoutMs = 60 * 60 * 1000, label = 'agent' } = opts;
   const { engine, cliModel } = engineFor(model);
-  const { argv, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd, schema, tools, bypassPermissions });
+  // codex joins its `-C` onto its own process cwd, so a *relative* dir handed to
+  // both spawn's cwd and the engine's `-C` resolves twice into a nonexistent
+  // nested path — a startup ENOENT the fallback chain then silently ate. Both
+  // callers pass a relative WORKTREES dir; absolutize once here so every engine
+  // gets a real path no matter how the caller expressed it.
+  const dir = path.resolve(cwd);
+  const { argv, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd: dir, schema, tools, bypassPermissions });
   const reader = engine.reader();
   const startedAt = Date.now();
 
   const envelope = await new Promise<EngineEnvelope>((resolve, reject) => {
-    const child = spawn(engine.bin, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
+    const child = spawn(engine.bin, argv, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
     let buf = '', err = '', killed = false;
     // The child is live from here — the fleet owns it (transcript, pid, spend,
     // kill handle) until close/error removes it. The full prefixed model is the
