@@ -169,7 +169,7 @@ function Dashboard() {
   const frame: Frame = { rows, cols, confirm };
   if (view.name === 'help') return <HelpView {...frame} />;
   if (view.name === 'tickets') return <TicketsView {...frame} tickets={tickets} sel={clamp(ticketSel, tickets.length)} />;
-  if (view.name === 'ticket') return <TicketDetailView {...frame} ticket={tickets.find(t => t.id === view.id)} />;
+  if (view.name === 'ticket') return <TicketDetailView {...frame} ticket={tickets.find(t => t.id === view.id)} all={tickets} />;
   if (view.name === 'journal') return <JournalView {...frame} journalOff={journalOff} filterIdx={filterIdx} />;
   if (view.name === 'inspect') return <InspectView {...frame} kind={view.kind} label={view.label} />;
   return <ActiveView {...frame} b={b} procs={procs} procSel={clamp(procSel, procs.length)} />;
@@ -323,10 +323,12 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
       <Rule cols={cols} />
       {tickets.slice(start, start + listRows).map((t, i) => {
         const [glyph, color] = STATUS_GLYPH[t.status] ?? ['·', undefined];
+        const deps = t.depends_on?.length ? `  ⇐ ${t.depends_on.join(',')}` : '';
         return (
           <Text key={t.id} inverse={start + i === sel}>
             {'  '}<Text color={color}>{glyph}</Text>
-            {` ${t.id}  ${t.phase.padEnd(4)} ${t.status.padEnd(11)} ${trunc(t.title, cols - 33)}`}
+            {` ${t.id}  ${t.phase.padEnd(4)} ${t.status.padEnd(11)} ${trunc(t.title, cols - 33 - deps.length)}`}
+            <Text dimColor>{deps}</Text>
           </Text>
         );
       })}
@@ -335,14 +337,19 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
   );
 }
 
-function TicketDetailView({ rows, cols, confirm, ticket: t }: Frame & { ticket: Ticket | undefined }) {
+function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { ticket: Ticket | undefined; all: Ticket[] }) {
   if (!t) return <Text>ticket vanished — esc to go back</Text>;
   const [glyph, color] = STATUS_GLYPH[t.status] ?? ['·', undefined];
+  const byId = new Map(all.map(x => [x.id, x]));
+  const depGlyph = (id: string) => (STATUS_GLYPH[byId.get(id)?.status ?? '']?.[0]) ?? '?';
+  const unblocks = all.filter(x => x.depends_on?.includes(t.id)).map(x => x.id);
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>{` ${t.id} — ${t.title}`}</Text>
       <Rule cols={cols} />
-      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text>{`   phase ${t.phase}   deps ${t.depends_on?.length ? t.depends_on.join(', ') : '(none)'}`}</Text>
+      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text>{`   phase ${t.phase}`}</Text>
+      <Text>{`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`}</Text>
+      <Text>{`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`}</Text>
       <Text>{` files  ${t.files?.join(', ') || '(unscoped)'}`}</Text>
       {t.origin ? <Text dimColor>{` origin ${t.origin}`}</Text> : null}
       <Text> </Text>
