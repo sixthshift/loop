@@ -4,10 +4,11 @@
 // never judges a diff — context-poisoning is structural, not a discipline.
 
 import { backlog, backlogWrite, ticket } from './backlog.ts';
+import type { Ticket } from './backlog.ts';
 import { journalEntries, journalTail } from './journal.ts';
 import { shAsync, readLearnings } from './state.ts';
 import type { CampaignContext } from './state.ts';
-import { frontier } from './frontier.ts';
+import { frontier, isInfraAttempt } from './frontier.ts';
 import { verify, flakeProbe } from './verify.ts';
 import type { VerifyVerdict, FlakeVerdict } from './verify.ts';
 import { agent, renderPrompt, AgentError } from '../agent/agent.ts';
@@ -209,11 +210,12 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
       : '',
   });
 
-  // Model selection is centralised in models.ts — every role, workers included,
-  // draws its chain from there; tickets carry no model of their own.
+  // Model selection is centralised in models.ts. The worker chain doubles as an
+  // escalation ladder: this ticket's Nth merit failure starts it at the Nth rung
+  // (workerChain), so a proven-hard ticket climbs terra → sol → opus.
   const promise: Promise<WorkerDone> = agent<WorkerVerdict>({
     prompt,
-    models: MODELS.worker,
+    models: workerChain(t),
     schema: WORKER,
     cwd: dir,
     bypassPermissions: true,
@@ -224,8 +226,27 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   workers.set(id, { promise, dir, branch, baseSha });
   // Name the model that will actually be tried first — the preference head is a
   // lie when its engine isn't installed; agent() logs any later fall-through.
-  const lead = MODELS.worker.filter(available)[0] ?? MODELS.worker[0];
+  const chain = workerChain(t);
+  const lead = chain.filter(available)[0] ?? chain[0];
   tui.log(`⇢ dispatched ${id} (${lead}): ${t.title}`);
+}
+
+// The worker chain is an escalation ladder (models.ts): a ticket's Nth *merit*
+// failure starts it one rung deeper, so a proven-hard ticket climbs the tiers
+// instead of retrying the light model forever. Infra deaths (worker-channel,
+// merge-conflict) don't advance it — a dead session isn't evidence the work is
+// hard. Derived, not stored: the rung is just the merit-attempt count, clamped
+// to the strongest. Within an attempt agent() still walks the remaining rungs
+// on an engine failure, so a fallback is taking the next rung early.
+//
+// Accepted scar: the top rung (opus) puts the worker on the same engine as the
+// judge (judge leads opus), so a thrice-failed ticket loses author≠judge engine
+// independence on that last attempt. Deliberate — by the strongest rung, getting
+// the ticket built outweighs an independent grader, and it's the final autonomous
+// try regardless.
+function workerChain(t: Ticket): string[] {
+  const merit = (t.attempts ?? []).filter(a => !isInfraAttempt(a)).length;
+  return MODELS.worker.slice(Math.min(merit, MODELS.worker.length - 1));
 }
 
 // --- settle: verify → gaming → judge → apply -------------------------------

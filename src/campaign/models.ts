@@ -49,8 +49,14 @@
 //                 closed ticket (unmapped = not done).
 //   harvest     — retrospective: distils the campaign journal into reusable
 //                 learnings (landmines, observed cheat shapes).
+// The worker chain is special: it doubles as an escalation ladder. dispatch
+// starts the Nth (merit) attempt at the Nth rung, so a ticket that keeps
+// failing on its own terms climbs terra → sol → opus — light coding model, then
+// heavy codex (sol ≈ opus), then claude. Within one attempt agent() still walks
+// the remaining rungs on an engine failure, so a fallback is just taking the
+// next rung early. Infra deaths don't advance the ladder (see drive.workerChain).
 export const MODELS = {
-  worker: ['codex-gpt-5.6-terra', 'claude-opus'],
+  worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
   judge: ['claude-opus', 'codex-gpt-5.6-sol'],
   gaming: ['claude-sonnet', 'codex-gpt-5.6-terra'],
   reintegrate: ['claude-opus', 'codex-gpt-5.6-sol'],

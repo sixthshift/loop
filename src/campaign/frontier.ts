@@ -114,7 +114,7 @@ function findCycles(b: Backlog, byId: Map<string, Ticket>): string[][] {
 // of these is the machine failing, not the ticket. New attempts carry `infra`
 // directly; this keeps the verdict stable across pre-flag backlogs.
 const INFRA_SENTINELS = new Set(['worker-channel', 'merge-conflict']);
-const isInfra = (a: { infra?: boolean; failed?: string[] | string }): boolean => {
+export const isInfraAttempt = (a: { infra?: boolean; failed?: string[] | string }): boolean => {
   if (a.infra) return true;
   const f = Array.isArray(a.failed) ? a.failed : a.failed ? [a.failed] : [];
   return f.length > 0 && f.every(x => INFRA_SENTINELS.has(x));
@@ -136,7 +136,7 @@ function findWalls(
   const stuck: Frontier['stuck'] = [];
   for (const id of ready) {
     const all = byId.get(id)!.attempts ?? [];
-    const merit = all.filter(a => !isInfra(a));
+    const merit = all.filter(a => !isInfraAttempt(a));
     const infra = all.length - merit.length;
     if (merit.length >= caps.maxAttempts) capped.push({ ticket: id, attempts: merit.length });
     else if (infra >= infraCap) capped.push({ ticket: id, attempts: all.length });
