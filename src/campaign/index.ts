@@ -12,7 +12,8 @@ import type { CampaignContext } from './state.ts';
 import { intake } from './intake.ts';
 import { drive } from './drive.ts';
 import { retrospective } from './retrospective.ts';
-import { Escalation } from './escalate.ts';
+import { Escalation, parkedSummary } from './escalate.ts';
+import { backlog } from './backlog.ts';
 import * as tui from '../tui/tui.ts';
 
 
@@ -28,9 +29,14 @@ export async function runCampaign(specArg: string | null): Promise<void> {
       process.exit(2);
     }
     acquireLock();
-    // Coverage gaps re-open the drive — loop until the retrospective closes clean.
+    // Coverage gaps re-open the drive — loop until the retrospective closes
+    // clean OR the drive drains to a graceful human-decision pause. Only a
+    // 'complete' drive enters retrospective's close path (coverage, harvest,
+    // spec-done, state deletion); an 'awaiting-human' drain is a resumable
+    // pause, reported and left intact — never retrospective's ungated-gate throw.
     while (true) {
-      await drive(ctx);
+      const outcome = await drive(ctx);
+      if (outcome === 'awaiting-human') { reportAwaitingHuman(); return; }
       const { resume } = await retrospective(ctx);
       if (!resume) break;
     }
@@ -52,6 +58,36 @@ export async function runCampaign(specArg: string | null): Promise<void> {
     console.error('\nre-run `loop resume` to reconcile and continue.');
     process.exit(1);
   }
+}
+
+// The graceful drain: the drive resolved everything it could and paused on the
+// decisions that are genuinely the human's. NOT an escalation — state is intact
+// and `loop resume` continues. Report what shipped and what's deferred, each
+// with the reason the loop recorded, so the human fixes exactly what remains.
+function reportAwaitingHuman(): void {
+  tui.stop();
+  const b = backlog();
+  const closed = b.tickets.filter(t => t.status === 'closed').length;
+  const { tickets, phases } = parkedSummary();
+  const reasonFor = (subject: string): string => {
+    const notes = journalEntries().filter(e => e.kind === 'parked' && e.subject === subject);
+    return notes[notes.length - 1]?.body || 'parked (no reason recorded)';
+  };
+  console.log('\n════════ CAMPAIGN PAUSED — decisions deferred to you ════════\n');
+  console.log(`shipped: ${closed}/${b.tickets.length} tickets closed.`);
+  if (!tickets.length && !phases.length) {
+    console.log('\nnothing parked, yet no autonomous work remained — inspect the journal.');
+  } else {
+    if (tickets.length) {
+      console.log('\ntickets awaiting a decision:');
+      for (const id of tickets) console.log(`  • ${id}: ${reasonFor(id).slice(0, 400)}`);
+    }
+    if (phases.length) {
+      console.log('\nphase gates awaiting a decision:');
+      for (const p of phases) console.log(`  • phase ${p}: ${reasonFor(p).slice(0, 400)}`);
+    }
+  }
+  console.log('\nresolve these, then `loop resume` — state is intact.');
 }
 
 async function establishCampaign(spec: string | null): Promise<CampaignContext> {

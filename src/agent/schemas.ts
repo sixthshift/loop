@@ -77,6 +77,7 @@ export type TriageAction = {
   body?: string;
   note?: string;
   instruction?: string;
+  resetAttempts?: boolean; // update only: clear a stale wall when this patch changes the contract
 };
 
 export type TriageVerdict = { actions: TriageAction[]; escalate?: string; summary: string };
@@ -313,6 +314,7 @@ const ACTION = {
     body: { type: 'string' },
     note: { type: 'string' },
     instruction: { type: 'string' },
+    resetAttempts: { type: 'boolean' },
   },
   required: ['command'],
   additionalProperties: false,

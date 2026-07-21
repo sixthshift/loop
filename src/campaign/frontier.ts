@@ -33,7 +33,7 @@ export function frontier(): Frontier {
     .filter(t => (t.depends_on ?? []).every(d => byId.get(d)?.status === 'closed'))
     .map(t => t.id);
 
-  const { capped, stuck } = findWalls(ready, byId, b.caps ?? { maxAttempts: 3, thrash: 2 });
+  const { capped, stuck } = findWalls(ready, byId, b.caps ?? { maxAttempts: 3, thrash: 2, infraCap: 8 });
   const walled = new Set([...capped, ...stuck].map(x => x.ticket));
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
@@ -109,21 +109,39 @@ function findCycles(b: Backlog, byId: Map<string, Ticket>): string[][] {
   return cycles;
 }
 
+// Sentinels for infra attempts recorded before the explicit `infra` flag
+// existed (or by any path that forgets it): a `failed` list that is exactly one
+// of these is the machine failing, not the ticket. New attempts carry `infra`
+// directly; this keeps the verdict stable across pre-flag backlogs.
+const INFRA_SENTINELS = new Set(['worker-channel', 'merge-conflict']);
+const isInfra = (a: { infra?: boolean; failed?: string[] | string }): boolean => {
+  if (a.infra) return true;
+  const f = Array.isArray(a.failed) ? a.failed : a.failed ? [a.failed] : [];
+  return f.length > 0 && f.every(x => INFRA_SENTINELS.has(x));
+};
+
 // --- walls: ready tickets held out of dispatch until a human intervenes.
-//     capped = hit the attempt cap; stuck = thrashing (failing set not
-//     shrinking across the last `thrash` attempts). ---------------------------
+//     capped = hit the merit-attempt cap; stuck = thrashing (merit failing set
+//     not shrinking); infra-exhausted = the machine kept dying past infraCap.
+//     Infra failures never count toward capped/stuck — a ticket earns a merit
+//     wall only by genuinely failing on its own terms — but a large infraCap
+//     still stops a truly-dead engine from re-dispatching forever. ------------
 function findWalls(
   ready: string[],
   byId: Map<string, Ticket>,
-  caps: { maxAttempts: number; thrash: number },
+  caps: { maxAttempts: number; thrash: number; infraCap?: number },
 ): { capped: Frontier['capped']; stuck: Frontier['stuck'] } {
+  const infraCap = caps.infraCap ?? 8;
   const capped: Frontier['capped'] = [];
   const stuck: Frontier['stuck'] = [];
   for (const id of ready) {
-    const a = byId.get(id)!.attempts ?? [];
-    if (a.length >= caps.maxAttempts) capped.push({ ticket: id, attempts: a.length });
-    if (a.length >= caps.thrash) {
-      const recent = a.slice(-caps.thrash).map(x => new Set<string>(x.failed ?? []));
+    const all = byId.get(id)!.attempts ?? [];
+    const merit = all.filter(a => !isInfra(a));
+    const infra = all.length - merit.length;
+    if (merit.length >= caps.maxAttempts) capped.push({ ticket: id, attempts: merit.length });
+    else if (infra >= infraCap) capped.push({ ticket: id, attempts: all.length });
+    if (merit.length >= caps.thrash) {
+      const recent = merit.slice(-caps.thrash).map(x => new Set<string>(x.failed ?? []));
       let shrinking = false;
       for (let i = 1; i < recent.length; i++) if (recent[i]!.size < recent[i - 1]!.size) shrinking = true;
       if (!shrinking && recent.every(s => s.size > 0)) stuck.push({ ticket: id, window: caps.thrash });

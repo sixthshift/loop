@@ -62,8 +62,9 @@ export async function triage(anomaly: Anomaly): Promise<TriageVerdict> {
 export async function execAction(a: TriageAction, anomaly: Anomaly): Promise<string> {
   switch (a.command) {
     case 'update':
-      backlogWrite(['update', a.ticketId!, '-', '--note', a.note ?? 'triage'], a.patch ?? {});
-      return `update ${a.ticketId}`;
+      backlogWrite(['update', a.ticketId!, '-', '--note', a.note ?? 'triage',
+        ...(a.resetAttempts ? ['--reset-attempts'] : [])], a.patch ?? {});
+      return `update ${a.ticketId}${a.resetAttempts ? ' (attempts reset)' : ''}`;
     case 'set-status':
       backlogWrite(['set-status', a.ticketId!, a.to!, '--note', a.note ?? 'triage']);
       return `set-status ${a.ticketId} ${a.to}`;

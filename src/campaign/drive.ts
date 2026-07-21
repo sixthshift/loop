@@ -53,12 +53,13 @@ const isIdle = (workers: Workers) => workers.size === 0;
 // other: journal it, hand it to a fresh triage agent, keep driving. The same
 // error twice is a missing arm, not a flake — that escalates. Escalations pass
 // through untouched: they are the honest exit, not a crash.
-export async function drive(ctx: CampaignContext): Promise<void> {
+export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaiting-human'> {
   const workers: Workers = new Map();
   let closesSinceReview = 0;
   let reconciled = false;
   let lastCrash: string | null = null;
   const handledProblemSigs = new Set<string>(); // frontier problem-sets already handed to resolveOrPark
+  const resolvedWalls = new Set<string>(); // tickets whose merit wall already went to the resolver once
 
   while (true) {
     try {
@@ -85,13 +86,32 @@ export async function drive(ctx: CampaignContext): Promise<void> {
       }
 
       if (capped.length || stuck.length) {
-        // Walls used to exit the campaign; now they park. Marking each ticket
-        // blocked drops it from `ready`, so it stops re-reporting as a wall, and
-        // the loop keeps driving everything disjoint from it.
+        // A merit wall is a decision, not a dead end: hand it to the resolver
+        // ONCE before parking. The resolver reads the attempt hypotheses and
+        // fixes the campaign's definition at the root — a check that never
+        // matched the DoD, a contract that contradicts the delivered schema, an
+        // under-built dependency (repair ticket + rewire) — audited, then resets
+        // the stale wall so the corrected contract gets a fresh run. If it can't
+        // fix it within jurisdiction it parks; either way the ticket leaves
+        // `ready`, so the loop keeps driving everything disjoint from it.
         for (const w of [...capped, ...stuck]) {
-          park(`attempt wall: ${w.ticket} (${ticket(w.ticket).attempts?.length ?? 0} attempts)`, { ticketId: w.ticket });
+          const t = ticket(w.ticket);
+          const last = t.attempts?.[t.attempts.length - 1];
+          const detail = `${w.ticket} "${t.title}" — ${t.attempts?.length ?? 0} attempts`
+            + (last?.hypothesis ? `; last: ${last.hypothesis.slice(0, 200)}` : '');
+          if (resolvedWalls.has(w.ticket)) {
+            // Already resolved once and it re-walled — the fix didn't hold, so
+            // this is genuinely the human's. Park it (graceful drain reports it).
+            park(`attempt wall (second time): ${detail}`, { ticketId: w.ticket });
+            continue;
+          }
+          resolvedWalls.add(w.ticket);
+          await resolveOrPark({
+            kind: 'attempt-wall', ticketId: w.ticket, attempts: t.attempts ?? [],
+            instruction: 'This ticket failed its own checks repeatedly. Read every attempt hypothesis and find the ROOT cause in the campaign definition — a check that never matched the stated DoD, an acceptance clause that contradicts a delivered/closed dependency, a missing or under-built dependency, or a footprint too small to satisfy the acceptance. Fix it at the source within jurisdiction: amend the ticket contract (with resetAttempts:true, since the prior failures were against the old contract), author a repair ticket for an under-built dependency and rewire this ticket onto it, or correct the gate. Never weaken a named invariant or the acceptance to force green — the auditor will reject that. Park only if the fix is genuinely a human scope/security decision the locked spec does not answer.',
+          }, { ticketId: w.ticket });
         }
-        continue; // re-read the frontier without the walled tickets
+        continue; // re-read the frontier — resolved tickets re-dispatch, parked ones are gone
       }
 
       const toClose = phasesDone.filter(p => !phaseClosed(p) && !phaseParked(p));
@@ -102,7 +122,7 @@ export async function drive(ctx: CampaignContext): Promise<void> {
         continue;
       }
 
-      if (complete && isIdle(workers)) return; // → termination
+      if (complete && isIdle(workers)) return 'complete'; // → retrospective
 
       if (hasDrafts()) {
         await vetDrafts();
@@ -119,21 +139,23 @@ export async function drive(ctx: CampaignContext): Promise<void> {
       if (isIdle(workers)) {
         // No work in flight and nothing dispatched: either the graph is blocked
         // or state is wedged. Never report done over live blocked tickets.
-        if (complete) return;
+        if (complete) return 'complete';
         if (control.paused) { await idle(); continue; } // operator pause, not a stall
         await triage({ kind: 'stalled', frontier: frontier() }); // full snapshot; locals omit ready/inFlight/counts
         const after = frontier();
         const canProgress = after.dispatchable.length > 0 || after.phasesDone.some(p => !phaseClosed(p) && !phaseParked(p))
           || hasDrafts() || after.complete;
         if (canProgress) continue;
-        // Nothing autonomous left. This is the only graceful stop: drain-then-
-        // report, not the old mid-campaign exit. Everything resolvable has run;
-        // what remains genuinely needs the human. Surface it and return clean.
+        // Nothing autonomous left, and it's not completion — everything the loop
+        // could resolve has run; what remains is a decision genuinely the
+        // human's. This is a graceful PAUSE, not a stop: state is intact and
+        // `loop resume` continues. `index` renders the deferred-decision report;
+        // returning 'awaiting-human' keeps it out of retrospective's close path.
         const parked = parkedSummary();
         backlogWrite(['note', '--kind', 'awaiting-human', '--subject', 'campaign',
           '--body', `no autonomous work remains — parked tickets [${parked.tickets.join(', ') || 'none'}], parked phases [${parked.phases.join(', ') || 'none'}]. Resolve and \`loop resume\`.`]);
         tui.log(`■ awaiting human — tickets [${parked.tickets.join(', ')}] phases [${parked.phases.join(', ')}]`);
-        return;
+        return 'awaiting-human';
       }
 
       const done = await Promise.race([...workers.values()].map(w => w.promise));
@@ -212,7 +234,11 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
   const { id } = done;
 
   if (done.err) {
-    backlogWrite(['attempt', id, '--failed', 'worker-channel',
+    // Infra, not merit: the worker never rendered a verdict on the ticket — its
+    // session died or the operator killed it. --infra keeps it off the merit
+    // wall so a flaky engine (or a usage-limit stretch) can't exhaust the
+    // ticket's real budget; the separate infraCap still bounds a dead engine.
+    backlogWrite(['attempt', id, '--failed', 'worker-channel', '--infra',
       '--hypothesis', done.err.killed
         ? 'killed by the operator from the dashboard'
         : `worker session died: ${done.err.message.slice(0, 300)}`,
@@ -382,7 +408,10 @@ async function closeTicket(id: string, meta: { dir: string; baseSha: string }, v
   if (!merged.ok) {
     // Reject rather than accept-and-revert: a conflicted merge is a failed
     // attempt, and a fresh dispatch starts from the moved mainline.
-    backlogWrite(['attempt', id, '--failed', 'merge-conflict',
+    // Infra, not merit: the diff was judged closeable and only lost a race with
+    // a moved mainline. Rebuilding against HEAD is mechanical, so it must not
+    // burn the merit budget — --infra keeps it off the wall.
+    backlogWrite(['attempt', id, '--failed', 'merge-conflict', '--infra',
       '--hypothesis', `mainline moved; merge conflict: ${merged.conflict.slice(0, 300)}`,
       '--fix', 'rebuild against current HEAD', '--data', JSON.stringify(telemetry)]);
     removeWorktree(id); deleteBranch(id);

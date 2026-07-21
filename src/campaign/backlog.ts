@@ -12,7 +12,12 @@ import type { Check, TicketDraft } from '../agent/schemas.ts';
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
 export type TicketStatus = 'draft' | 'vetted' | 'in-flight' | 'closed' | 'blocked' | 'failed-wall' | 'decomposed';
-export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string };
+// `infra` marks an attempt that failed for a reason outside the ticket's own
+// merits — the worker session died, was killed, or the mainline moved under a
+// clean diff. Merit failures (verify red, gaming, judge-rejected) are the
+// ticket's own; infra failures are the machine's. The wall logic counts only
+// the merit ones, so a flaky engine can't exhaust a ticket's real budget.
+export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string; infra?: boolean };
 export type Ticket = TicketDraft & { status: TicketStatus; attempts?: Attempt[]; evidence?: string | null; redTeamed?: boolean };
 export type Phase = { id: string; delivers: string; gate?: Check[] };
 export type Backlog = {
@@ -21,7 +26,7 @@ export type Backlog = {
   tickets: Ticket[];
   fastChecks?: Check[];
   outOfScope?: string[];
-  caps?: { maxAttempts: number; thrash: number };
+  caps?: { maxAttempts: number; thrash: number; infraCap?: number };
 };
 
 export function backlog(): Backlog {
@@ -160,7 +165,13 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (errs.length) refuse(`patch leaves ${t.id} invalid:\n${errs.join('\n')}`);
       const demoted = t.status === 'vetted';
       if (demoted) { transition(t, 'draft'); t.redTeamed = false; }
-      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${demoted ? '; vetted → draft, re-vet required' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
+      // Opt-in, audited: the prior attempts were measured against a contract that
+      // this patch just changed, so they no longer describe THIS ticket — a stale
+      // wall the corrected contract shouldn't inherit. Off by default so the
+      // gamed-sharpen path keeps a serial gamer's attempts on the record.
+      const reset = opts['reset-attempts'] === true;
+      if (reset) t.attempts = [];
+      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${demoted ? '; vetted → draft, re-vet required' : ''}${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
       save(b);
       return `${t.id} updated${demoted ? ' (vetted → draft: contract changed, re-vet)' : ''}`;
     }
@@ -236,6 +247,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
         hypothesis: opts.hypothesis,
         fixNote: (opts.fix as string) || '',
         ts: new Date().toISOString(),
+        ...(opts.infra ? { infra: true } : {}),
       };
       (t.attempts ??= []).push(entry as any);
       if (t.status === 'in-flight') transition(t, 'vetted'); // back in the queue for re-dispatch
