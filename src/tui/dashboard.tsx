@@ -20,6 +20,8 @@ import type { JournalEntry } from '../campaign/journal.ts';
 import { control } from './control.ts';
 import { liveness } from './liveness.ts';
 import type { Liveness as LivenessSample } from './liveness.ts';
+import { railGraph } from './railgraph.ts';
+import type { RailGraph, RailLine } from './railgraph.ts';
 
 export function mount() {
   return render(<Dashboard />, { exitOnCtrlC: false });
@@ -35,7 +37,8 @@ type View =
   | { name: 'journal' }
   | { name: 'help' }
   | { name: 'tickets' }
-  | { name: 'ticket'; id: string }
+  | { name: 'graph' }
+  | { name: 'ticket'; id: string; from: 'tickets' | 'graph' }
   | { name: 'inspect'; kind: 'agent' | 'script'; label: string };
 type Confirm = { text: string; onYes: () => void } | null;
 type Frame = { rows: number; cols: number; confirm: Confirm };
@@ -71,6 +74,7 @@ function Dashboard() {
   const [view, setView] = useState<View>({ name: 'active' });
   const [procSel, setProcSel] = useState(0);
   const [ticketSel, setTicketSel] = useState(0);
+  const [graphSel, setGraphSel] = useState(0);
   const [journalOff, setJournalOff] = useState(0); // 0 = follow the tail
   const [filterIdx, setFilterIdx] = useState(0);
   const [confirm, setConfirm] = useState<Confirm>(null);
@@ -81,6 +85,7 @@ function Dashboard() {
   const b = safe(() => (campaignExists() ? backlog() : null));
   const procs = procList();
   const tickets = ticketList(b);
+  const graph = railGraph(tickets);
 
   function quit() {
     killAll(); // stale in-flight reconciliation re-judges surviving branches on resume
@@ -109,13 +114,24 @@ function Dashboard() {
     }
 
     if (view.name === 'help') { if (key.escape || input === 'q' || input === '?') setView({ name: 'active' }); return; }
-    if (view.name === 'ticket') { if (key.escape || input === 'q') setView({ name: 'tickets' }); return; }
+    if (view.name === 'ticket') { if (key.escape || input === 'q') setView(view.from === 'graph' ? { name: 'graph' } : { name: 'tickets' }); return; }
 
     if (view.name === 'tickets') {
       if (key.escape || input === 'q') return setView({ name: 'active' });
+      if (input === 'g') { setGraphSel(0); return setView({ name: 'graph' }); }
       if (key.upArrow || input === 'k') setTicketSel(s => Math.max(0, s - 1));
       if (key.downArrow || input === 'j') setTicketSel(s => Math.min(tickets.length - 1, s + 1));
-      if (key.return && tickets.length) setView({ name: 'ticket', id: tickets[clamp(ticketSel, tickets.length)]!.id });
+      if (key.return && tickets.length) setView({ name: 'ticket', id: tickets[clamp(ticketSel, tickets.length)]!.id, from: 'tickets' });
+      return;
+    }
+
+    if (view.name === 'graph') {
+      if (key.escape || input === 'q') return setView({ name: 'active' });
+      if (input === 't') { setTicketSel(0); return setView({ name: 'tickets' }); }
+      if (input === '?') return setView({ name: 'help' });
+      if (key.upArrow || input === 'k') setGraphSel(s => Math.max(0, s - 1));
+      if (key.downArrow || input === 'j') setGraphSel(s => Math.min(graph.order.length - 1, s + 1));
+      if (key.return && graph.order.length) setView({ name: 'ticket', id: graph.order[clamp(graphSel, graph.order.length)]!, from: 'graph' });
       return;
     }
 
@@ -141,6 +157,7 @@ function Dashboard() {
     if (input === '?') return setView({ name: 'help' });
     if (key.tab) return setView({ name: 'journal' });
     if (input === 't') { setTicketSel(0); return setView({ name: 'tickets' }); }
+    if (input === 'g') { setGraphSel(0); return setView({ name: 'graph' }); }
     if (input === 'p') {
       control.paused = !control.paused;
       return log(control.paused ? '⏸ dispatch paused — in-flight workers will still settle' : '▶ dispatch resumed');
@@ -169,6 +186,7 @@ function Dashboard() {
   const frame: Frame = { rows, cols, confirm };
   if (view.name === 'help') return <HelpView {...frame} />;
   if (view.name === 'tickets') return <TicketsView {...frame} tickets={tickets} sel={clamp(ticketSel, tickets.length)} />;
+  if (view.name === 'graph') return <GraphView {...frame} graph={graph} sel={clamp(graphSel, graph.order.length)} />;
   if (view.name === 'ticket') return <TicketDetailView {...frame} ticket={tickets.find(t => t.id === view.id)} all={tickets} />;
   if (view.name === 'journal') return <JournalView {...frame} journalOff={journalOff} filterIdx={filterIdx} />;
   if (view.name === 'inspect') return <InspectView {...frame} kind={view.kind} label={view.label} />;
@@ -197,7 +215,7 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
       <Rule cols={cols} />
       {store.statusLine ? <Text color="cyan">{trunc(' ' + store.statusLine, cols - 1)}</Text> : null}
       <Footer cols={cols} confirm={confirm}
-        hint="tab journal · j/k move · ↵ inspect · t tickets · p pause · +/- cap · r review · x kill · q quit · ? help" />
+        hint="tab journal · j/k move · ↵ inspect · t tickets · g graph · p pause · +/- cap · r review · x kill · q quit · ? help" />
     </Box>
   );
 }
@@ -332,7 +350,7 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
           </Text>
         );
       })}
-      <Footer cols={cols} confirm={confirm} hint="j/k move · ↵ detail · esc back" />
+      <Footer cols={cols} confirm={confirm} hint="j/k move · ↵ detail · g graph · esc back" />
     </Box>
   );
 }
@@ -365,6 +383,95 @@ function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { tic
           {a.fix ? <Text dimColor>{trunc(`    fix: ${a.fix}`, cols - 2)}</Text> : null}
         </Box>
       ))}
+      <Footer cols={cols} confirm={confirm} hint="esc back" />
+    </Box>
+  );
+}
+
+// --- dependency graph: the backlog DAG as git-log-style rails ---------------
+// A DAG has many parents per node, which no indented tree can draw without
+// either dropping edges or duplicating nodes. So we lay it out the way git draws
+// commit history — vertical lanes that branch and merge (railgraph.ts) — and
+// solve the one thing static rails can't: at a shared crossing, box-drawing
+// renders a real junction and a mere pass-through identically. The selected
+// ticket's own edges are lit; every other lane and crossing is dimmed, so its
+// dependencies read off unambiguously. j/k moves the selection, driving what's lit.
+
+// A styled run of same-looking characters, coalesced so one line is a handful of
+// <Text> spans rather than one per character.
+type Run = { text: string; color?: string; dim?: boolean; bold?: boolean };
+const runKey = (r: Omit<Run, 'text'>) => `${r.color ?? ''}|${r.dim ? 1 : 0}|${r.bold ? 1 : 0}`;
+
+function railRuns(l: RailLine, li: number, g: RailGraph, arms: Map<string, number>, role: (id: string) => 'sel' | 'end' | 'other'): Run[] {
+  const runs: Run[] = [];
+  const push = (ch: string, s: Omit<Run, 'text'>) => {
+    const last = runs[runs.length - 1];
+    if (last && runKey(last) === runKey(s)) last.text += ch;
+    else runs.push({ text: ch, ...s });
+  };
+  const railChars = [...l.rail];
+  const nodePos = l.kind === 'node' ? l.nodePos : -1;
+  for (let p = 0; p < g.gutter; p++) {
+    if (p === nodePos && l.kind === 'node') {
+      const [gl, color] = STATUS_GLYPH[l.status] ?? ['·', undefined];
+      const r = role(l.id);
+      push(gl, { color, bold: r !== 'other', dim: r === 'other' });
+      continue;
+    }
+    const ch = railChars[p] ?? ' ';
+    if (ch === ' ') { push(' ', {}); continue; }
+    const lit = (arms.get(`${li},${p}`) ?? 0) & g.bitsFor(ch);
+    if (lit) push(g.glyph(lit), { color: 'cyan', bold: true });
+    else push(ch, { dim: true });
+  }
+  return runs;
+}
+
+function GraphView({ rows: termRows, cols, confirm, graph, sel }: Frame & { graph: RailGraph; sel: number }) {
+  if (!graph.order.length) return <EmptyGraph cols={cols} confirm={confirm} />;
+  const selId = graph.order[sel]!;
+  const selLine = graph.nodeLineIndex.get(selId)!;
+  const arms = graph.litArms(selId);
+  const endpoints = graph.endpoints(selId);
+  const role = (id: string): 'sel' | 'end' | 'other' => (id === selId ? 'sel' : endpoints.has(id) ? 'end' : 'other');
+  const labelRoom = Math.max(6, cols - graph.gutter - 3);
+
+  const listRows = Math.max(3, termRows - 3);
+  const start = Math.max(0, Math.min(selLine - Math.floor(listRows / 2), graph.lines.length - listRows));
+  const visible = graph.lines.slice(start, start + listRows);
+  return (
+    <Box flexDirection="column" width={cols}>
+      <Text bold>
+        {` dependency graph (${graph.order.length})`}
+        <Text dimColor>{`   ${selId} · its edges lit — deps above ↑ / dependents below ↓`}</Text>
+      </Text>
+      <Rule cols={cols} />
+      {visible.map((l, i) => {
+        const li = start + i;
+        const runs = railRuns(l, li, graph, arms, role);
+        return (
+          <Text key={li}>
+            {runs.map((r, j) => <Text key={j} color={r.color} dimColor={r.dim} bold={r.bold}>{r.text}</Text>)}
+            {l.kind === 'node' ? <GraphLabel l={l} room={labelRoom} role={role(l.id)} /> : null}
+          </Text>
+        );
+      })}
+      <Footer cols={cols} confirm={confirm} hint="j/k select · ↵ detail · t list · esc back" />
+    </Box>
+  );
+}
+
+function GraphLabel({ l, room, role }: { l: Extract<RailLine, { kind: 'node' }>; room: number; role: 'sel' | 'end' | 'other' }) {
+  const text = `  ${trunc(`${l.id} ${l.title}`, room)}`;
+  return <Text bold={role === 'sel'} dimColor={role === 'other'}>{text}</Text>;
+}
+
+function EmptyGraph({ cols, confirm }: { cols: number; confirm: Confirm }) {
+  return (
+    <Box flexDirection="column" width={cols}>
+      <Text bold> dependency graph</Text>
+      <Rule cols={cols} />
+      <Text dimColor> no tickets yet — esc to go back</Text>
       <Footer cols={cols} confirm={confirm} hint="esc back" />
     </Box>
   );
@@ -468,6 +575,7 @@ function HelpView({ cols, confirm }: Frame) {
     ['j/k ↑/↓', 'move selection / scroll the journal'],
     ['↵', 'inspect the selected agent or script live; open ticket detail'],
     ['t', 'ticket browser'],
+    ['g', 'dependency graph — rails; j/k lights the selected ticket’s edges'],
     ['f', `journal filter (${FILTERS.map(f => f.name).join(' → ')})`],
     ['p', 'pause/resume dispatch (in-flight workers still settle)'],
     ['+/-', 'raise/lower the worker cap'],
