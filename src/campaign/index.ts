@@ -68,23 +68,23 @@ function reportAwaitingHuman(): void {
   tui.stop();
   const b = backlog();
   const closed = b.tickets.filter(t => t.status === 'closed').length;
-  const { tickets, phases } = parkedSummary();
+  const { tickets, gateParked } = parkedSummary();
   const reasonFor = (subject: string): string => {
     const notes = journalEntries().filter(e => e.kind === 'parked' && e.subject === subject);
     return notes[notes.length - 1]?.body || 'parked (no reason recorded)';
   };
   console.log('\n════════ CAMPAIGN PAUSED — decisions deferred to you ════════\n');
   console.log(`shipped: ${closed}/${b.tickets.length} tickets closed.`);
-  if (!tickets.length && !phases.length) {
+  if (!tickets.length && !gateParked) {
     console.log('\nnothing parked, yet no autonomous work remained — inspect the journal.');
   } else {
     if (tickets.length) {
       console.log('\ntickets awaiting a decision:');
       for (const id of tickets) console.log(`  • ${id}: ${reasonFor(id).slice(0, 400)}`);
     }
-    if (phases.length) {
-      console.log('\nphase gates awaiting a decision:');
-      for (const p of phases) console.log(`  • phase ${p}: ${reasonFor(p).slice(0, 400)}`);
+    if (gateParked) {
+      console.log('\ncampaign gate awaiting a decision:');
+      console.log(`  • ${reasonFor('campaign-gate').slice(0, 400)}`);
     }
   }
   console.log('\nresolve these, then `loop resume` — state is intact.');

@@ -4,9 +4,9 @@
 // whole contract.
 //
 // The ailoop skill ships its own terminal-runnable copy (frontier.mjs) for its
-// agent-driven path. The two duplicate this algorithm on purpose and share no
-// code, so the skill stays self-contained in any project. They must agree
-// ticket-for-ticket — change the verdict here and you change it there too.
+// agent-driven path. The two are independent by design and no longer mirror
+// each other: this TS loop drives a single campaign-level gate (no phases),
+// while the skill retains per-phase gating. Deliberate divergence, not drift.
 
 import path from 'node:path';
 import { backlog } from './backlog.ts';
@@ -37,23 +37,13 @@ export function frontier(): Frontier {
   const walled = new Set([...capped, ...stuck].map(x => x.ticket));
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
-  // phasesDone: phases whose live tickets are all gone (and had at least one).
-  // Stays true once a phase is sealed — the coordinator filters already-closed
-  // phases against the journal; here we only know the work is drained.
-  const phasesDone = (b.phases ?? [])
-    .filter(p => {
-      const ts = b.tickets.filter(t => t.phase === p.id);
-      return ts.length > 0 && ts.every(t => !isLive(t));
-    })
-    .map(p => p.id);
-
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
   // blocked/draft/vetted/failed-wall tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
-  return { problems, cycles, ready, dispatchable, capped, stuck, phasesDone, inFlight, complete, counts };
+  return { problems, cycles, ready, dispatchable, capped, stuck, inFlight, complete, counts };
 }
 
 // --- structural problems: the graph lying about what's runnable ------------

@@ -19,10 +19,10 @@ export type Anomaly = { kind: string } & Record<string, unknown>;
 export function backlogSummary() {
   const b = backlog();
   return {
-    phases: b.phases.map(p => p.id),
+    gate: (b.gate ?? []).map(g => g.name),
     outOfScope: b.outOfScope,
     tickets: b.tickets.map(t => ({
-      id: t.id, title: t.title, status: t.status, phase: t.phase,
+      id: t.id, title: t.title, status: t.status,
       depends_on: t.depends_on, files: t.files, attempts: (t.attempts ?? []).length,
     })),
   };
@@ -77,9 +77,9 @@ export async function execAction(a: TriageAction, anomaly: Anomaly): Promise<str
       backlogWrite(['note', '--kind', a.kind ?? 'triage-note', '--subject', a.subject ?? 'campaign', '--body', a.body ?? '']);
       return 'note';
     case 'gate': {
-      if (!a.phaseId || !a.gates?.length) throw new Error('gate requires phaseId and a non-empty gates array');
-      backlogWrite(['gate', a.phaseId, '-', '--note', a.note ?? `triage(${anomaly.kind})`], a.gates);
-      return `gate ${a.phaseId} [${a.gates.map(g => g.name).join(', ')}]`;
+      if (!a.gates?.length) throw new Error('gate requires a non-empty gates array');
+      backlogWrite(['gate', '-', '--note', a.note ?? `triage(${anomaly.kind})`], a.gates);
+      return `gate [${a.gates.map(g => g.name).join(', ')}]`;
     }
     case 'repair': {
       // Triage's one actuator beyond the backlog: a fresh full-tool agent for

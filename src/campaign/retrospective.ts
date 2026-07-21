@@ -1,6 +1,6 @@
 // Termination — coverage pass, report, post-mortem, learnings harvest,
-// campaign close. Runs only when frontier reports complete and every phase
-// gate is journaled green.
+// campaign close. Runs only when the frontier reports complete and the
+// campaign gate is journaled green.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +13,8 @@ import { MODELS } from './models.ts';
 import { COVERAGE, HARVEST } from '../agent/schemas.ts';
 import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
 import { renumber } from './triage.ts';
+import { gateGreen } from './drive.ts';
+import { deleteBranch } from './worktree.ts';
 import { mergeLearnings } from './learn.ts';
 import { writePostmortem } from './postmortem.ts';
 import { escalate } from './escalate.ts';
@@ -22,17 +24,19 @@ import * as tui from '../tui/tui.ts';
 // the drive picks the new tickets up and the campaign continues.
 export async function retrospective(ctx: CampaignContext): Promise<{ resume: boolean }> {
   const b = backlog();
-  const phaseCloses = journalEntries().filter(j => j.kind === 'phase-close');
-  const unGated = b.phases.filter(p => !phaseCloses.some(j => j.subject === p.id));
-  if (unGated.length) escalate(`termination reached with unrun phase gates: ${unGated.map(p => p.id).join(', ')}`);
+  // The drive only returns 'complete' with the gate green; a false here means
+  // state was mutated out from under it — a fault, not a graceful end.
+  if (!gateGreen()) escalate('termination reached with an unrun or stale campaign gate');
 
   tui.log('retrospective: coverage pass…');
+  const gateClose = [...journalEntries()].reverse().find(j => j.kind === 'campaign-gate-close');
   const closed = b.tickets.filter(t => t.status === 'closed');
   const cov = (await agent<CoverageVerdict>({
     prompt: renderPrompt('coverage', {
       spec: ctx.spec,
       tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, evidence: t.evidence })),
-      phaseCloses,
+      outOfScope: b.outOfScope ?? [],
+      gateEvidence: gateClose?.body ?? '(no gate configured)',
     }),
     models: MODELS.coverage,
     schema: COVERAGE,
@@ -90,6 +94,9 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   console.log(h.report);
   console.log(`\npost-mortem: ${postmortem}`);
 
+  // Branches survived the whole campaign for gate bisection; the gate is green
+  // and archived, so the window is over — reap them before tearing down.
+  for (const t of closed) deleteBranch(t.id);
   fs.rmSync(RUN, { recursive: true, force: true });
   fs.rmSync(WORKTREES, { recursive: true, force: true });
   sh('git worktree prune');

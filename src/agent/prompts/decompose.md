@@ -4,7 +4,6 @@ Every ticket must have:
 
 - `id`: "T001", "T002", ... sequential.
 - `title`: imperative, one line.
-- `phase`: the spec phase it closes toward (one of: {{phaseIds}}).
 - `depends_on`: ticket ids it needs closed first. Wire only real dependencies — every edge serializes work.
 - `files`: NON-EMPTY array — the worker's declared footprint. The verifier fails any diff outside it (manifest/lockfiles allowed). Two tickets sharing a file can never run in parallel, so keep footprints tight and disjoint.
 - `resources`: OPTIONAL — shared external state its checks MUTATE (a dev DB they reset, a queue). Read-only touches don't count.
@@ -13,7 +12,7 @@ Every ticket must have:
 - `acceptance`: prose definition of done.
 - `acceptanceChecks`: runnable mirror of acceptance — `[{name, cmd}]`, exit codes decide. Prefer input→output contrast checks over artifact-existence checks — existence is the most gameable form.
 
-Near-term phases get full detail; later phases may be coarser (they'll be refined during the drive).
+Foundational tickets get full detail; tickets built on top may be coarser (they'll be refined during the drive). Order the backlog so the riskiest work is wired to build first — dependencies, not phases, sequence the campaign now.
 
 {{learnings}}
 

@@ -21,7 +21,6 @@ export type Frontier = {
   dispatchable: string[];
   capped: { ticket: string; attempts: number }[];
   stuck: { ticket: string; window: number }[];
-  phasesDone: string[];
   inFlight: string[];
   complete: boolean;
   counts: Record<string, number>;

@@ -25,8 +25,6 @@
 //                 close / retry / gamed / flake-probe / amend / park.
 //   gaming      — reads the diff for cheats: hardcoded outputs, weakened or
 //                 deleted tests, special-cased inputs, out-of-scope features.
-//   reintegrate — at phase close, judges whether the phase's tickets actually
-//                 compose into what the phase promised (green parts ≠ whole).
 //   reviewer    — periodic pass over the journal for the cross-ticket patterns
 //                 no single per-ticket verdict can see.
 //   critic      — vets a draft ticket before dispatch across five questions:
@@ -42,7 +40,7 @@
 //   repair      — environment / machine-fault fixer (installs, stale ports,
 //                 wedged git): full tools, the box only, never the work.
 //   seed        — reads the locked spec once at intake into the campaign config:
-//                 phases, gates, fast-checks, out-of-scope, blockers.
+//                 the gate, fast-checks, out-of-scope, blockers.
 //   decompose   — turns the spec (or a too-big ticket) into the draft ticket
 //                 backlog.
 //   coverage    — final pass at termination: which spec requirements map to no
@@ -59,7 +57,6 @@ export const MODELS = {
   worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
   judge: ['claude-opus', 'codex-gpt-5.6-sol'],
   gaming: ['claude-sonnet', 'codex-gpt-5.6-terra'],
-  reintegrate: ['claude-opus', 'codex-gpt-5.6-sol'],
   reviewer: ['claude-opus', 'codex-gpt-5.6-sol'],
   critic: ['claude-sonnet', 'codex-gpt-5.6-terra'],
   triage: ['claude-opus', 'codex-gpt-5.6-sol'],

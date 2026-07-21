@@ -45,7 +45,7 @@ export async function intake(specPath: string): Promise<void> {
   fs.mkdirSync(RUN, { recursive: true });
   backlogWrite(['init', '--project', project]);
   ensureGitignore();
-  backlogWrite(['seed', '-'], { fastChecks: seed.fastChecks, phases: seed.phases, outOfScope: seed.outOfScope });
+  backlogWrite(['seed', '-'], { fastChecks: seed.fastChecks, gate: seed.gate, outOfScope: seed.outOfScope });
   backlogWrite(['note', '--kind', 'intake', '--subject', 'spec',
     '--body', `sha256=${sha} coordinator=script`, '--data', JSON.stringify({ specPath, sha })]);
   if (learnings?.['flakes.json']) {
@@ -58,8 +58,7 @@ export async function intake(specPath: string): Promise<void> {
     const res = (await agent<DecomposeVerdict>({
       prompt: renderPrompt('decompose', {
         spec,
-        phaseIds: seed.phases.map(p => p.id).join(', '),
-        config: { fastChecks: seed.fastChecks, phases: seed.phases, outOfScope: seed.outOfScope },
+        config: { fastChecks: seed.fastChecks, gate: seed.gate, outOfScope: seed.outOfScope },
         learnings: learnings?.['sizing.md']
           ? `## Sizing priors from past campaigns (decompose preemptively)\n\n${learnings['sizing.md']}`
           : '',
@@ -73,12 +72,9 @@ export async function intake(specPath: string): Promise<void> {
     try {
       backlogWrite(['add', '-'], res.tickets);
       // The pre-flight report goes to the journal — it must outlive the screen.
-      const preflight = seed.phases.map(p => {
-        const n = res.tickets.filter(t => t.phase === p.id).length;
-        return `${p.id}: ${n} ticket(s) — ${p.delivers} [gate: ${p.gate.map(g => g.name).join(', ') || 'none'}]`;
-      }).join('; ');
+      const gateNames = seed.gate.map(g => g.name).join(', ') || 'none';
       backlogWrite(['note', '--kind', 'preflight', '--subject', 'campaign',
-        '--body', `${res.tickets.length} draft ticket(s). ${preflight}${seed.notes ? ` — ${seed.notes}` : ''}`]);
+        '--body', `${res.tickets.length} draft ticket(s). campaign gate: [${gateNames}]${seed.notes ? ` — ${seed.notes}` : ''}`]);
       tui.log(`intake complete: ${res.tickets.length} draft ticket(s)`);
       return;
     } catch (e: any) {

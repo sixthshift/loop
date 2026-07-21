@@ -45,7 +45,7 @@ type Frame = { rows: number; cols: number; confirm: Confirm };
 
 const KIND_ICON: Record<string, string> = {
   close: '✓', attempt: '✗', status: '⇢', add: '+', vet: '✔', decompose: '⑂',
-  triage: '▲', 'triage-refused': '▲', review: '◎', 'phase-close': '■',
+  triage: '▲', 'triage-refused': '▲', review: '◎', 'campaign-gate-close': '■',
   'gate-red': '‼', escalation: '‼', 'accepted-risk': '⚑', 'flake-probe': '≈',
   'integration-red': '‼', verify: '·', intake: '◈', seed: '◈', init: '◈',
 };
@@ -58,7 +58,7 @@ const STATUS_GLYPH: Record<string, [string, string | undefined]> = {
 
 const FILTERS: { name: string; test: (j: JournalEntry) => boolean }[] = [
   { name: 'all', test: () => true },
-  { name: 'progress', test: j => ['close', 'phase-close', 'vet', 'add', 'decompose'].includes(j.kind) },
+  { name: 'progress', test: j => ['close', 'campaign-gate-close', 'vet', 'add', 'decompose'].includes(j.kind) },
   { name: 'problems', test: j => ['attempt', 'triage', 'triage-refused', 'gate-red', 'integration-red', 'escalation', 'flake-probe'].includes(j.kind) },
 ];
 
@@ -205,7 +205,7 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
       <Header cols={cols} b={b} />
       <Rule cols={cols} />
       {b && <>
-        <PhasesPanel b={b} cols={cols} />
+        <GatePanel b={b} cols={cols} />
         <Rule cols={cols} />
         <CountsLine b={b} />
         <Rule cols={cols} />
@@ -262,23 +262,23 @@ function Header({ cols, b }: { cols: number; b: Backlog | null | undefined }) {
   );
 }
 
-function PhasesPanel({ b, cols }: { b: Backlog; cols: number }) {
-  const closes = new Set(journalTail(5000).filter(j => j.kind === 'phase-close').map(j => j.subject));
-  return <>
-    {b.phases.map(p => {
-      const ts = b.tickets.filter(t => t.phase === p.id && t.status !== 'decomposed');
-      const done = ts.filter(t => t.status === 'closed').length;
-      return (
-        <Text key={p.id}>
-          {` ${p.id.padEnd(4)} `}<Bar done={done} total={ts.length} width={24} />
-          {` ${String(done).padStart(2)}/${ts.length}  `}
-          {closes.has(p.id) ? <Text color="green">[gate ✓]</Text>
-            : ts.length && done === ts.length ? <Text color="yellow">[gate …]</Text> : '        '}
-          {`  ${trunc(p.delivers, cols - 50)}`}
-        </Text>
-      );
-    })}
-  </>;
+function GatePanel({ b }: { b: Backlog; cols: number }) {
+  const ts = b.tickets.filter(t => t.status !== 'decomposed');
+  const done = ts.filter(t => t.status === 'closed').length;
+  const live = ts.filter(t => t.status !== 'closed').length;
+  const last = [...journalTail(5000)].reverse()
+    .find(j => j.subject === 'campaign-gate' && (j.kind === 'campaign-gate-close' || j.kind === 'gate-red'));
+  const gate = !b.gate?.length ? <Text dimColor>[no gate]</Text>
+    : last?.kind === 'campaign-gate-close' && live === 0 ? <Text color="green">[gate ✓]</Text>
+    : last?.kind === 'gate-red' ? <Text color="red">[gate ✗]</Text>
+    : live === 0 ? <Text color="yellow">[gate …]</Text>
+    : <Text> </Text>;
+  return (
+    <Text>
+      {'  '}<Bar done={done} total={ts.length} width={24} />
+      {` ${String(done).padStart(2)}/${ts.length}  `}{gate}
+    </Text>
+  );
 }
 
 function CountsLine({ b }: { b: Backlog }) {
@@ -327,9 +327,7 @@ function JournalLine({ j, cols }: { j: JournalEntry; cols: number }) {
 
 function ticketList(b: Backlog | null | undefined): Ticket[] {
   if (!b) return [];
-  const order = new Map(b.phases.map((p, i) => [p.id, i]));
-  return [...b.tickets].sort((x, y) =>
-    (order.get(x.phase) ?? 99) - (order.get(y.phase) ?? 99) || x.id.localeCompare(y.id));
+  return [...b.tickets].sort((x, y) => x.id.localeCompare(y.id));
 }
 
 function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: Ticket[]; sel: number }) {
@@ -345,7 +343,7 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
         return (
           <Text key={t.id} inverse={start + i === sel}>
             {'  '}<Text color={color}>{glyph}</Text>
-            {` ${t.id}  ${t.phase.padEnd(4)} ${t.status.padEnd(11)} ${trunc(t.title, cols - 33 - deps.length)}`}
+            {` ${t.id}  ${t.status.padEnd(11)} ${trunc(t.title, cols - 28 - deps.length)}`}
             <Text dimColor>{deps}</Text>
           </Text>
         );
@@ -365,7 +363,7 @@ function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { tic
     <Box flexDirection="column" width={cols}>
       <Text bold>{` ${t.id} — ${t.title}`}</Text>
       <Rule cols={cols} />
-      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text>{`   phase ${t.phase}`}</Text>
+      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text></Text>
       <Text>{`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`}</Text>
       <Text>{`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`}</Text>
       <Text>{` files  ${t.files?.join(', ') || '(unscoped)'}`}</Text>

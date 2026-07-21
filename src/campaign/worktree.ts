@@ -1,6 +1,6 @@
 // Worker worktree lifecycle. One worktree + branch per dispatched ticket;
-// branches survive until phase close (bisection needs them), worktrees die
-// as soon as the result is judged.
+// branches survive until the campaign gate is green (bisection needs them),
+// worktrees die as soon as the result is judged.
 
 import fs from 'node:fs';
 import path from 'node:path';

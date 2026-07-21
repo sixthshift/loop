@@ -9,7 +9,7 @@ Three prose facets — you return the FULL NEW FILE CONTENT for each (the curren
 - `gaming.md` — cheat shapes the gaming audit caught (feeds future critics).
 - `landmines.md` — codebase surprises that cost a dispatch (feeds future worker context).
 
-Also write `report`: the campaign's final prose report to the human — what was built per phase with gate evidence pointers, check amendments made, quarantined flakes as explicit residuals, escaped bugs and which checks got strengthened, walls hit. Computed from the journal below, never from memory.
+Also write `report`: the campaign's final prose report to the human — what was built with campaign-gate evidence pointers, check amendments made, quarantined flakes as explicit residuals, escaped bugs and which checks got strengthened, walls hit. Computed from the journal below, never from memory.
 
 ## Campaign
 

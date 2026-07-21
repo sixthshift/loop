@@ -10,7 +10,6 @@ export type Check = { name: string; cmd: string };
 export type TicketDraft = {
   id: string;
   title: string;
-  phase: string;
   depends_on?: string[];
   files: string[];
   resources?: string[];
@@ -25,7 +24,7 @@ export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin'>>;
 export type SeedVerdict = {
   blockers: { item: string; needed: string }[];
   fastChecks: Check[];
-  phases: { id: string; delivers: string; gate: Check[] }[];
+  gate: Check[];
   outOfScope: string[];
   notes: string;
 };
@@ -70,7 +69,6 @@ export type TriageAction = {
   patch?: TicketPatch;
   to?: string;
   tickets?: TicketDraft[];
-  phaseId?: string;
   gates?: Check[];
   kind?: string;
   subject?: string;
@@ -98,15 +96,12 @@ export type ReviewerProposal = {
   ticket?: TicketDraft;
   ticketId?: string;
   patch?: TicketPatch;
-  phaseId?: string;
   gates?: Check[];
   note?: string;
   reason?: string;
 };
 
 export type ReviewerVerdict = { proposals: ReviewerProposal[]; summary: string };
-
-export type ReintegrateVerdict = { composes: boolean; tripwire?: string; repairs: TicketDraft[]; notes: string };
 
 export type CoverageVerdict = { done: boolean; missing: TicketDraft[]; summary: string };
 
@@ -131,7 +126,6 @@ export const TICKET = {
   properties: {
     id: { type: 'string' },
     title: { type: 'string' },
-    phase: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
@@ -140,7 +134,7 @@ export const TICKET = {
     acceptance: { type: 'string' },
     acceptanceChecks: { type: 'array', items: CHECK },
   },
-  required: ['id', 'title', 'phase', 'files', 'origin', 'context', 'acceptance', 'acceptanceChecks'],
+  required: ['id', 'title', 'files', 'origin', 'context', 'acceptance', 'acceptanceChecks'],
   additionalProperties: false,
 };
 
@@ -150,7 +144,6 @@ const TICKET_PATCH = {
   type: 'object',
   properties: {
     title: { type: 'string' },
-    phase: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
     files: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
@@ -174,23 +167,11 @@ export const SEED = {
       },
     },
     fastChecks: { type: 'array', items: CHECK },
-    phases: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          delivers: { type: 'string' },
-          gate: { type: 'array', items: CHECK },
-        },
-        required: ['id', 'delivers', 'gate'],
-        additionalProperties: false,
-      },
-    },
+    gate: { type: 'array', items: CHECK },
     outOfScope: { type: 'array', items: { type: 'string' } },
     notes: { type: 'string' },
   },
-  required: ['blockers', 'fastChecks', 'phases', 'outOfScope', 'notes'],
+  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'notes'],
   additionalProperties: false,
 };
 
@@ -307,7 +288,6 @@ const ACTION = {
     patch: TICKET_PATCH,
     to: { type: 'string' },
     tickets: { type: 'array', items: TICKET },
-    phaseId: { type: 'string' },
     gates: { type: 'array', items: CHECK },
     kind: { type: 'string' },
     subject: { type: 'string' },
@@ -378,7 +358,6 @@ export const REVIEWER = {
           ticket: TICKET,
           ticketId: { type: 'string' },
           patch: TICKET_PATCH,
-          phaseId: { type: 'string' },
           gates: { type: 'array', items: CHECK },
           note: { type: 'string' },
           reason: { type: 'string' },
@@ -390,18 +369,6 @@ export const REVIEWER = {
     summary: { type: 'string' },
   },
   required: ['proposals', 'summary'],
-  additionalProperties: false,
-};
-
-export const REINTEGRATE = {
-  type: 'object',
-  properties: {
-    composes: { type: 'boolean' },
-    tripwire: { type: 'string' },
-    repairs: { type: 'array', items: TICKET },
-    notes: { type: 'string' },
-  },
-  required: ['composes', 'repairs', 'notes'],
   additionalProperties: false,
 };
 

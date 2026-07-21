@@ -15,13 +15,13 @@ import { agent, renderPrompt, AgentError } from '../agent/agent.ts';
 import { available } from '../agent/engine.ts';
 import type { AgentResult } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
-import { WORKER, GAMING, JUDGE, REVIEWER, REINTEGRATE } from '../agent/schemas.ts';
-import type { WorkerVerdict, GamingVerdict, JudgeVerdict, ReviewerVerdict, ReintegrateVerdict, Check } from '../agent/schemas.ts';
+import { WORKER, GAMING, JUDGE, REVIEWER } from '../agent/schemas.ts';
+import type { WorkerVerdict, GamingVerdict, JudgeVerdict, ReviewerVerdict, Check } from '../agent/schemas.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
 import { vetDrafts, acceptedRisks } from './critic.ts';
 import { triage, renumber, backlogSummary } from './triage.ts';
 import { resolveOrPark } from './resolve.ts';
-import { escalate, park, parkedSummary, phaseParked, Escalation } from './escalate.ts';
+import { escalate, park, parkedSummary, gateParked, Escalation } from './escalate.ts';
 import * as tui from '../tui/tui.ts';
 import { control } from '../tui/control.ts';
 
@@ -72,7 +72,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         closesSinceReview = 0;
       }
 
-      let { problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = frontier();
+      let { problems, cycles, capped, stuck, complete, dispatchable } = frontier();
 
       if (problems.length || cycles.length) {
         // Try to resolve a given problem-set once; if it survives, it's parked —
@@ -82,7 +82,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         if (!handledProblemSigs.has(sig)) {
           handledProblemSigs.add(sig);
           await resolveOrPark({ kind: 'frontier-problems', problems, cycles });
-          ({ problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = frontier());
+          ({ problems, cycles, capped, stuck, complete, dispatchable } = frontier());
         }
       }
 
@@ -115,19 +115,15 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         continue; // re-read the frontier — resolved tickets re-dispatch, parked ones are gone
       }
 
-      const toClose = phasesDone.filter(p => !phaseClosed(p) && !phaseParked(p));
-      if (toClose.length) {
-        await closePhase(ctx, toClose[0]!);
-        await runReview(ctx); // phase close is a mandatory review checkpoint
-        closesSinceReview = 0;
-        continue;
+      if (complete && isIdle(workers)) {
+        const verdict = await tryComplete();
+        if (verdict) return verdict; // gate green → retrospective, or parked → human
+        continue; // gate just ran (repairs spawned, or newly green) — re-read
       }
-
-      if (complete && isIdle(workers)) return 'complete'; // → retrospective
 
       if (hasDrafts()) {
         await vetDrafts();
-        ({ problems, cycles, capped, stuck, phasesDone, complete, dispatchable } = frontier());
+        ({ problems, cycles, capped, stuck, complete, dispatchable } = frontier());
       }
 
       if (!control.paused) {
@@ -140,12 +136,15 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
       if (isIdle(workers)) {
         // No work in flight and nothing dispatched: either the graph is blocked
         // or state is wedged. Never report done over live blocked tickets.
-        if (complete) return 'complete';
+        if (complete) {
+          const verdict = await tryComplete();
+          if (verdict) return verdict;
+          continue;
+        }
         if (control.paused) { await idle(); continue; } // operator pause, not a stall
         await triage({ kind: 'stalled', frontier: frontier() }); // full snapshot; locals omit ready/inFlight/counts
         const after = frontier();
-        const canProgress = after.dispatchable.length > 0 || after.phasesDone.some(p => !phaseClosed(p) && !phaseParked(p))
-          || hasDrafts() || after.complete;
+        const canProgress = after.dispatchable.length > 0 || hasDrafts() || after.complete;
         if (canProgress) continue;
         // Nothing autonomous left, and it's not completion — everything the loop
         // could resolve has run; what remains is a decision genuinely the
@@ -154,8 +153,8 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         // returning 'awaiting-human' keeps it out of retrospective's close path.
         const parked = parkedSummary();
         backlogWrite(['note', '--kind', 'awaiting-human', '--subject', 'campaign',
-          '--body', `no autonomous work remains — parked tickets [${parked.tickets.join(', ') || 'none'}], parked phases [${parked.phases.join(', ') || 'none'}]. Resolve and \`loop resume\`.`]);
-        tui.log(`■ awaiting human — tickets [${parked.tickets.join(', ')}] phases [${parked.phases.join(', ')}]`);
+          '--body', `no autonomous work remains — parked tickets [${parked.tickets.join(', ') || 'none'}]${parked.gateParked ? ', campaign gate parked' : ''}. Resolve and \`loop resume\`.`]);
+        tui.log(`■ awaiting human — tickets [${parked.tickets.join(', ')}]${parked.gateParked ? ' + campaign gate' : ''}`);
         return 'awaiting-human';
       }
 
@@ -275,7 +274,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
 
   if (reply.tooBig) {
     const children = renumber((reply.proposedTickets ?? []).map(c => ({
-      ...c, origin: `decomposed from ${id}`, phase: c.phase || ticket(id).phase,
+      ...c, origin: `decomposed from ${id}`,
     })));
     if (!children.length) {
       await triage({ kind: 'toobig-without-split', ticketId: id });
@@ -292,7 +291,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     removeWorktree(id); deleteBranch(id);
     await resolveOrPark({
       kind: 'worker-blocked', ticketId: id, reason: reply.reason,
-      instruction: 'First test whether the block is a defect in a completed dependency: read the cited spec section and the delivered code. If a merged/closed ticket was built wrong or under-built against the locked spec, author a repair ticket (origin "repair: <what> under-built vs spec §…"), scoped to fix it at source, and rewire this ticket onto it — the escaped-bug rule applies, exactly as phase-gate-red does. Escalate only if the block needs a decision the locked spec does not already answer.',
+      instruction: 'First test whether the block is a defect in a completed dependency: read the cited spec section and the delivered code. If a merged/closed ticket was built wrong or under-built against the locked spec, author a repair ticket (origin "repair: <what> under-built vs spec §…"), scoped to fix it at source, and rewire this ticket onto it — the escaped-bug rule applies, exactly as campaign-gate-red does. Escalate only if the block needs a decision the locked spec does not already answer.',
     }, { ticketId: id });
     return false;
   }
@@ -443,7 +442,7 @@ async function closeTicket(id: string, meta: { dir: string; baseSha: string }, v
   backlogWrite(['close', id, '--evidence', v.evidence,
     '--note', (verdict.note || workerSummary).slice(0, 500),
     '--data', JSON.stringify(telemetry)]);
-  removeWorktree(id); // branch survives until phase close — bisection needs it
+  removeWorktree(id); // branch survives until the campaign gate is green — bisection needs it
   tui.log(`✓ closed ${id}`);
 
   // The old batch merge's free integration gate: if mainline moved past this
@@ -468,71 +467,58 @@ async function runFastChecks(): Promise<string[]> {
   return red;
 }
 
-// --- phase close ------------------------------------------------------------
+// --- campaign gate: the slow suite, run once when all ticket work drains -----
 
-function phaseClosed(phaseId: string): boolean {
-  return journalEntries().some(j => j.kind === 'phase-close' && j.subject === phaseId);
+// The terminal verdict, or null to keep driving. Called only when the frontier
+// is complete and idle. The gate (e2e / anything needing a live server) runs
+// once here on the whole merged tree — not per ticket. A red gate is an escaped
+// bug: the resolver spawns a repair ticket (loop keeps driving) or parks it
+// (drains to the human). Green — or no gate defined — is completion.
+async function tryComplete(): Promise<'complete' | 'awaiting-human' | null> {
+  if (gateParked()) return 'awaiting-human'; // gate red, resolver couldn't fix it
+  if (gateGreen()) return 'complete';        // green, or no slow suite to run
+  await closeCampaignGate();                 // run it: green journals close, red spawns repairs / parks
+  return null;                               // re-read the frontier next pass
 }
 
-async function closePhase(ctx: CampaignContext, phaseId: string): Promise<void> {
+// The gate is green when it last ran green and no ticket has closed or been
+// added since — coverage/repair work after a green gate must re-clear it. No
+// gate configured collapses completion to "all tickets drained". Exported so
+// retrospective can assert the invariant it depends on (drive never returns
+// 'complete' over an unrun or stale gate).
+export function gateGreen(): boolean {
   const b = backlog();
-  const phase = b.phases.find(p => p.id === phaseId)!;
-  const closed = b.tickets.filter(t => t.phase === phaseId && t.status === 'closed');
+  if (!b.gate?.length) return true;
+  const entries = journalEntries();
+  const lastClose = [...entries].reverse().find(j => j.kind === 'campaign-gate-close');
+  if (!lastClose) return false;
+  return !entries.some(j => (j.seq ?? 0) > (lastClose.seq ?? 0) && (j.kind === 'close' || j.kind === 'add'));
+}
 
+async function closeCampaignGate(): Promise<void> {
+  const b = backlog();
   const results: { name: string; ok: boolean; tail: string }[] = [];
-  for (const g of phase.gate ?? []) {
-    tui.log(`phase ${phaseId} gate: ${g.name}…`);
-    const r = await shAsync(g.cmd, '.', { label: `gate:${phaseId}:${g.name}` });
+  for (const g of b.gate ?? []) {
+    tui.log(`campaign gate: ${g.name}…`);
+    const r = await shAsync(g.cmd, '.', { label: `gate:${g.name}` });
     results.push({ name: g.name, ok: r.status === 0, tail: (r.stdout + r.stderr).slice(-1500) });
   }
   const red = results.filter(r => !r.ok);
 
   if (red.length) {
-    backlogWrite(['note', '--kind', 'gate-red', '--subject', phaseId,
+    backlogWrite(['note', '--kind', 'gate-red', '--subject', 'campaign-gate',
       '--body', `gate red: [${red.map(r => r.name).join(', ')}]`]);
     await resolveOrPark({
-      kind: 'phase-gate-red', phase: phaseId, results,
-      closedTickets: closed.map(t => t.id),
-      instruction: 'A red phase gate is one of two things — decide which by reading the failures. (1) A real escaped bug: spawn a repair ticket whose checks also strengthen what let it through. (2) A gate-scoping fault (the gate runs the wrong things, or contends on shared state): narrow/serialise the gate to what it should verify and RUN the corrected gate to confirm it is green before proposing it. Park (resolved=false) only if neither holds — a genuine phase defect needing a human scope call.',
-    }, { subject: phaseId });
-    return; // resolver fixed the gate (re-closes next pass) or parked it (phaseParked skips it)
+      kind: 'campaign-gate-red', results,
+      closedTickets: b.tickets.filter(t => t.status === 'closed').map(t => t.id),
+      instruction: 'A red campaign gate is one of two things — decide which by reading the failures. (1) A real escaped bug: spawn a repair ticket whose checks also strengthen what let it through. (2) A gate-scoping fault (the gate runs the wrong things, or contends on shared state): narrow/serialise the gate to what it should verify and RUN the corrected gate to confirm it is green before proposing it. Park (resolved=false) only if neither holds — a genuine defect needing a human scope call.',
+    }, { subject: 'campaign-gate' });
+    return; // resolver spawned repairs (re-runs next drain) or parked it (gateParked drains to human)
   }
 
-  const re = (await agent<ReintegrateVerdict>({
-    prompt: renderPrompt('reintegrate', {
-      phase,
-      specSection: ctx.spec,
-      tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, files: t.files })),
-      outOfScope: b.outOfScope ?? [],
-    }),
-    models: MODELS.reintegrate,
-    schema: REINTEGRATE,
-    tools: 'Read,Glob,Grep',
-    label: `reintegrate:${phaseId}`,
-  })).output;
-
-  if (re.tripwire) {
-    // A crossed out-of-scope tripwire is the human's to see — park the phase
-    // (loudly) rather than build past it; it's excluded from close until resolved.
-    park(`phase ${phaseId} crossed out-of-scope tripwire: ${re.tripwire}`, { subject: phaseId });
-    return;
-  }
-  if (!re.composes) {
-    const repairs = renumber(re.repairs);
-    if (repairs.length) {
-      backlogWrite(['add', '-'], repairs);
-      backlogWrite(['note', '--kind', 'reintegration', '--subject', phaseId,
-        '--body', `does not compose: ${re.notes}; repairs [${repairs.map(t => t.id).join(', ')}]`]);
-    } else {
-      await resolveOrPark({ kind: 'reintegration-no-compose', phase: phaseId, notes: re.notes, closedTickets: closed.map(t => t.id) }, { subject: phaseId });
-    }
-    return;
-  }
-
-  backlogWrite(['note', '--kind', 'phase-close', '--subject', phaseId,
-    '--body', `gate green, composes: ${re.notes}`, '--data', JSON.stringify({ gate: results.map(r => r.name) })]);
-  for (const t of closed) deleteBranch(t.id); // green phase — bisection window over
-  tui.log(`■ phase ${phaseId} closed`);
+  backlogWrite(['note', '--kind', 'campaign-gate-close', '--subject', 'campaign-gate',
+    '--body', `gate green: [${results.map(r => r.name).join(', ')}]`, '--data', JSON.stringify({ gate: results.map(r => r.name) })]);
+  tui.log('■ campaign gate green');
 }
 
 // --- reviewer: the scheduled substitute for ambient attention ---------------
@@ -561,7 +547,7 @@ async function runReview(ctx: CampaignContext): Promise<void> {
       if (p.type === 'note') backlogWrite(['note', '--kind', p.kind ?? 'review-note', '--subject', p.subject ?? 'campaign', '--body', p.body ?? '']);
       if (p.type === 'ticket' && p.ticket) backlogWrite(['add', '-'], renumber([p.ticket]));
       if (p.type === 'sharpen') backlogWrite(['update', p.ticketId!, '-', '--note', p.note ?? 'reviewer'], p.patch ?? {});
-      if (p.type === 'gate' && p.phaseId && p.gates?.length) backlogWrite(['gate', p.phaseId, '-', '--note', p.note ?? 'reviewer'], p.gates);
+      if (p.type === 'gate' && p.gates?.length) backlogWrite(['gate', '-', '--note', p.note ?? 'reviewer'], p.gates);
     } catch (e: any) {
       backlogWrite(['note', '--kind', 'review-refused', '--subject', p.ticketId ?? p.type, '--body', e.message]);
     }

@@ -10,7 +10,7 @@
 
 const tty = process.stdout.isTTY;
 
-// A script (verify, flake probe, phase gate, fast check) run through shAsync
+// A script (verify, flake probe, campaign gate, fast check) run through shAsync
 // with a label. Same shape a reader wants as an agent — a live output tail and
 // a pid for the liveness cell — minus the model/token machinery.
 export type ScriptView = {

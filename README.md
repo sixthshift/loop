@@ -1,10 +1,17 @@
 # loop campaign — the script coordinator
 
-The build-loop coordinator as a Node program. Same campaign in spirit and in
-state as the `claude/skills/ailoop` skill — decompose a locked spec into a
-ticket backlog, dispatch parallel workers in git worktrees, independently
-verify every result, judge, repeat until every phase gate is green — but the
-coordinator seat is deterministic code instead of a model reading prose.
+The build-loop coordinator as a Node program. Same campaign in spirit as the
+`claude/skills/ailoop` skill — decompose a locked spec into a ticket backlog,
+dispatch parallel workers in git worktrees, independently verify every result,
+judge, repeat until the campaign gate is green — but the coordinator seat is
+deterministic code instead of a model reading prose.
+
+**Divergence from the skill (deliberate):** this coordinator has no *phase*
+concept. Dependencies sequence the backlog; the slow suite (e2e) is a single
+campaign-level `gate` that runs once, on the whole merged tree, when every
+ticket has drained — not per phase. The skill keeps per-phase gating. The two
+no longer share `backlog.json` shape, so a campaign is bound to the coordinator
+that started it — they cannot resume each other.
 
 ## Why this exists (the rejected alternative)
 
@@ -16,7 +23,7 @@ dispatched a ticket is the builder's advocate, not its auditor. That argument
 generalizes: the long-lived coordinator is context-poisoned for *every*
 verdict. This program is the fixed point of that trajectory — the control
 flow is code, and **every judgment is a fresh-context agent**: seed, decompose,
-critic, gaming, judge, reintegrate, coverage, harvest.
+critic, gaming, judge, coverage, harvest.
 
 The skill remains the better vehicle while the loop's process is still being
 redesigned (editing prose is cheaper than editing code). This coordinator is
@@ -39,14 +46,17 @@ run, deterministic resume, campaigns that outlive a session.
   escaped-bug record. A recurring triage kind should be promoted to a real
   arm in `drive.ts`.
 - **Opportunistic noticing** → the reviewer (`prompts/reviewer.md`), run
-  every 5 closes and at every phase close: one agent over the journal since
-  the last review, asking what no individual verdict sees.
+  every 5 closes: one agent over the journal since the last review, asking
+  what no individual verdict sees.
 
 ## Shared state protocol
 
-`.ailoop/campaign/` and the six mechanical scripts are copied from the **skill's**
-`templates/` at intake — one source of truth, two drivers. Either coordinator
-can resume the other's campaign; `.ailoop/learnings/` is shared verbatim.
+`.ailoop/campaign/` is scaffolded at intake and `.ailoop/learnings/` is shared
+with the skill verbatim — a campaign feeds its harvested learnings back to
+whichever coordinator runs next. The `backlog.json` shape has diverged (no
+phases here), so a *campaign in flight* belongs to the coordinator that started
+it; cross-coordinator resume is no longer supported. Learnings, which are
+schema-free prose and keyed facets, still cross freely.
 
 ## Usage
 
@@ -71,9 +81,9 @@ and `loop resume`. A refused intake (exit 3) leaves no state at all.
 
 On a TTY, `loop campaign` runs an interactive dashboard for the life of the
 run (`dashboard.tsx`, mounted by the `tui.ts` bridge). The main screen is the
-**active work**: per-phase progress bars with gate state, the spend tally, and
+**active work**: the campaign progress bar with gate state, the spend tally, and
 a live list of every process running right now — both agents (`⚙`) and scripts
-(`$`, e.g. `verify:T007`, `gate:P1:e2e`), each with a one-line tail of what
+(`$`, e.g. `verify:T007`, `gate:e2e`), each with a one-line tail of what
 it's doing. The **journal** lives one `tab` away as a scrollable, filterable
 feed. Reading is free-roam: `t` browses tickets (enter: acceptance, checks,
 attempt history), and enter on any process in the active list tails its live
@@ -107,7 +117,7 @@ back to plain timestamped lines and ink is never loaded.
 
 Workers take the ticket's `model` tag (opus default). Critic and gaming run
 sonnet — narrow questions, explicit rubrics. Judge, triage, repair, reviewer,
-reintegration, coverage, and harvest run opus. `verify.mjs` costs no model.
+coverage, and harvest run opus. `verify.mjs` costs no model.
 
 ## Known limits
 
@@ -120,7 +130,8 @@ reintegration, coverage, and harvest run opus. `verify.mjs` costs no model.
   merge → resume-journal) and the live agent layer (prompt → `claude -p`
   → schema → verdict) are smoke-tested; a full spec-to-green run is not.
   First campaign should be a small spec, watched.
-- **Phase-gate bisection is delegated, not scripted.** On a red gate the
-  skill prescribes per-branch bisection; here triage gets the evidence and
-  the branches (kept until phase close) and decides — a scripted bisect arm
-  is the obvious first promotion out of the triage log.
+- **Gate bisection is delegated, not scripted.** On a red campaign gate the
+  resolver gets the evidence and the branches (all kept until the gate is
+  green) and decides — a scripted bisect arm is the obvious first promotion
+  out of the triage log. The bisection surface is the whole campaign, not a
+  phase: the cost of running e2e once instead of per phase.

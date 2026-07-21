@@ -19,12 +19,13 @@ export type TicketStatus = 'draft' | 'vetted' | 'in-flight' | 'closed' | 'blocke
 // the merit ones, so a flaky engine can't exhaust a ticket's real budget.
 export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string; infra?: boolean };
 export type Ticket = TicketDraft & { status: TicketStatus; attempts?: Attempt[]; evidence?: string | null; redTeamed?: boolean };
-export type Phase = { id: string; delivers: string; gate?: Check[] };
 export type Backlog = {
   project: string;
-  phases: Phase[];
   tickets: Ticket[];
   fastChecks?: Check[];
+  // The campaign's slow suite (e2e, anything needing a live server): run once,
+  // on the whole merged tree, when all ticket work has drained — not per ticket.
+  gate?: Check[];
   outOfScope?: string[];
   caps?: { maxAttempts: number; thrash: number; infraCap?: number };
 };
@@ -60,7 +61,6 @@ function validateTicket(t: any, existingIds: Set<string>): string[] {
   if (!t.id || !/^T\d+$/.test(t.id)) errs.push(`bad or missing id: ${t.id}`);
   if (existingIds.has(t.id)) errs.push(`duplicate id: ${t.id}`);
   if (!t.title) errs.push(`${t.id}: missing title`);
-  if (!t.phase) errs.push(`${t.id}: missing phase`);
   if (!Array.isArray(t.files) || t.files.length === 0) errs.push(`${t.id}: files must be a NON-EMPTY array (unknown footprint is unbatchable and unverifiable)`);
   if (!t.context || t.context.length < 40) errs.push(`${t.id}: context too thin to cold-start a worker`);
   if (!t.acceptance) errs.push(`${t.id}: missing acceptance`);
@@ -124,7 +124,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
     case 'init': {
       if (fs.existsSync(BACKLOG)) refuse(`${BACKLOG} already exists — a campaign is in flight`);
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
-      save({ project: (opts.project as string) || 'unnamed', caps: { maxAttempts: 3, thrash: 2 }, fastChecks: [], phases: [], outOfScope: [], tickets: [] });
+      save({ project: (opts.project as string) || 'unnamed', caps: { maxAttempts: 3, thrash: 2 }, fastChecks: [], gate: [], outOfScope: [], tickets: [] });
       journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'}`);
       return `initialized ${BACKLOG}`;
     }
@@ -133,18 +133,15 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (b.tickets.length && !opts.amend) refuse('config is seeded before the first ticket exists — after that, re-run with --amend --note "why" (a journaled amendment)');
       if (opts.amend && !opts.note) refuse('--amend requires --note — the rationale is the record');
       const cfg = readInput(pos[0]);
-      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, phases?, outOfScope?}');
+      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?}');
       const c0 = cfg[0];
       const errs: string[] = [];
-      for (const k of Object.keys(c0)) if (!['fastChecks', 'phases', 'outOfScope'].includes(k)) errs.push(`unknown key ${k} (seed takes fastChecks, phases, outOfScope)`);
+      for (const k of Object.keys(c0)) if (!['fastChecks', 'gate', 'outOfScope'].includes(k)) errs.push(`unknown key ${k} (seed takes fastChecks, gate, outOfScope)`);
       (c0.fastChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`fastCheck missing name or cmd: ${JSON.stringify(c)}`); });
-      (c0.phases || []).forEach((p: any) => {
-        if (!p.id) errs.push(`phase missing id: ${JSON.stringify(p)}`);
-        (p.gate || []).forEach((g: any) => { if (!g.name || !g.cmd) errs.push(`${p.id}: gate command missing name or cmd`); });
-      });
+      (c0.gate || []).forEach((g: any) => { if (!g.name || !g.cmd) errs.push(`gate command missing name or cmd: ${JSON.stringify(g)}`); });
       (c0.outOfScope || []).forEach((o: any) => { if (typeof o !== 'string') errs.push(`outOfScope entries are strings: ${JSON.stringify(o)}`); });
       if (errs.length) refuse(errs.join('\n'));
-      for (const k of ['fastChecks', 'phases', 'outOfScope'] as const) if (c0[k] !== undefined) (b as any)[k] = c0[k];
+      for (const k of ['fastChecks', 'gate', 'outOfScope'] as const) if (c0[k] !== undefined) (b as any)[k] = c0[k];
       journal(opts.amend ? 'amend-config' : 'seed', 'campaign',
         `${opts.amend ? 'amended' : 'seeded'} ${Object.keys(c0).join(', ')}${opts.note ? ` — ${opts.note}` : ''}`);
       save(b);
@@ -157,7 +154,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const patchIn = readInput(pos[1]);
       if (patchIn.length !== 1) refuse('update takes a single patch object');
       const patch = patchIn[0];
-      const MUTABLE = ['title', 'phase', 'depends_on', 'files', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
+      const MUTABLE = ['title', 'depends_on', 'files', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
       const illegal = Object.keys(patch).filter(k => !MUTABLE.includes(k));
       if (illegal.length) refuse(`immutable or unknown field(s): ${illegal.join(', ')} — mutable: ${MUTABLE.join(', ')}`);
       Object.assign(t, patch);
@@ -190,27 +187,25 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return `added ${incoming.length} draft ticket(s)`;
     }
     case 'gate': {
-      // Amend a phase's merged-tree gate. The escaped-bug rule prescribes
+      // Amend the campaign's merged-tree gate. The escaped-bug rule prescribes
       // strengthening the gate when a defect slips past it; this is the
       // actuator that makes that a mutation rather than an escalation. Upsert
       // by name so re-running is idempotent and a cmd can be corrected in place.
       const b = load();
-      const phase = b.phases.find(p => p.id === pos[0]);
-      if (!phase) refuse(`no phase ${pos[0]} — gate amends an existing phase`);
       if (!opts.note) refuse('gate requires --note (the rationale is the record)');
-      const gates = readInput(pos[1]);
+      const gates = readInput(pos[0]);
       const errs = gates.flatMap((g: any) => (!g.name || !g.cmd) ? [`gate entry missing name or cmd: ${JSON.stringify(g)}`] : []);
       if (errs.length) refuse(errs.join('\n'));
-      phase!.gate ??= [];
+      b.gate ??= [];
       const touched: string[] = [];
       for (const g of gates) {
-        const existing = phase!.gate.find(x => x.name === g.name);
+        const existing = b.gate.find(x => x.name === g.name);
         if (existing) { existing.cmd = g.cmd; touched.push(`~${g.name}`); }
-        else { phase!.gate.push({ name: g.name, cmd: g.cmd }); touched.push(`+${g.name}`); }
+        else { b.gate.push({ name: g.name, cmd: g.cmd }); touched.push(`+${g.name}`); }
       }
-      journal('gate-amendment', phase!.id, `${opts.note} — gate [${touched.join(', ')}]`);
+      journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]`);
       save(b);
-      return `phase ${phase!.id} gate amended [${touched.join(', ')}]`;
+      return `campaign gate amended [${touched.join(', ')}]`;
     }
     case 'vet': {
       const b = load();
@@ -277,7 +272,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);
       for (const c of children) {
-        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, phase: c.phase || t.phase, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'draft' });
+        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'draft' });
         ids.add(c.id);
       }
       // rewire dependents of the parent onto ALL children (coordinator may narrow after)

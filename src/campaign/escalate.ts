@@ -35,7 +35,7 @@ export function escalate(reason: string, detail?: unknown): never {
 }
 
 // Park a decision for the human without stopping the campaign. Journals a
-// `parked` note keyed to the ticket/phase, and blocks a live ticket so the
+// `parked` note keyed to the ticket/subject, and blocks a live ticket so the
 // frontier skips it. Best-effort: the note is the durable record even if the
 // status write is illegal for the ticket's current state.
 export function park(reason: string, opts?: { ticketId?: string; subject?: string; detail?: unknown }): void {
@@ -53,23 +53,23 @@ export function park(reason: string, opts?: { ticketId?: string; subject?: strin
   } catch { /* the parked note above is the record; a failed status write is not fatal */ }
 }
 
-// What currently awaits the human: tickets held out of dispatch, plus the phase
-// gates parked without a ticket to carry them. Drives the graceful-stop summary.
-export function parkedSummary(): { tickets: string[]; phases: string[] } {
+// What currently awaits the human: tickets held out of dispatch, plus the
+// campaign gate if it went red and the loop couldn't fix it. Drives the
+// graceful-stop summary.
+export function parkedSummary(): { tickets: string[]; gateParked: boolean } {
   const b = backlog();
   const tickets = b.tickets.filter(t => t.status === 'blocked' || t.status === 'failed-wall').map(t => t.id);
-  const phases = (b.phases ?? []).filter(p => phaseParked(p.id)).map(p => p.id);
-  return { tickets, phases };
+  return { tickets, gateParked: gateParked() };
 }
 
-// A phase gate the loop couldn't get green and couldn't fix — parked, so the
-// close loop stops retrying it and moves on to any independent work. A phase is
-// parked once and unparked only by the human editing the gate and resuming, so
-// a later `gate-amendment` for the same phase clears an earlier `parked`.
-export function phaseParked(phaseId: string): boolean {
+// The campaign gate went red and the resolver couldn't get it green within
+// jurisdiction — parked, so the completion path stops retrying it and drains to
+// a human decision. Parked once and unparked only by the human editing the gate
+// and resuming, so a later `gate-amendment` clears an earlier `parked`.
+export function gateParked(): boolean {
   let parked = false;
   for (const e of journalEntries()) {
-    if (e.subject !== phaseId) continue;
+    if (e.subject !== 'campaign-gate') continue;
     if (e.kind === 'parked') parked = true;
     else if (e.kind === 'gate-amendment') parked = false;
   }

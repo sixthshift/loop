@@ -1,6 +1,6 @@
 // Render the campaign's journal as a self-contained HTML post-mortem: stat
 // tiles, a Gantt timeline (one lane per ticket, dependency arrows, verify
-// overlays, phase-gate markers), per-ticket cost bars, and a table. Zero model
+// overlays, gate markers), per-ticket cost bars, and a table. Zero model
 // cost; facts come from journal.jsonl + backlog.json. The raw journal is
 // embedded in the page (<script id="journal">), so the HTML is also the
 // campaign's durable event archive — deleting campaign/ loses nothing.
@@ -50,8 +50,8 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     if (e.kind === 'verify') t.verifies.push({ ts: e.ts, ...e.data });
     if (e.kind === 'vet') t.vetAt = e.ts;
   }
-  // gate markers: any journaled event whose kind mentions phase (phase-close etc.)
-  const gates = journal.filter(e => /phase/.test(e.kind)).map(e => ({ ts: e.ts, body: `${e.subject}: ${e.body}` }));
+  // gate markers: any journaled gate event (campaign-gate-close, gate-red, gate-amendment)
+  const gates = journal.filter(e => /gate/.test(e.kind)).map(e => ({ ts: e.ts, body: `${e.subject}: ${e.body}` }));
 
   // a span never closed (crash, resume, or a campaign rendered mid-flight)
   // still renders — it ends at the journal's last event, marked open
@@ -80,7 +80,7 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     span: { first: journal[0]!.ts, last: journal.at(-1)!.ts },
     wallMinutes: (t1 - t0) / 60000,
     tickets: rows.map((t: any) => ({
-      id: t.id, phase: t.meta.phase || '', title: t.meta.title || '',
+      id: t.id, title: t.meta.title || '',
       depends_on: t.meta.depends_on || [], model: runModel(t),
       attempts: t.attempts, closedAt: t.closedAt || null,
       closeX: t.closedAt ? x(t.closedAt) : null,
@@ -165,7 +165,6 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
   th { color: var(--ink-2); font-weight: 600; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .phase-chip { font-size: 11px; color: var(--ink-2); border: 1px solid var(--grid); border-radius: 99px; padding: 0 7px; }
 </style>
 <div class="viz-root">
   <h1>ailoop post-mortem — ${data.project}</h1>
@@ -179,7 +178,7 @@ export function writePostmortem(out: string): { tickets: number; events: number 
       <span><span class="sw" style="background:var(--c-fail)"></span>in flight → failed attempt</span>
       <span><span class="sw" style="background:var(--c-repair)"></span>repair ticket</span>
       <span><span class="sw" style="background:var(--c-verify)"></span>verify.mjs</span>
-      <span><span class="sw" style="background:var(--c-gate)"></span>phase event</span>
+      <span><span class="sw" style="background:var(--c-gate)"></span>gate event</span>
       <span><span class="sw" style="background:var(--ink-3); border-radius:99px"></span>close (merged)</span>
     </div>
     <div class="gantt-scroll"><div id="gantt"></div></div>
@@ -235,7 +234,7 @@ for (let m = 0; m * 60000 <= spanMs; m += tickEvery) {
 }
 for (const g of D.gates) {
   svg += '<line class="hov" x1="' + px(g.x) + '" y1="' + PAD_T + '" x2="' + px(g.x) + '" y2="' + (H - PAD_B) + '" stroke="var(--c-gate)" stroke-width="2" opacity="0.7"' +
-    ' data-tip="' + esc('<div class=t-head>phase event</div><div>' + esc(g.body) + '</div><div class=t-sub>' + fmtT(g.ts) + '</div>') + '"/>';
+    ' data-tip="' + esc('<div class=t-head>gate event</div><div>' + esc(g.body) + '</div><div class=t-sub>' + fmtT(g.ts) + '</div>') + '"/>';
 }
 let arrows = '';
 for (const t of D.tickets) {
@@ -254,8 +253,7 @@ for (const t of D.tickets) {
 svg += '<g id="deps">' + arrows + '</g>';
 D.tickets.forEach((t, i) => {
   const y = laneY(i), cy = y + LANE_H / 2, barY = y + (LANE_H - 14) / 2;
-  svg += '<text class="lane-label" data-ticket="' + t.id + '" x="8" y="' + (cy + 4) + '">' + t.id +
-    (t.phase ? ' <tspan font-weight="400" fill="var(--ink-3)">· ' + t.phase + '</tspan>' : '') + '</text>';
+  svg += '<text class="lane-label" data-ticket="' + t.id + '" x="8" y="' + (cy + 4) + '">' + t.id + '</text>';
   for (const s of t.spans) {
     const color = s.repair ? 'var(--c-repair)' : (s.outcome === 'attempt' ? 'var(--c-fail)' : 'var(--c-build)');
     const bw = Math.max(3, (s.x1 - s.x0) * PLOT_W);
@@ -325,9 +323,9 @@ document.getElementById('costbars').innerHTML = sorted.map(t =>
 wireTips(document.getElementById('costbars'));
 
 document.getElementById('tablewrap').innerHTML = '<table><thead><tr>' +
-  '<th>Ticket</th><th>Phase</th><th>Title</th><th>Deps</th><th>Model</th>' +
+  '<th>Ticket</th><th>Title</th><th>Deps</th><th>Model</th>' +
   '<th class="num">In flight</th><th class="num">Verify</th><th class="num">Attempts</th><th class="num">Tokens</th><th class="num">Cost est.</th><th>Closed</th></tr></thead><tbody>' +
-  D.tickets.map(t => '<tr><td><b>' + t.id + '</b></td><td><span class="phase-chip">' + t.phase + '</span></td>' +
+  D.tickets.map(t => '<tr><td><b>' + t.id + '</b></td>' +
     '<td>' + esc(t.title) + '</td><td>' + t.depends_on.join(', ') + '</td><td>' + t.model + '</td>' +
     '<td class="num">' + mins(spanTotal(t)) + '</td>' +
     '<td class="num">' + mins(t.verifies.reduce((s, v) => s + v.durationMs, 0)) + '</td>' +

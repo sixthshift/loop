@@ -24,7 +24,7 @@ If you cannot make the fault green within your jurisdiction, return `resolved: f
 - `{"command": "update", "ticketId": "T0NN", "patch": {...}, "note": "why", "resetAttempts": true}` — draft/vetted ticket contract fields. Set `resetAttempts` ONLY when this patch changes the contract the prior attempts were measured against (an `attempt-wall` fix): the failures were against a contract that no longer exists, so they must not wall the corrected one. Never set it to paper over a ticket that keeps failing its own unchanged checks — that's the wall doing its job.
 - `{"command": "set-status", "ticketId": "T0NN", "to": "<status>", "note": "why"}` — legal transitions only.
 - `{"command": "add", "tickets": [...], "note": "why"}` — new draft tickets (full schema; they go through the critic before dispatch).
-- `{"command": "gate", "phaseId": "N", "gates": [{"name": "...", "cmd": "..."}], "note": "why"}` — amend a phase's merged-tree gate (upsert by name).
+- `{"command": "gate", "gates": [{"name": "...", "cmd": "..."}], "note": "why"}` — amend the campaign's merged-tree gate (upsert by name).
 - `{"command": "note", "kind": "<kind>", "subject": "<subj>", "body": "..."}` — journal-only.
 
 Return `resolved`, the `actions` you've verified, the `evidence` (commands run + results), and — only if `resolved` is false — the `reason`.
