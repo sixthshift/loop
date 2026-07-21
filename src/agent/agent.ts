@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as fleet from './fleet.ts';
 import { log } from '../tui/tui.ts';
+import { appendJournal } from '../campaign/journal.ts';
 import { engineFor, available } from './engine.ts';
 import type { EngineEnvelope } from './engine.ts';
 
@@ -74,13 +75,20 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
     catch (e) {
       if (e instanceof AgentError && (e.killed || !e.transient)) throw e;
       last = e;
-      // A transient fall-through is never silent: a worker quietly demoted from
-      // its preferred engine to the fallback costs more and can collapse the
-      // author≠judge engine split, so the operator sees the swap on the record.
+      // A transient fall-through is never silent — and never undiagnosable. A
+      // worker quietly demoted from its preferred engine to the fallback costs
+      // more and can collapse the author≠judge engine split, so the swap goes on
+      // the record; and the FULL error (the failed CLI's stderr) is journaled,
+      // because a fallback opus then recovers would otherwise vanish with nothing
+      // to grep the next time the same engine flakes.
+      const full = (e as Error).message ?? String(e);
       const next = attempts[i + 1];
-      const why = (e as Error).message?.slice(0, 120) ?? String(e);
-      if (next && next !== model) log(`⚠ ${label}: ${model} failed transiently → falling back to ${next} (${why})`);
-      else if (next) log(`⚠ ${label}: ${model} failed transiently → retrying (${why})`);
+      const move = !next ? `${model} failed, no fallback left`
+        : next === model ? `${model} failed → retrying`
+          : `${model} failed → falling back to ${next}`;
+      try { appendJournal({ kind: 'engine-fallback', subject: label, body: `${move}: ${full}` }); }
+      catch { /* outside a campaign (no journal) — the tui line still surfaces it */ }
+      log(`⚠ ${label}: ${move} (${full.slice(0, 200)})`);
     }
   }
   throw last;
@@ -89,12 +97,12 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
 async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResult<T>> {
   const { prompt, schema, cwd = '.', tools, bypassPermissions = false, timeoutMs = 60 * 60 * 1000, label = 'agent' } = opts;
   const { engine, cliModel } = engineFor(model);
-  const { argv, cleanup } = engine.buildArgv({ prompt, model: cliModel, cwd, schema, tools, bypassPermissions });
+  const { argv, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd, schema, tools, bypassPermissions });
   const reader = engine.reader();
   const startedAt = Date.now();
 
   const envelope = await new Promise<EngineEnvelope>((resolve, reject) => {
-    const child = spawn(engine.bin, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(engine.bin, argv, { cwd, stdio: ['ignore', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
     let buf = '', err = '', killed = false;
     // The child is live from here — the fleet owns it (transcript, pid, spend,
     // kill handle) until close/error removes it. The full prefixed model is the

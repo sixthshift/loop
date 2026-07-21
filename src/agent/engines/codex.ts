@@ -83,7 +83,9 @@ export const codex: Engine = {
     argv.push('-s', bypassPermissions ? 'danger-full-access' : 'read-only');
     if (bypassPermissions) argv.push('--dangerously-bypass-approvals-and-sandbox');
     argv.push(prompt); // positional, last
-    return { argv, cleanup };
+    // codex is Rust: a bare `os error 2` names no path. A backtrace turns the
+    // next flake into something diagnosable rather than a one-line dead end.
+    return { argv, cleanup, env: { RUST_BACKTRACE: '1' } };
   },
   reader() {
     let text = '', tokens = 0, isError = false, errorTransient = false, errorText: string | undefined, saw = false;

@@ -42,7 +42,7 @@ export type BuildInput = {
 
 export type Engine = {
   bin: string;
-  buildArgv(o: BuildInput): { argv: string[]; cleanup?: () => void };
+  buildArgv(o: BuildInput): { argv: string[]; cleanup?: () => void; env?: Record<string, string> };
   reader(): EngineReader;
 };
 
