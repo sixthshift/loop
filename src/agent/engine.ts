@@ -42,7 +42,10 @@ export type BuildInput = {
 
 export type Engine = {
   bin: string;
-  buildArgv(o: BuildInput): { argv: string[]; cleanup?: () => void; env?: Record<string, string> };
+  // The prompt rides `stdin`, never argv — a spec-sized prompt as a positional
+  // arg trips the OS single-argument cap (Linux MAX_ARG_STRLEN ≈ 128 KB) and the
+  // child never spawns (E2BIG). Each engine names the stdin form its CLI reads.
+  buildArgv(o: BuildInput): { argv: string[]; stdin: string; cleanup?: () => void; env?: Record<string, string> };
   reader(): EngineReader;
 };
 

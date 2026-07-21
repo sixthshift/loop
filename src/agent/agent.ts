@@ -103,12 +103,17 @@ async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResul
   // callers pass a relative WORKTREES dir; absolutize once here so every engine
   // gets a real path no matter how the caller expressed it.
   const dir = path.resolve(cwd);
-  const { argv, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd: dir, schema, tools, bypassPermissions });
+  const { argv, stdin, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd: dir, schema, tools, bypassPermissions });
   const reader = engine.reader();
   const startedAt = Date.now();
 
   const envelope = await new Promise<EngineEnvelope>((resolve, reject) => {
-    const child = spawn(engine.bin, argv, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
+    const child = spawn(engine.bin, argv, { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'], env: env ? { ...process.env, ...env } : process.env });
+    // The prompt rides stdin (never argv — see Engine.buildArgv). Swallow EPIPE:
+    // if the child dies before draining stdin, that death surfaces on 'close'
+    // with its own diagnosis; a raw stdin error here would just mask it.
+    child.stdin.on('error', () => {});
+    child.stdin.end(stdin);
     let buf = '', err = '', killed = false;
     // The child is live from here — the fleet owns it (transcript, pid, spend,
     // kill handle) until close/error removes it. The full prefixed model is the

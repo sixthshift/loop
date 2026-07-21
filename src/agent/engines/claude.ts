@@ -18,11 +18,13 @@ type ResultEnvelope = {
 export const claude: Engine = {
   bin: 'claude',
   buildArgv({ prompt, model, schema, tools, bypassPermissions }) {
-    const argv = ['-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--no-session-persistence'];
+    // `-p` with no positional prompt reads it from stdin — keeps a spec-sized
+    // prompt out of argv, where it would trip the OS single-arg cap.
+    const argv = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', model, '--no-session-persistence'];
     if (schema) argv.push('--json-schema', JSON.stringify(schema));
     if (tools !== undefined) argv.push('--tools', tools);
     if (bypassPermissions) argv.push('--dangerously-skip-permissions');
-    return { argv };
+    return { argv, stdin: prompt };
   },
   reader() {
     let envelope: ResultEnvelope | null = null;

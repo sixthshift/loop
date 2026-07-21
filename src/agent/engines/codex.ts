@@ -1,5 +1,5 @@
 // The Codex CLI engine (`codex exec --json`). Differences from Claude that this
-// file absorbs: the prompt is positional; the schema is a file path, not inline
+// file absorbs: the schema is a file path, not inline
 // JSON (so a temp file is written and cleaned up); tool restriction is a sandbox
 // mode, not a tool allowlist; and the terminal state is split across two events
 // — the final answer arrives as an `agent_message` item, the token usage in the
@@ -82,10 +82,10 @@ export const codex: Engine = {
     // gets the sandbox instead of a --tools list.
     argv.push('-s', bypassPermissions ? 'danger-full-access' : 'read-only');
     if (bypassPermissions) argv.push('--dangerously-bypass-approvals-and-sandbox');
-    argv.push(prompt); // positional, last
+    argv.push('-'); // positional `-` = read the prompt from stdin, not argv
     // codex is Rust: a bare `os error 2` names no path. A backtrace turns the
     // next flake into something diagnosable rather than a one-line dead end.
-    return { argv, cleanup, env: { RUST_BACKTRACE: '1' } };
+    return { argv, stdin: prompt, cleanup, env: { RUST_BACKTRACE: '1' } };
   },
   reader() {
     let text = '', tokens = 0, isError = false, errorTransient = false, errorText: string | undefined, saw = false;
