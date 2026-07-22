@@ -21,7 +21,7 @@ export type TicketDraft = {
 
 export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin'>>;
 
-export type SeedVerdict = {
+export type KickoffVerdict = {
   blockers: { item: string; needed: string }[];
   fastChecks: Check[];
   gate: Check[];
@@ -30,15 +30,6 @@ export type SeedVerdict = {
 };
 
 export type DecomposeVerdict = { tickets: TicketDraft[] };
-
-export type CriticVerdict = {
-  tickets: {
-    ticketId: string;
-    findings: { question: 'gaming' | 'blindness' | 'coverage' | 'dependency' | 'scope'; issue: string; severity: Severity }[];
-    patch?: TicketPatch;
-    acceptedRisks: { issue: string; severity: Severity; why: string }[];
-  }[];
-};
 
 export type WorkerVerdict = {
   done?: boolean;
@@ -49,9 +40,7 @@ export type WorkerVerdict = {
   reason?: string;
 };
 
-export type GamingVerdict = { flags: { issue: string; why: string; severity: Severity }[] };
-
-export type JudgeVerdict = {
+export type ReviewVerdict = {
   verdict: 'close' | 'retry' | 'gamed' | 'flake-probe' | 'amend-typo' | 'escalate';
   note?: string;
   failing?: string[];
@@ -63,8 +52,8 @@ export type JudgeVerdict = {
   reason?: string;
 };
 
-export type TriageAction = {
-  command: 'update' | 'set-status' | 'add' | 'note' | 'repair' | 'gate';
+export type RecoverAction = {
+  command: 'update' | 'set-status' | 'add' | 'note' | 'gate';
   ticketId?: string;
   patch?: TicketPatch;
   to?: string;
@@ -74,21 +63,16 @@ export type TriageAction = {
   subject?: string;
   body?: string;
   note?: string;
-  instruction?: string;
   resetAttempts?: boolean; // update only: clear a stale wall when this patch changes the contract
 };
 
-export type TriageVerdict = { actions: TriageAction[]; escalate?: string; summary: string };
+// The recover agent has a runtime (full tools): it runs checks to verify a fix,
+// fixes the environment directly, and returns the backlog mutations it proved
+// green with the evidence. It self-audits; the coordinator applies the actions.
+// Resolved with no actions is legitimate — an environment-only fix.
+export type RecoverVerdict = { resolved: boolean; actions: RecoverAction[]; evidence: string; reason?: string };
 
-// The resolver is triage with a runtime: it may run checks (full tools), so its
-// proposed actions come with the evidence that it ran them green. It never
-// applies — the coordinator applies only after the auditor clears the proposal.
-export type ResolveVerdict = { resolved: boolean; actions: TriageAction[]; evidence: string; reason?: string };
-export type AuditVerdict = { clean: boolean; why: string };
-
-export type RepairVerdict = { resolved: boolean; summary: string };
-
-export type ReviewerProposal = {
+export type SweepProposal = {
   type: 'note' | 'ticket' | 'sharpen' | 'gate' | 'escalate';
   kind?: string;
   subject?: string;
@@ -101,7 +85,7 @@ export type ReviewerProposal = {
   reason?: string;
 };
 
-export type ReviewerVerdict = { proposals: ReviewerProposal[]; summary: string };
+export type SweepVerdict = { proposals: SweepProposal[]; summary: string };
 
 export type CoverageVerdict = { done: boolean; missing: TicketDraft[]; summary: string };
 
@@ -138,7 +122,7 @@ export const TICKET = {
   additionalProperties: false,
 };
 
-// Contract fields a critic/triage/reviewer patch may touch — mirrors
+// Contract fields a recover/sweep patch may touch — mirrors
 // backlog-write.mjs's MUTABLE list.
 const TICKET_PATCH = {
   type: 'object',
@@ -154,7 +138,7 @@ const TICKET_PATCH = {
   additionalProperties: false,
 };
 
-export const SEED = {
+export const KICKOFF = {
   type: 'object',
   properties: {
     blockers: {
@@ -182,52 +166,6 @@ export const DECOMPOSE = {
   additionalProperties: false,
 };
 
-export const CRITIC = {
-  type: 'object',
-  properties: {
-    tickets: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          ticketId: { type: 'string' },
-          findings: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                question: { type: 'string', enum: ['gaming', 'blindness', 'coverage', 'dependency', 'scope'] },
-                issue: { type: 'string' },
-                severity: { type: 'string', enum: ['low', 'medium', 'high'] },
-              },
-              required: ['question', 'issue', 'severity'],
-              additionalProperties: false,
-            },
-          },
-          patch: TICKET_PATCH,
-          acceptedRisks: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                issue: { type: 'string' },
-                severity: { type: 'string', enum: ['low', 'medium', 'high'] },
-                why: { type: 'string' },
-              },
-              required: ['issue', 'severity', 'why'],
-              additionalProperties: false,
-            },
-          },
-        },
-        required: ['ticketId', 'findings', 'acceptedRisks'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['tickets'],
-  additionalProperties: false,
-};
-
 export const WORKER = {
   type: 'object',
   properties: {
@@ -241,28 +179,7 @@ export const WORKER = {
   additionalProperties: false,
 };
 
-export const GAMING = {
-  type: 'object',
-  properties: {
-    flags: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          issue: { type: 'string' },
-          why: { type: 'string' },
-          severity: { type: 'string', enum: ['low', 'medium', 'high'] },
-        },
-        required: ['issue', 'why', 'severity'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['flags'],
-  additionalProperties: false,
-};
-
-export const JUDGE = {
+export const REVIEW = {
   type: 'object',
   properties: {
     verdict: { type: 'string', enum: ['close', 'retry', 'gamed', 'flake-probe', 'amend-typo', 'escalate'] },
@@ -279,11 +196,11 @@ export const JUDGE = {
   additionalProperties: false,
 };
 
-// One legal backlog mutation — shared by the triage and resolver arms.
+// One legal backlog mutation the recover agent may return.
 const ACTION = {
   type: 'object',
   properties: {
-    command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'repair', 'gate'] },
+    command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'gate'] },
     ticketId: { type: 'string' },
     patch: TICKET_PATCH,
     to: { type: 'string' },
@@ -293,25 +210,13 @@ const ACTION = {
     subject: { type: 'string' },
     body: { type: 'string' },
     note: { type: 'string' },
-    instruction: { type: 'string' },
     resetAttempts: { type: 'boolean' },
   },
   required: ['command'],
   additionalProperties: false,
 };
 
-export const TRIAGE = {
-  type: 'object',
-  properties: {
-    actions: { type: 'array', items: ACTION },
-    escalate: { type: 'string' },
-    summary: { type: 'string' },
-  },
-  required: ['actions', 'summary'],
-  additionalProperties: false,
-};
-
-export const RESOLVER = {
+export const RECOVER = {
   type: 'object',
   properties: {
     resolved: { type: 'boolean' },
@@ -323,27 +228,7 @@ export const RESOLVER = {
   additionalProperties: false,
 };
 
-export const AUDIT = {
-  type: 'object',
-  properties: {
-    clean: { type: 'boolean' },
-    why: { type: 'string' },
-  },
-  required: ['clean', 'why'],
-  additionalProperties: false,
-};
-
-export const REPAIR = {
-  type: 'object',
-  properties: {
-    resolved: { type: 'boolean' },
-    summary: { type: 'string' },
-  },
-  required: ['resolved', 'summary'],
-  additionalProperties: false,
-};
-
-export const REVIEWER = {
+export const SWEEP = {
   type: 'object',
   properties: {
     proposals: {

@@ -10,7 +10,7 @@
 //
 // Keyed by `name` (checks) / `test` (flakes): present this campaign → bump
 // evidence + reset staleness + refresh mutable fields; absent → staleness++.
-// Evidence never decreases; retire flips status so intake's Prime skips it.
+// Evidence never decreases; retire flips status so kickoff's Prime skips it.
 // Entries stale for `evict` campaigns drop; each facet caps at `cap` (lowest
 // evidence first). A learning that still matters keeps getting re-confirmed.
 
@@ -25,8 +25,8 @@ export type FacetCounts = { added: number; confirmed: number; retired: number; e
 
 // $doc is rewritten each merge so the committed store stays self-describing.
 const DOC: Record<string, string> = {
-  checks: 'Verified toolchain commands carried across campaigns. Intake Primes toolchain detection + the baseline from active entries, then RE-PROBES them (a prior is a hypothesis, not a fact). Keyed by name.',
-  flakes: "Known flaky tests + discriminators. Intake Primes verify's quarantine set from quarantined entries; status flips to resolved when a run proves the test stable. Keyed by test.",
+  checks: 'Verified toolchain commands carried across campaigns. Kickoff Primes toolchain detection + the baseline from active entries, then RE-PROBES them (a prior is a hypothesis, not a fact). Keyed by name.',
+  flakes: "Known flaky tests + discriminators. Kickoff Primes verify's quarantine set from quarantined entries; status flips to resolved when a run proves the test stable. Keyed by test.",
 };
 
 export function mergeLearnings(opts: {

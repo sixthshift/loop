@@ -11,5 +11,5 @@
 export const control = {
   paused: false,          // stop dispatching; in-flight workers finish and settle
   workerCap: parseInt(process.env.AILOOP_WORKERS ?? '3', 10),
-  forceReview: false,     // run the reviewer at the next loop turn
+  forceSweep: false,      // run the sweep at the next loop turn
 };

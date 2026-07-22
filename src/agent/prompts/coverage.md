@@ -4,7 +4,7 @@ Two failures to catch, both proposing missing tickets (full schema; origin "cove
 - **Unmapped requirement** — a spec requirement no closed ticket delivers. The decomposition missed it; note that in your summary as a learnings candidate.
 - **Crossed tripwire** — delivered work that crosses the out-of-scope list. A drained campaign is where scope creep surfaces; propose the ticket that removes or gates the overreach.
 
-They go through the critic and the drive resumes. You have read access to the repository — verify against the actual tree, not the ticket titles.
+They're added as open tickets and the drive resumes. You have read access to the repository — verify against the actual tree, not the ticket titles.
 
 ## Spec
 

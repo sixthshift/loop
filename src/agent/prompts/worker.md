@@ -20,7 +20,7 @@ Baseline checks (must stay green):
 
 - Touch ONLY these files (plus manifest/lockfiles for adding dependencies): {{files}}. The verifier fails the ticket on any diff outside this footprint.
 - Add tests for any new behavior. A behavior without a test does not count as delivered.
-- Run the checks yourself before finishing. Do not weaken, delete, or special-case a check to make it pass — the diff is read by an independent auditor.
+- Run the checks yourself before finishing. Do not weaken, delete, or special-case a check to make it pass — the diff is read cold by the ticket review.
 - Commit your work on this branch with a conventional message. Only committed work verifies — an uncommitted tree is an automatic fail.
 
 {{attempts}}

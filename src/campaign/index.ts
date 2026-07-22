@@ -1,5 +1,5 @@
 // The campaign coordinator — the deterministic seat. Establish the campaign's
-// identity (intake, or a spec-sha-checked resume), take the single-coordinator
+// identity (kickoff, or a spec-sha-checked resume), take the single-coordinator
 // lock, then loop drive → retrospective until the retrospective closes clean.
 // Escalation is the honest pause; any other throw is a coordinator bug the
 // state protocol still makes survivable — both exit with state intact.
@@ -9,7 +9,7 @@ import path from 'node:path';
 import { journalEntries } from './journal.ts';
 import { specSha, lockHolder, acquireLock, RUN } from './state.ts';
 import type { CampaignContext } from './state.ts';
-import { intake } from './intake.ts';
+import { kickoff } from './kickoff.ts';
 import { drive } from './drive.ts';
 import { retrospective } from './retrospective.ts';
 import { Escalation, parkedSummary } from './escalate.ts';
@@ -97,28 +97,28 @@ async function establishCampaign(spec: string | null): Promise<CampaignContext> 
       console.error('no campaign in flight (.ailoop/campaign/ absent) — start one with: loop campaign <spec.md>');
       process.exit(2);
     }
-    await intake(spec);
+    await kickoff(spec);
     return { specPath: spec, spec: fs.readFileSync(spec, 'utf8') };
   }
 
-  // Resume path: never re-run intake; never drive an old spec to green.
-  const intakeEntry = journalEntries().find(j => j.kind === 'intake' && j.data?.sha);
-  if (!intakeEntry) {
+  // Resume path: never re-run kickoff; never drive an old spec to green.
+  const kickoffEntry = journalEntries().find(j => j.kind === 'kickoff' && j.data?.sha);
+  if (!kickoffEntry) {
     tui.stop();
-    console.error('campaign state exists but no intake record — refusing to guess; inspect .ailoop/campaign/journal.jsonl');
+    console.error('campaign state exists but no kickoff record — refusing to guess; inspect .ailoop/campaign/journal.jsonl');
     process.exit(2);
   }
-  const specPath: string = spec ?? intakeEntry.data.specPath;
-  if (specSha(specPath) !== intakeEntry.data.sha) {
+  const specPath: string = spec ?? kickoffEntry.data.specPath;
+  if (specSha(specPath) !== kickoffEntry.data.sha) {
     tui.stop();
-    console.error(`spec changed since intake (${specPath}): hash mismatch with the journaled contract.`);
+    console.error(`spec changed since kickoff (${specPath}): hash mismatch with the journaled contract.`);
     console.error('reconcile with the human before driving — the loop never builds an old spec to green.');
     process.exit(2);
   }
   tui.log(`resuming campaign (spec unchanged: ${specPath})`);
   return { specPath, spec: fs.readFileSync(specPath, 'utf8') };
 }// A campaign exists once its backlog is on disk — the marker the coordinator
-// checks before intake or resume.
+// checks before kickoff or resume.
 
 export function campaignExists(): boolean {
   return fs.existsSync(path.join(RUN, 'backlog.json'));

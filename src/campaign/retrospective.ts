@@ -12,7 +12,7 @@ import { agent, renderPrompt } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
 import { COVERAGE, HARVEST } from '../agent/schemas.ts';
 import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
-import { renumber } from './triage.ts';
+import { renumber } from './recover.ts';
 import { gateGreen } from './drive.ts';
 import { deleteBranch } from './worktree.ts';
 import { mergeLearnings } from './learn.ts';

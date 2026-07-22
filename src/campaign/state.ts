@@ -18,6 +18,7 @@ export type Frontier = {
   problems: { ticket: string; issue: string }[];
   cycles: string[][];
   ready: string[];
+  waiting: string[]; // open, but a dependency is still open — derived, never stored
   dispatchable: string[];
   capped: { ticket: string; attempts: number }[];
   stuck: { ticket: string; window: number }[];
@@ -27,7 +28,7 @@ export type Frontier = {
 };
 
 
-// The identity a campaign runs under, established at intake and re-checked
+// The identity a campaign runs under, established at kickoff and re-checked
 // (by spec sha) on every resume.
 export type CampaignContext = { specPath: string; spec: string };
 

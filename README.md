@@ -3,7 +3,7 @@
 The build-loop coordinator as a Node program. Same campaign in spirit as the
 `claude/skills/ailoop` skill — decompose a locked spec into a ticket backlog,
 dispatch parallel workers in git worktrees, independently verify every result,
-judge, repeat until the campaign gate is green — but the coordinator seat is
+review, repeat until the campaign gate is green — but the coordinator seat is
 deterministic code instead of a model reading prose.
 
 **Divergence from the skill (deliberate):** this coordinator has no *phase*
@@ -18,12 +18,16 @@ that started it — they cannot resume each other.
 The skill's own design rule is "judgment lives with you; everything with one
 right answer lives in a script," and every revision moved more of the
 coordinator into scripts — backlog writes, frontier arithmetic, verification,
-and finally the gaming check, forcibly outsourced because a coordinator that
+and finally the cheat check, forcibly outsourced because a coordinator that
 dispatched a ticket is the builder's advocate, not its auditor. That argument
 generalizes: the long-lived coordinator is context-poisoned for *every*
 verdict. This program is the fixed point of that trajectory — the control
-flow is code, and **every judgment is a fresh-context agent**: seed, decompose,
-critic, gaming, judge, coverage, harvest.
+flow is code, and **every judgment is a fresh-context agent**: kickoff, decompose,
+the ticket review, sweep, coverage, harvest. There is one adversarial gate — the
+ticket review, after build — which reads the diff cold for cheats and blind
+spots. The earlier pre-dispatch gate (ticket preflight check) and the separate
+gaming pre-screen were both removed; open tickets now dispatch straight to a
+worker and the ticket review carries the whole adversarial load.
 
 The skill remains the better vehicle while the loop's process is still being
 redesigned (editing prose is cheaper than editing code). This coordinator is
@@ -32,26 +36,31 @@ run, deterministic resume, campaigns that outlive a session.
 
 ## The two gaps a script must close, and how
 
-- **Unenumerated situations** → `triage.ts`, the universal `else`. Every
-  unhandled frontier problem, refused mutation, blocked worker, or stall
-  routes to a fresh agent — and so does every unenumerated *throw*: the drive
-  loop is wrapped in a crash membrane that journals the error and triages it
-  rather than dying (the same error twice escalates — a repeated crash is a
-  missing arm, not a flake). Triage's actuators are legal `backlog-write.mjs`
-  commands — it can propose any lawful mutation but cannot corrupt state —
-  plus one delegation: `repair`, a fresh full-tool agent for machine-level
-  faults (missing installs, stale ports, a dirty mainline checkout) that
-  fixes the environment but never the work. Its exit is escalation. Every
-  invocation is journaled: the triage log is the coordinator's own
-  escaped-bug record. A recurring triage kind should be promoted to a real
-  arm in `drive.ts`.
-- **Opportunistic noticing** → the reviewer (`prompts/reviewer.md`), run
-  every 5 closes: one agent over the journal since the last review, asking
+- **Unenumerated situations** → `recover.ts`, the universal `else` and
+  full-tool fixer. Every unhandled frontier problem, refused mutation, merit
+  wall, blocked worker, red gate, dirty mainline, or stall routes to a fresh
+  agent — and so does every unenumerated *throw*: the drive loop is wrapped in
+  a crash membrane that journals the error and hands it to recover rather than
+  dying (the same error twice escalates — a repeated crash is a missing arm,
+  not a flake). Recover has full tools: it reproduces the fault, fixes the
+  campaign **definition** (gates, scope, ticket contracts, deps) via legal
+  `backlog-write` mutations, fixes the **environment** directly (installs,
+  stale ports, a wedged git checkout), RUNS the check to prove its fix green,
+  and self-audits — but it never touches **product code**: a genuine code
+  defect becomes a repair *ticket* that a worker builds and the ticket review
+  checks, so every change to the work stays verified and reviewed. If it can't
+  fix within jurisdiction it parks (defers to the human); it never hard-stops.
+  Every invocation is journaled: the recover log is the coordinator's own
+  escaped-bug record, and a recurring kind should be promoted to a real arm in
+  `drive.ts`. (Recover is the merge of what were three agents — triage, the
+  resolver, and repair.)
+- **Opportunistic noticing** → the sweep (`prompts/sweep.md`), run
+  every 5 closes: one agent over the journal since the last sweep, asking
   what no individual verdict sees.
 
 ## Shared state protocol
 
-`.ailoop/campaign/` is scaffolded at intake and `.ailoop/learnings/` is shared
+`.ailoop/campaign/` is scaffolded at kickoff and `.ailoop/learnings/` is shared
 with the skill verbatim — a campaign feeds its harvested learnings back to
 whichever coordinator runs next. The `backlog.json` shape has diverged (no
 phases here), so a *campaign in flight* belongs to the coordinator that started
@@ -75,7 +84,7 @@ step; deps resolve from the symlink's realpath). Env: `AILOOP_WORKERS`
 (initial worker cap, default 3 — adjustable live from the dashboard).
 
 Escalations exit 2 with the reason and leave `.ailoop/campaign/` intact; resolve
-and `loop resume`. A refused intake (exit 3) leaves no state at all.
+and `loop resume`. A refused kickoff (exit 3) leaves no state at all.
 
 ## Dashboard
 
@@ -102,7 +111,7 @@ measured liveness cell (`liveness.ts` samples the process-subtree CPU from
 design — so ▶ means the subtree burned CPU in the last 30s, and "no cpu" ages
 toward red. Linux/devcontainer only; elsewhere the cell stays blank rather
 than guess. Acting is deliberately narrow: `p` pauses dispatch, `+`/`-` moves
-the worker cap, `r` queues a reviewer pass, `x` kills a worker (journaled as a
+the worker cap, `r` queues a sweep pass, `x` kills a worker (journaled as a
 failed attempt; the ticket redispatches fresh — scripts and verdict agents
 settle on their own), `q` quits with state intact. Every mutation is a
 `control.ts` flag the drive loop honors at its next decision point, or a
@@ -115,23 +124,24 @@ back to plain timestamped lines and ink is never loaded.
 
 ## Model tiering
 
-Workers take the ticket's `model` tag (opus default). Critic and gaming run
-sonnet — narrow questions, explicit rubrics. Judge, triage, repair, reviewer,
-coverage, and harvest run opus. `verify.mjs` costs no model.
+The ticket review, recover, sweep, kickoff, decompose, coverage, and harvest
+lead with opus. Workers climb a ladder (terra → sol → opus) as a ticket keeps
+failing. `verify.mjs` costs no model. See `campaign/models.ts` for the full
+per-role chains.
 
 ## Known limits
 
-- **Workers run `--dangerously-skip-permissions`** (and the intake gate agent
+- **Workers run `--dangerously-skip-permissions`** (and the kickoff gate agent
   does too, to probe toolchain commands). This coordinator is built for the
   devcontainer workflow; running it on a host shell hands headless agents
   unrestricted tool access.
 - **Not yet exercised on a real campaign.** The mechanical spine
-  (init → seed → add → vet → frontier → dispatch → verify → scope-fail →
+  (init → seed → add → frontier → dispatch → verify → scope-fail →
   merge → resume-journal) and the live agent layer (prompt → `claude -p`
   → schema → verdict) are smoke-tested; a full spec-to-green run is not.
   First campaign should be a small spec, watched.
 - **Gate bisection is delegated, not scripted.** On a red campaign gate the
-  resolver gets the evidence and the branches (all kept until the gate is
+  recover agent gets the evidence and the branches (all kept until the gate is
   green) and decides — a scripted bisect arm is the obvious first promotion
-  out of the triage log. The bisection surface is the whole campaign, not a
+  out of the recover log. The bisection surface is the whole campaign, not a
   phase: the cost of running e2e once instead of per phase.

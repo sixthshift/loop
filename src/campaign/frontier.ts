@@ -27,23 +27,25 @@ export function frontier(): Frontier {
   const problems = findProblems(b, byId);
   const cycles = findCycles(b, byId);
 
-  // ready: deps closed AND status vetted (draft/blocked/in-flight never ready).
-  const ready = b.tickets
-    .filter(t => t.status === 'vetted')
-    .filter(t => (t.depends_on ?? []).every(d => byId.get(d)?.status === 'closed'))
-    .map(t => t.id);
+  // An open ticket is either ready (all deps closed → dispatchable-eligible) or
+  // waiting (a dep is still open). Both are the SAME stored status; the split is
+  // derived here, never persisted — it flips the instant a dependency closes.
+  const openTickets = b.tickets.filter(t => t.status === 'open');
+  const depsClosed = (t: Ticket) => (t.depends_on ?? []).every(d => byId.get(d)?.status === 'closed');
+  const ready = openTickets.filter(depsClosed).map(t => t.id);
+  const waiting = openTickets.filter(t => !depsClosed(t)).map(t => t.id);
 
   const { capped, stuck } = findWalls(ready, byId, b.caps ?? { maxAttempts: 3, thrash: 2, infraCap: 8 });
   const walled = new Set([...capped, ...stuck].map(x => x.ticket));
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
-  // blocked/draft/vetted/failed-wall tickets all block completion, deliberately.
+  // parked/open/failed-wall tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
-  return { problems, cycles, ready, dispatchable, capped, stuck, inFlight, complete, counts };
+  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts };
 }
 
 // --- structural problems: the graph lying about what's runnable ------------
@@ -58,8 +60,6 @@ function findProblems(b: Backlog, byId: Map<string, Ticket>): Frontier['problems
     }
     if (isLive(t) && (!Array.isArray(t.files) || t.files.length === 0))
       problems.push({ ticket: t.id, issue: 'empty files declaration — unknown footprint' });
-    if (t.status === 'vetted' && !t.redTeamed)
-      problems.push({ ticket: t.id, issue: 'vetted without redTeamed flag — state corruption, backlog-write should have prevented this' });
   }
   const seen = new Set<string>();
   for (const t of b.tickets) {

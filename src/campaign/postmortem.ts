@@ -48,7 +48,6 @@ export function writePostmortem(out: string): { tickets: number; events: number 
       if (e.kind === 'close') { t.closedAt = e.ts; t.closeData = e.data || null; }
     }
     if (e.kind === 'verify') t.verifies.push({ ts: e.ts, ...e.data });
-    if (e.kind === 'vet') t.vetAt = e.ts;
   }
   // gate markers: any journaled gate event (campaign-gate-close, gate-red, gate-amendment)
   const gates = journal.filter(e => /gate/.test(e.kind)).map(e => ({ ts: e.ts, body: `${e.subject}: ${e.body}` }));

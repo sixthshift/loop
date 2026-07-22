@@ -44,22 +44,22 @@ type Confirm = { text: string; onYes: () => void } | null;
 type Frame = { rows: number; cols: number; confirm: Confirm };
 
 const KIND_ICON: Record<string, string> = {
-  close: '✓', attempt: '✗', status: '⇢', add: '+', vet: '✔', decompose: '⑂',
-  triage: '▲', 'triage-refused': '▲', review: '◎', 'campaign-gate-close': '■',
-  'gate-red': '‼', escalation: '‼', 'accepted-risk': '⚑', 'flake-probe': '≈',
-  'integration-red': '‼', verify: '·', intake: '◈', seed: '◈', init: '◈',
+  close: '✓', attempt: '✗', status: '⇢', add: '+', decompose: '⑂',
+  recovered: '▲', 'recover-refused': '▲', parked: '⏸', sweep: '◎', 'campaign-gate-close': '■',
+  'gate-red': '‼', escalation: '‼', 'flake-probe': '≈',
+  'integration-red': '‼', verify: '·', kickoff: '◈', seed: '◈', init: '◈',
 };
 
 const STATUS_GLYPH: Record<string, [string, string | undefined]> = {
-  closed: ['✓', 'green'], 'in-flight': ['⚙', 'cyan'], blocked: ['✖', 'red'],
-  'failed-wall': ['‼', 'red'], vetted: ['○', undefined], draft: ['·', 'gray'],
+  closed: ['✓', 'green'], 'in-flight': ['⚙', 'cyan'], parked: ['✖', 'red'],
+  'failed-wall': ['‼', 'red'], open: ['·', 'gray'], waiting: ['⋯', 'yellow'],
   decomposed: ['⑂', 'gray'],
 };
 
 const FILTERS: { name: string; test: (j: JournalEntry) => boolean }[] = [
   { name: 'all', test: () => true },
-  { name: 'progress', test: j => ['close', 'campaign-gate-close', 'vet', 'add', 'decompose'].includes(j.kind) },
-  { name: 'problems', test: j => ['attempt', 'triage', 'triage-refused', 'gate-red', 'integration-red', 'escalation', 'flake-probe'].includes(j.kind) },
+  { name: 'progress', test: j => ['close', 'campaign-gate-close', 'add', 'decompose'].includes(j.kind) },
+  { name: 'problems', test: j => ['attempt', 'recovered', 'recover-refused', 'parked', 'gate-red', 'integration-red', 'escalation', 'flake-probe'].includes(j.kind) },
 ];
 
 function procList(): Proc[] {
@@ -164,7 +164,7 @@ function Dashboard() {
     }
     if (input === '+' || input === '=') { control.workerCap = Math.min(12, control.workerCap + 1); return log(`worker cap → ${control.workerCap}`); }
     if (input === '-') { control.workerCap = Math.max(1, control.workerCap - 1); return log(`worker cap → ${control.workerCap}`); }
-    if (input === 'r') { control.forceReview = true; return log('review requested — runs at the next loop turn'); }
+    if (input === 'r') { control.forceSweep = true; return log('sweep requested — runs at the next loop turn'); }
     if (input === 'q') return setConfirm({
       text: 'quit? in-flight workers are killed; campaign state stays intact (`loop resume`)',
       onYes: quit,
@@ -252,7 +252,7 @@ function ProcRow({ p, selected, live, cols }: { p: Proc; selected: boolean; live
 }
 
 function Header({ cols, b }: { cols: number; b: Backlog | null | undefined }) {
-  const title = ` loop campaign — ${b?.project ?? '(intake)'}`;
+  const title = ` loop campaign — ${b?.project ?? '(kickoff)'}`;
   const right = `${control.paused ? 'PAUSED · ' : ''}cap ${control.workerCap} · elapsed ${dur(Date.now() - (store.startedAt ?? Date.now()))} `;
   return (
     <Text bold>
@@ -286,7 +286,7 @@ function CountsLine({ b }: { b: Backlog }) {
   const attempts = b.tickets.reduce((n, t) => n + (t.attempts?.length ?? 0), 0);
   return (
     <Text>
-      {' ' + ['draft', 'vetted', 'in-flight', 'closed', 'blocked', 'failed-wall']
+      {' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked', 'failed-wall']
         .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')}
       {`   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`}
     </Text>
@@ -330,20 +330,29 @@ function ticketList(b: Backlog | null | undefined): Ticket[] {
   return [...b.tickets].sort((x, y) => x.id.localeCompare(y.id));
 }
 
+// `waiting` is derived, not stored (frontier.ts owns the same split): an open
+// ticket with a still-open dependency shows as waiting rather than dispatchable.
+function displayStatus(t: Ticket, byId: Map<string, Ticket>): string {
+  if (t.status !== 'open') return t.status;
+  return (t.depends_on ?? []).every(d => byId.get(d)?.status === 'closed') ? 'open' : 'waiting';
+}
+
 function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: Ticket[]; sel: number }) {
   const listRows = Math.max(3, rows - 3);
   const start = Math.max(0, Math.min(sel - Math.floor(listRows / 2), tickets.length - listRows));
+  const byId = new Map(tickets.map(t => [t.id, t]));
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>{` tickets (${tickets.length})`}</Text>
       <Rule cols={cols} />
       {tickets.slice(start, start + listRows).map((t, i) => {
-        const [glyph, color] = STATUS_GLYPH[t.status] ?? ['·', undefined];
+        const shown = displayStatus(t, byId);
+        const [glyph, color] = STATUS_GLYPH[shown] ?? ['·', undefined];
         const deps = t.depends_on?.length ? `  ⇐ ${t.depends_on.join(',')}` : '';
         return (
           <Text key={t.id} inverse={start + i === sel}>
             {'  '}<Text color={color}>{glyph}</Text>
-            {` ${t.id}  ${t.status.padEnd(11)} ${trunc(t.title, cols - 28 - deps.length)}`}
+            {` ${t.id}  ${shown.padEnd(11)} ${trunc(t.title, cols - 28 - deps.length)}`}
             <Text dimColor>{deps}</Text>
           </Text>
         );
@@ -355,15 +364,16 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
 
 function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { ticket: Ticket | undefined; all: Ticket[] }) {
   if (!t) return <Text>ticket vanished — esc to go back</Text>;
-  const [glyph, color] = STATUS_GLYPH[t.status] ?? ['·', undefined];
   const byId = new Map(all.map(x => [x.id, x]));
+  const shown = displayStatus(t, byId);
+  const [glyph, color] = STATUS_GLYPH[shown] ?? ['·', undefined];
   const depGlyph = (id: string) => (STATUS_GLYPH[byId.get(id)?.status ?? '']?.[0]) ?? '?';
   const unblocks = all.filter(x => x.depends_on?.includes(t.id)).map(x => x.id);
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>{` ${t.id} — ${t.title}`}</Text>
       <Rule cols={cols} />
-      <Text>{' status '}<Text color={color}>{`${glyph} ${t.status}`}</Text></Text>
+      <Text>{' status '}<Text color={color}>{`${glyph} ${shown}`}</Text></Text>
       <Text>{`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`}</Text>
       <Text>{`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`}</Text>
       <Text>{` files  ${t.files?.join(', ') || '(unscoped)'}`}</Text>
@@ -577,7 +587,7 @@ function HelpView({ cols, confirm }: Frame) {
     ['f', `journal filter (${FILTERS.map(f => f.name).join(' → ')})`],
     ['p', 'pause/resume dispatch (in-flight workers still settle)'],
     ['+/-', 'raise/lower the worker cap'],
-    ['r', 'run the reviewer at the next loop turn'],
+    ['r', 'run the sweep at the next loop turn'],
     ['x', 'kill the selected worker (journaled as a failed attempt)'],
     ['q', 'quit — workers killed, state intact, `loop resume` continues'],
   ];

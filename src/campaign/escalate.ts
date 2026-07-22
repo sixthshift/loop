@@ -1,8 +1,8 @@
 // How the loop yields to the human — two grades, and only one of them stops.
 //
 // `park` is the ordinary yield: a decision the loop genuinely can't make (or a
-// resolver proposal an auditor rejected) is journaled and, if it names a
-// ticket, that ticket is set `blocked` so the frontier stops offering it. Park
+// fault recover couldn't fix within jurisdiction) is journaled and, if it
+// names a ticket, that ticket is set `parked` so the frontier stops offering it. Park
 // does NOT throw — the drive loop keeps driving every other ticket, and only
 // halts (gracefully, with a summary) once nothing autonomous is left. A single
 // parked decision never again kills a campaign with other work to do.
@@ -45,9 +45,10 @@ export function park(reason: string, opts?: { ticketId?: string; subject?: strin
     backlogWrite(['note', '--kind', 'parked', '--subject', subject, '--body', reason]);
     if (opts?.ticketId) {
       const t = ticket(opts.ticketId);
-      // draft can't transition to blocked; only park what's in play.
-      if (t.status === 'in-flight' || t.status === 'vetted') {
-        backlogWrite(['set-status', opts.ticketId, 'blocked', '--note', 'parked for human decision']);
+      // Only park what's in play — an open or in-flight ticket.
+      // (closed/decomposed/already-parked stay as they are.)
+      if (t.status === 'in-flight' || t.status === 'open') {
+        backlogWrite(['set-status', opts.ticketId, 'parked', '--note', 'parked for human decision']);
       }
     }
   } catch { /* the parked note above is the record; a failed status write is not fatal */ }
@@ -58,11 +59,11 @@ export function park(reason: string, opts?: { ticketId?: string; subject?: strin
 // graceful-stop summary.
 export function parkedSummary(): { tickets: string[]; gateParked: boolean } {
   const b = backlog();
-  const tickets = b.tickets.filter(t => t.status === 'blocked' || t.status === 'failed-wall').map(t => t.id);
+  const tickets = b.tickets.filter(t => t.status === 'parked' || t.status === 'failed-wall').map(t => t.id);
   return { tickets, gateParked: gateParked() };
 }
 
-// The campaign gate went red and the resolver couldn't get it green within
+// The campaign gate went red and recover couldn't get it green within
 // jurisdiction — parked, so the completion path stops retrying it and drains to
 // a human decision. Parked once and unparked only by the human editing the gate
 // and resuming, so a later `gate-amendment` clears an earlier `parked`.

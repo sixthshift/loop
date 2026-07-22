@@ -11,14 +11,18 @@ import type { Check, TicketDraft } from '../agent/schemas.ts';
 
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
-export type TicketStatus = 'draft' | 'vetted' | 'in-flight' | 'closed' | 'blocked' | 'failed-wall' | 'decomposed';
+// `open` is the single pre-dispatch state: a proposed, still-editable ticket
+// that becomes dispatchable once its deps close. (There is no separate vetting
+// step — the ticket review carries the whole adversarial load, post-build.)
+// `parked` is set only when a decision is deferred to the human (see escalate).
+export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'failed-wall' | 'decomposed';
 // `infra` marks an attempt that failed for a reason outside the ticket's own
 // merits — the worker session died, was killed, or the mainline moved under a
 // clean diff. Merit failures (verify red, gaming, judge-rejected) are the
 // ticket's own; infra failures are the machine's. The wall logic counts only
 // the merit ones, so a flaky engine can't exhaust a ticket's real budget.
 export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string; infra?: boolean };
-export type Ticket = TicketDraft & { status: TicketStatus; attempts?: Attempt[]; evidence?: string | null; redTeamed?: boolean };
+export type Ticket = TicketDraft & { status: TicketStatus; attempts?: Attempt[]; evidence?: string | null };
 export type Backlog = {
   project: string;
   tickets: Ticket[];
@@ -45,15 +49,14 @@ export function ticket(id: string): Ticket {
 // entry, and nothing else writes the file. Native twin of the ailoop skill's
 // backlog-write.mjs — same validation, same transition table, same journal
 // shape. It runs in-process now, so a refusal throws (callers decide bug vs
-// triage) where the script would have exited non-zero.
+// recover) where the script would have exited non-zero.
 
-const STATUSES = ['draft', 'vetted', 'in-flight', 'closed', 'blocked', 'decomposed', 'failed-wall'];
+const STATUSES = ['open', 'in-flight', 'closed', 'parked', 'decomposed', 'failed-wall'];
 const LEGAL: Record<string, string[]> = { // from → allowed to
-  'draft': ['vetted', 'decomposed'],
-  'vetted': ['in-flight', 'draft', 'decomposed', 'blocked', 'failed-wall'],
-  'in-flight': ['closed', 'vetted', 'blocked', 'decomposed', 'failed-wall'],
-  'blocked': ['vetted', 'draft', 'decomposed'],
-  'closed': [], 'decomposed': [], 'failed-wall': ['vetted'],
+  'open': ['in-flight', 'decomposed', 'parked', 'failed-wall'],
+  'in-flight': ['closed', 'open', 'parked', 'decomposed', 'failed-wall'],
+  'parked': ['open', 'decomposed'],
+  'closed': [], 'decomposed': [], 'failed-wall': ['open'],
 };
 
 function validateTicket(t: any, existingIds: Set<string>): string[] {
@@ -150,7 +153,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
     case 'update': {
       const b = load();
       const t = findTicket(b, pos[0]);
-      if (!['draft', 'vetted'].includes(t.status)) refuse(`${t.id} is ${t.status} — only draft or vetted tickets can be updated (in-flight work would diverge from its contract)`);
+      if (t.status !== 'open') refuse(`${t.id} is ${t.status} — only open tickets can be updated (in-flight work would diverge from its contract)`);
       const patchIn = readInput(pos[1]);
       if (patchIn.length !== 1) refuse('update takes a single patch object');
       const patch = patchIn[0];
@@ -160,17 +163,15 @@ export function backlogWrite(args: string[], input?: unknown): string {
       Object.assign(t, patch);
       const errs = validateTicket(t, new Set()).filter(e => !e.includes('duplicate'));
       if (errs.length) refuse(`patch leaves ${t.id} invalid:\n${errs.join('\n')}`);
-      const demoted = t.status === 'vetted';
-      if (demoted) { transition(t, 'draft'); t.redTeamed = false; }
-      // Opt-in, audited: the prior attempts were measured against a contract that
-      // this patch just changed, so they no longer describe THIS ticket — a stale
+      // Opt-in: the prior attempts were measured against a contract that this
+      // patch just changed, so they no longer describe THIS ticket — a stale
       // wall the corrected contract shouldn't inherit. Off by default so the
       // gamed-sharpen path keeps a serial gamer's attempts on the record.
       const reset = opts['reset-attempts'] === true;
       if (reset) t.attempts = [];
-      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${demoted ? '; vetted → draft, re-vet required' : ''}${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
+      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
       save(b);
-      return `${t.id} updated${demoted ? ' (vetted → draft: contract changed, re-vet)' : ''}`;
+      return `${t.id} updated`;
     }
     case 'add': {
       const b = load();
@@ -179,12 +180,12 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const errs = incoming.flatMap((t: any) => validateTicket(t, ids));
       if (errs.length) refuse(errs.join('\n'));
       for (const t of incoming) {
-        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, ...t, status: 'draft' });
+        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...t, status: 'open' });
         ids.add(t.id);
         journal('add', t.id, `${t.title} (origin: ${t.origin})`);
       }
       save(b);
-      return `added ${incoming.length} draft ticket(s)`;
+      return `added ${incoming.length} open ticket(s)`;
     }
     case 'gate': {
       // Amend the campaign's merged-tree gate. The escaped-bug rule prescribes
@@ -207,24 +208,11 @@ export function backlogWrite(args: string[], input?: unknown): string {
       save(b);
       return `campaign gate amended [${touched.join(', ')}]`;
     }
-    case 'vet': {
-      const b = load();
-      const t = findTicket(b, pos[0]);
-      if (t.status !== 'draft') refuse(`${t.id} is ${t.status}, only draft tickets can be vetted`);
-      const errs = validateTicket(t, new Set()).filter(e => !e.includes('duplicate'));
-      if (errs.length) refuse(`cannot vet with schema problems:\n${errs.join('\n')}`);
-      t.redTeamed = true;
-      transition(t, 'vetted');
-      journal('vet', t.id, (opts.note as string) || 'critic pass complete');
-      save(b);
-      return `${t.id} vetted`;
-    }
     case 'set-status': {
       const b = load();
       const t = findTicket(b, pos[0]);
       const to = pos[1];
       if (to === 'closed') refuse('use the close command (evidence is mandatory)');
-      if (to === 'vetted' && t.status === 'draft') refuse('use the vet command (red-team is mandatory)');
       if (to === 'decomposed') refuse('use the decompose command (children are mandatory)');
       transition(t, to!);
       journal('status', t.id, `→ ${to}${opts.note ? ` — ${opts.note}` : ''}`, parseData());
@@ -245,7 +233,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
         ...(opts.infra ? { infra: true } : {}),
       };
       (t.attempts ??= []).push(entry as any);
-      if (t.status === 'in-flight') transition(t, 'vetted'); // back in the queue for re-dispatch
+      if (t.status === 'in-flight') transition(t, 'open'); // back in the queue for re-dispatch
       journal('attempt', t.id, `attempt ${entry.n} failed [${entry.failed.join(', ')}]: ${entry.hypothesis}`, parseData());
       save(b);
       return `${t.id} attempt ${entry.n} logged`;
@@ -272,7 +260,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);
       for (const c of children) {
-        b.tickets.push({ depends_on: [], resources: [], redTeamed: false, attempts: [], evidence: null, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'draft' });
+        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'open' });
         ids.add(c.id);
       }
       // rewire dependents of the parent onto ALL children (coordinator may narrow after)
@@ -295,7 +283,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update vet set-status attempt close decompose note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update set-status attempt close decompose note`);
   }
 }
 
