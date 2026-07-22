@@ -15,7 +15,7 @@ import type { Check, TicketDraft } from '../agent/schemas.ts';
 // that becomes dispatchable once its deps close. (There is no separate vetting
 // step — the ticket review carries the whole adversarial load, post-build.)
 // `parked` is set only when a decision is deferred to the human (see escalate).
-export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'failed-wall' | 'decomposed';
+export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'decomposed';
 // `infra` marks an attempt that failed for a reason outside the ticket's own
 // merits — the worker session died, was killed, or the mainline moved under a
 // clean diff. Merit failures (verify red, gaming, judge-rejected) are the
@@ -51,12 +51,12 @@ export function ticket(id: string): Ticket {
 // shape. It runs in-process now, so a refusal throws (callers decide bug vs
 // recover) where the script would have exited non-zero.
 
-const STATUSES = ['open', 'in-flight', 'closed', 'parked', 'decomposed', 'failed-wall'];
+const STATUSES = ['open', 'in-flight', 'closed', 'parked', 'decomposed'];
 const LEGAL: Record<string, string[]> = { // from → allowed to
-  'open': ['in-flight', 'decomposed', 'parked', 'failed-wall'],
-  'in-flight': ['closed', 'open', 'parked', 'decomposed', 'failed-wall'],
+  'open': ['in-flight', 'decomposed', 'parked'],
+  'in-flight': ['closed', 'open', 'parked', 'decomposed'],
   'parked': ['open', 'decomposed'],
-  'closed': [], 'decomposed': [], 'failed-wall': ['open'],
+  'closed': [], 'decomposed': [],
 };
 
 function validateTicket(t: any, existingIds: Set<string>): string[] {

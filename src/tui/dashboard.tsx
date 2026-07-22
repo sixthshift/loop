@@ -52,7 +52,7 @@ const KIND_ICON: Record<string, string> = {
 
 const STATUS_GLYPH: Record<string, [string, string | undefined]> = {
   closed: ['✓', 'green'], 'in-flight': ['⚙', 'cyan'], parked: ['✖', 'red'],
-  'failed-wall': ['‼', 'red'], open: ['·', 'gray'], waiting: ['⋯', 'yellow'],
+  open: ['·', 'gray'], waiting: ['⋯', 'yellow'],
   decomposed: ['⑂', 'gray'],
 };
 
@@ -286,7 +286,7 @@ function CountsLine({ b }: { b: Backlog }) {
   const attempts = b.tickets.reduce((n, t) => n + (t.attempts?.length ?? 0), 0);
   return (
     <Text>
-      {' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked', 'failed-wall']
+      {' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked']
         .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')}
       {`   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`}
     </Text>

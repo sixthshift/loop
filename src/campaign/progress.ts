@@ -5,7 +5,7 @@
 import { backlog } from './backlog.ts';
 
 const GLYPH: Record<string, string> = {
-  open: '·', 'in-flight': '◐', closed: '●', parked: '✕', decomposed: '▽', 'failed-wall': '■',
+  open: '·', 'in-flight': '◐', closed: '●', parked: '✕', decomposed: '▽',
 };
 
 export function renderProgress(): string {

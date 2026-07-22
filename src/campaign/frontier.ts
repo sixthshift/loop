@@ -40,7 +40,7 @@ export function frontier(): Frontier {
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
-  // parked/open/failed-wall tickets all block completion, deliberately.
+  // parked/open/in-flight tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});

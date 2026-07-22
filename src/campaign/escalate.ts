@@ -59,7 +59,7 @@ export function park(reason: string, opts?: { ticketId?: string; subject?: strin
 // graceful-stop summary.
 export function parkedSummary(): { tickets: string[]; gateParked: boolean } {
   const b = backlog();
-  const tickets = b.tickets.filter(t => t.status === 'parked' || t.status === 'failed-wall').map(t => t.id);
+  const tickets = b.tickets.filter(t => t.status === 'parked').map(t => t.id);
   return { tickets, gateParked: gateParked() };
 }
 
