@@ -10,11 +10,23 @@
 //   • independence picks the order — the diff's author and its judge should be
 //     different engines, so no model marks its own homework.
 //
-// So the role that writes code (worker) leads with Codex terra; the roles that
-// grade, critique, plan, or recover lead with Claude and fall back to the strong
-// Codex (sol). The once-per-campaign retrospective roles (coverage, harvest) stay
-// on the light tier both ways. Every chain carries the other engine as fallback,
-// so a role still runs when its preferred engine is down or absent.
+// The allocation follows fit, not an even split:
+//   • worker leads Codex terra — writing code is its home turf; the chain also
+//     doubles as an escalation ladder (see below).
+//   • kickoff and decompose lead the strong Codex (sol): kickoff probes the
+//     toolchain (tool work), and decompose AUTHORS the acceptance checks — so
+//     leading it with Codex keeps the check-author a different engine from the
+//     Claude review that judges against them (author ≠ judge, a second time).
+//   • review leads claude-opus and must: it is the sole adversarial gate judging
+//     a Codex worker's diff, so it stays Claude for independence. It degrades
+//     within Claude (opus → sonnet) before dropping to Codex sol, so a Claude
+//     outage doesn't collapse the gate onto the worker's own family.
+//   • recover and coverage lead claude-opus — judgment-heavy (recover self-audits
+//     definition-of-done; coverage rules done-ness).
+//   • sweep and harvest lead claude-sonnet — advisory / no-correctness-impact,
+//     economized to the light tier.
+// Every chain carries the other family as a fallback, so a provider outage
+// degrades gracefully instead of stalling.
 //
 // The roles:
 //   worker      — builds one ticket: writes the code and its tests, runs the
@@ -50,11 +62,11 @@
 // next rung early. Infra deaths don't advance the ladder (see drive.workerChain).
 export const MODELS = {
   worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
-  review: ['claude-opus', 'codex-gpt-5.6-sol'],
-  sweep: ['claude-opus', 'codex-gpt-5.6-sol'],
+  kickoff: ['codex-gpt-5.6-sol', 'claude-opus'],
+  decompose: ['codex-gpt-5.6-sol', 'claude-opus'],
+  review: ['claude-opus', 'claude-sonnet', 'codex-gpt-5.6-sol'],
   recover: ['claude-opus', 'codex-gpt-5.6-sol'],
-  kickoff: ['claude-opus', 'codex-gpt-5.6-sol'],
-  decompose: ['claude-opus', 'codex-gpt-5.6-sol'],
-  coverage: ['claude-opus', 'codex-gpt-5.6-terra'],
-  harvest: ['claude-opus', 'codex-gpt-5.6-terra'],
+  coverage: ['claude-opus', 'codex-gpt-5.6-sol'],
+  sweep: ['claude-sonnet', 'codex-gpt-5.6-sol'],
+  harvest: ['claude-sonnet', 'codex-gpt-5.6-terra'],
 } satisfies Record<string, string[]>;
