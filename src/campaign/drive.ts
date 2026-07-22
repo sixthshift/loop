@@ -25,6 +25,7 @@ import { control } from '../tui/control.ts';
 
 const SWEEP_EVERY = 5;
 const WORKER_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const WALL_RECOVER_BUDGET = 2; // distinct recover attempts on a ticket's merit wall before it parks to the human
 const idle = () => new Promise(r => setTimeout(r, 1500));
 
 // A settled worker channel: the verdict envelope, or the error that ended it.
@@ -58,7 +59,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
   let reconciled = false;
   let lastCrash: string | null = null;
   const handledProblemSigs = new Set<string>(); // frontier problem-sets already handed to recover
-  const resolvedWalls = new Set<string>(); // tickets whose merit wall already went to recover once
+  const wallRecoveries = new Map<string, number>(); // ticket → recover interventions spent on its merit wall
 
   while (true) {
     try {
@@ -85,32 +86,34 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
       }
 
       if (capped.length || stuck.length) {
-        // A merit wall is a decision, not a dead end: hand it to recover
-        // ONCE before parking. Recover reads the attempt hypotheses and
-        // fixes the campaign's definition at the root — a check that never
-        // matched the DoD, a contract that contradicts the delivered schema, an
-        // under-built dependency (repair ticket + rewire) — audited, then resets
-        // the stale wall so the corrected contract gets a fresh run. If it can't
-        // fix it within jurisdiction it parks; either way the ticket leaves
-        // `ready`, so the loop keeps driving everything disjoint from it.
+        // A merit wall is a decision, not a dead end: hand it to recover, which
+        // reads the attempt hypotheses and fixes the campaign's definition at the
+        // root — a check that never matched the DoD, a contract that contradicts
+        // the delivered schema, an under-built dependency (repair ticket +
+        // rewire) — then resets the stale wall so the corrected contract gets a
+        // fresh run. Recover gets WALL_RECOVER_BUDGET distinct attempts (a fix
+        // that doesn't hold means the diagnosis was wrong — try a different one)
+        // before the wall is conceded to the human as a park. Either way the
+        // ticket leaves `ready`, so the loop keeps driving everything disjoint.
         for (const w of [...capped, ...stuck]) {
           const t = ticket(w.ticket);
           const last = t.attempts?.[t.attempts.length - 1];
           const detail = `${w.ticket} "${t.title}" — ${t.attempts?.length ?? 0} attempts`
             + (last?.hypothesis ? `; last: ${last.hypothesis.slice(0, 200)}` : '');
-          if (resolvedWalls.has(w.ticket)) {
-            // Already resolved once and it re-walled — the fix didn't hold, so
-            // this is genuinely the human's. Park it (graceful drain reports it).
-            park(`attempt wall (second time): ${detail}`, { ticketId: w.ticket });
+          const spent = wallRecoveries.get(w.ticket) ?? 0;
+          if (spent >= WALL_RECOVER_BUDGET) {
+            // recover spent its budget of distinct fixes and it still walls —
+            // genuinely the human's now. Park it (graceful drain reports it).
+            park(`attempt wall — ${spent} recovery attempt(s) exhausted: ${detail}`, { ticketId: w.ticket });
             continue;
           }
-          resolvedWalls.add(w.ticket);
+          wallRecoveries.set(w.ticket, spent + 1);
           await recover({
-            kind: 'attempt-wall', ticketId: w.ticket, attempts: t.attempts ?? [],
-            instruction: 'This ticket failed its own checks repeatedly. Read every attempt hypothesis and find the ROOT cause in the campaign definition — a check that never matched the stated DoD, an acceptance clause that contradicts a delivered/closed dependency, a missing or under-built dependency, or a footprint too small to satisfy the acceptance. Fix it at the source within jurisdiction: amend the ticket contract (with resetAttempts:true, since the prior failures were against the old contract), author a repair ticket for an under-built dependency and rewire this ticket onto it, or correct the gate. Never weaken a named invariant or the acceptance to force green. Park only if the fix is genuinely a human scope/security decision the locked spec does not answer.',
+            kind: 'attempt-wall', ticketId: w.ticket, attempts: t.attempts ?? [], recoveryAttempt: spent + 1,
+            instruction: `This ticket failed its own checks repeatedly. Read every attempt hypothesis and find the ROOT cause in the campaign definition — a check that never matched the stated DoD, an acceptance clause that contradicts a delivered/closed dependency, a missing or under-built dependency, or a footprint too small to satisfy the acceptance. Fix it at the source within jurisdiction: amend the ticket contract (with resetAttempts:true, since the prior failures were against the old contract), author a repair ticket for an under-built dependency and rewire this ticket onto it, or correct the gate. Never weaken a named invariant or the acceptance to force green.${spent > 0 ? ' A PRIOR recovery already changed this ticket and it STILL walled — that diagnosis was wrong or incomplete, so find a DIFFERENT root cause; do not repeat the previous fix.' : ''} Park only if the fix is genuinely a human scope/security decision the locked spec does not answer.`,
           }, { ticketId: w.ticket });
         }
-        continue; // re-read the frontier — resolved tickets re-dispatch, parked ones are gone
+        continue; // re-read the frontier — recovered tickets re-dispatch, parked ones are gone
       }
 
       if (complete && isIdle(workers)) {
