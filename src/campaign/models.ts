@@ -60,13 +60,22 @@
 // heavy codex (sol ≈ opus), then claude. Within one attempt agent() still walks
 // the remaining rungs on an engine failure, so a fallback is just taking the
 // next rung early. Infra deaths don't advance the ladder (see drive.workerChain).
+// Consensus groups: a nested entry (a list inside the list) is not a fallback
+// step but a group that DRAFTS in parallel, then has one member reconcile the
+// drafts into a single output — diversity without a vote, keeping the best of
+// each. `decompose: [['codex-gpt-5.6-sol', 'claude-opus']]` runs both, then
+// codex-sol (the first survivor) merges. One reconcile pass, drafts anonymized
+// so the reconciler can't favor its own. Worth it only where the schema output
+// IS the artifact and the campaign has a later coverage backstop — decompose,
+// coverage, harvest, sweep. NEVER worker: its product is a diff in a worktree,
+// unmergeable from JSON, and it runs per-ticket so the N+1× cost bites hardest.
 export const MODELS = {
   worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
   kickoff: ['codex-gpt-5.6-sol', 'claude-opus'],
-  decompose: ['codex-gpt-5.6-sol', 'claude-opus'],
+  decompose: [['codex-gpt-5.6-sol', 'claude-opus']],
   review: ['claude-opus', 'claude-sonnet', 'codex-gpt-5.6-sol'],
   recover: ['claude-opus', 'codex-gpt-5.6-sol'],
   coverage: ['claude-opus', 'codex-gpt-5.6-sol'],
   sweep: ['claude-sonnet', 'codex-gpt-5.6-sol'],
   harvest: ['claude-sonnet', 'codex-gpt-5.6-terra'],
-} satisfies Record<string, string[]>;
+} satisfies Record<string, (string | string[])[]>;
