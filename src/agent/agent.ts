@@ -9,17 +9,31 @@
 // The live process — registry entry, transcript, spend, kill handle — belongs
 // to the fleet; this module only feeds it as the child comes and goes.
 
-import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import * as fleet from './fleet.ts';
 import { log } from '../tui/tui.ts';
 import { appendJournal } from '../campaign/journal.ts';
 import { engineFor, available } from './engine.ts';
 import type { EngineEnvelope } from './engine.ts';
 
-const PROMPTS = fileURLToPath(new URL('./prompts/', import.meta.url));
+import consensus from './prompts/consensus.md' with { type: 'text' };
+import coverage from './prompts/coverage.md' with { type: 'text' };
+import decompose from './prompts/decompose.md' with { type: 'text' };
+import harvest from './prompts/harvest.md' with { type: 'text' };
+import kickoff from './prompts/kickoff.md' with { type: 'text' };
+import recover from './prompts/recover.md' with { type: 'text' };
+import review from './prompts/review.md' with { type: 'text' };
+import sweep from './prompts/sweep.md' with { type: 'text' };
+import worker from './prompts/worker.md' with { type: 'text' };
+
+// Embedded as text, not read from disk: a compiled binary has no ./prompts/ to
+// resolve off import.meta.url, and the prompts are the only runtime asset the
+// tool reads. The cost of the swap is that a new prompt is a line here, not just
+// a file dropped in the directory.
+const PROMPTS: Record<string, string> = {
+  consensus, coverage, decompose, harvest, kickoff, recover, review, sweep, worker,
+};
 
 export type AgentOptions = {
   prompt: string;
@@ -49,8 +63,9 @@ export class AgentError extends Error {
 // {{key}} substitution; objects render as pretty JSON. A missing key is a
 // programming error, not a prompt to silently ship with a hole in it.
 export function renderPrompt(name: string, vars: Record<string, unknown> = {}): string {
-  let text = fs.readFileSync(path.join(PROMPTS, `${name}.md`), 'utf8');
-  text = text.replace(/\{\{(\w+)\}\}/g, (_, key) => {
+  const raw = PROMPTS[name];
+  if (raw === undefined) throw new Error(`unknown prompt: ${name}`);
+  const text = raw.replace(/\{\{(\w+)\}\}/g, (_, key) => {
     if (!(key in vars)) throw new Error(`prompt ${name}: missing var ${key}`);
     const v = vars[key];
     return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
