@@ -76,6 +76,13 @@ export function ticket(id: string): Ticket {
 // backlog-write.mjs — same validation, same transition table, same journal
 // shape. It runs in-process now, so a refusal throws (callers decide bug vs
 // recover) where the script would have exited non-zero.
+//
+// Load-bearing: this is synchronous end to end, and must stay that way. The
+// drive settles several tickets concurrently, and it is only the absence of an
+// await between the read and the write that keeps two of them from interleaving
+// a lost update — no mutex guards this file. An await introduced anywhere in
+// backlogWrite silently makes concurrent settles corrupting; see mainline.ts,
+// which locks the one thing that genuinely does span an await.
 
 const STATUSES = ['open', 'in-flight', 'closed', 'parked', 'decomposed'];
 const LEGAL: Record<string, string[]> = { // from → allowed to

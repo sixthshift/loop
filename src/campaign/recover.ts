@@ -18,6 +18,7 @@
 
 import { backlog, backlogWrite, nextTicketIds } from './backlog.ts';
 import { journalTail } from './journal.ts';
+import { withMainline } from './mainline.ts';
 import { agent, renderPrompt } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
 import { RECOVER } from '../agent/schemas.ts';
@@ -46,7 +47,17 @@ export function backlogSummary() {
 // verifies any campaign-definition change by running the check, and returns the
 // backlog mutations it proved green. Resolved with no actions is legitimate — an
 // environment-only fix. Unresolved parks (optionally against `target`).
-export async function recover(anomaly: Anomaly, target?: { ticketId?: string; subject?: string }): Promise<void> {
+//
+// It runs holding the mainline: full tools on the repo root for minutes, while
+// other tickets are settling, is exactly the contention mainline.ts exists for.
+// The lock is not reentrant, so no caller may invoke this from inside its own
+// mainline section — the two repairs that arise while landing a ticket are
+// hoisted out of that section for this reason.
+export function recover(anomaly: Anomaly, target?: { ticketId?: string; subject?: string }): Promise<void> {
+  return withMainline(() => recoverHoldingMainline(anomaly, target));
+}
+
+async function recoverHoldingMainline(anomaly: Anomaly, target?: { ticketId?: string; subject?: string }): Promise<void> {
   const res = (await agent<RecoverVerdict>({
     prompt: renderPrompt('recover', {
       anomaly,

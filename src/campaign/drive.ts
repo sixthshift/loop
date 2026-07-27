@@ -18,6 +18,7 @@ import { MODELS } from './models.ts';
 import { WORKER, REVIEW, SWEEP } from '../agent/schemas.ts';
 import type { WorkerVerdict, ReviewVerdict, SweepVerdict, Check } from '../agent/schemas.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
+import { withMainline } from './mainline.ts';
 import { recover, renumber, backlogSummary } from './recover.ts';
 import { escalate, park, parkedSummary, gateParked, GATE_SUBJECT, Escalation } from './escalate.ts';
 import * as tui from '../tui/tui.ts';
@@ -392,47 +393,70 @@ function amendChecks(id: string, checks: Check[] | undefined, note: string): voi
   backlogWrite(['update', id, '-', '--note', note], { acceptanceChecks: checks });
 }
 
+// What one landing did to the shared checkout: refused the merge, or took it
+// and reported what the integration check saw afterwards.
+type Landing =
+  | { ok: false; dirty: boolean; conflict: string }
+  | { ok: true; integrationRed: string[] };
+
 async function closeTicket(id: string, meta: { dir: string; baseSha: string }, v: VerifyVerdict, verdict: ReviewVerdict, telemetry: Telemetry, workerSummary: string): Promise<boolean> {
-  const shaBeforeMerge = mainSha();
-  let merged = mergeBranch(id);
-  if (!merged.ok && merged.dirty) {
+  let landed = await withMainline(() => land(id, meta, v, verdict, telemetry, workerSummary));
+
+  if (!landed.ok && landed.dirty) {
     // A dirty mainline blocks every merge identically — repairing it keeps a
-    // judged-close branch that the failed-attempt path below would burn.
-    await recover({ kind: 'dirty-mainline', ticketId: id, conflict: merged.conflict });
-    merged = mergeBranch(id);
+    // judged-close branch that the failed-attempt path below would burn. The
+    // repair takes the mainline itself, so it runs between two landings rather
+    // than inside one; a landing that refused the merge changed nothing, which
+    // is what makes the retry safe.
+    const conflict = landed.conflict;
+    await recover({ kind: 'dirty-mainline', ticketId: id, conflict });
+    landed = await withMainline(() => land(id, meta, v, verdict, telemetry, workerSummary));
   }
-  if (!merged.ok) {
+
+  if (!landed.ok) {
     // Reject rather than accept-and-revert: a conflicted merge is a failed
     // attempt, and a fresh dispatch starts from the moved mainline.
     // Infra, not merit: the diff was judged closeable and only lost a race with
     // a moved mainline. Rebuilding against HEAD is mechanical, so it must not
     // burn the merit budget — --infra keeps it off the wall.
     backlogWrite(['attempt', id, '--failed', 'merge-conflict', '--infra',
-      '--hypothesis', `mainline moved; merge conflict: ${merged.conflict.slice(0, 300)}`,
+      '--hypothesis', `mainline moved; merge conflict: ${landed.conflict.slice(0, 300)}`,
       '--fix', 'rebuild against current HEAD', '--data', JSON.stringify(telemetry)]);
     removeWorktree(id); deleteBranch(id);
     return false;
   }
+
+  tui.log(`✓ closed ${id}`);
+  if (landed.integrationRed.length) {
+    backlogWrite(['note', '--kind', 'integration-red', '--subject', id,
+      '--body', `fast tier red after merging ${id}: [${landed.integrationRed.join(', ')}]`]);
+    await recover({ kind: 'integration-red', ticketId: id, failing: landed.integrationRed });
+  }
+  return true;
+}
+
+// The shared-checkout half of closing a ticket, start to finish as one unit:
+// merge the branch onto mainline, record the close, and re-run the fast tier if
+// mainline moved. It runs under the mainline lock because the integration check
+// is a claim about a specific tree — another ticket merging while it runs would
+// make it a claim about no tree at all, filed against this one. Repairs belong
+// to the caller: they need the lock too, and it is not reentrant.
+async function land(id: string, meta: { baseSha: string }, v: VerifyVerdict, verdict: ReviewVerdict, telemetry: Telemetry, workerSummary: string): Promise<Landing> {
+  const shaBeforeMerge = mainSha();
+  const merged = mergeBranch(id);
+  if (!merged.ok) return { ok: false, dirty: merged.dirty, conflict: merged.conflict };
 
   if (ticket(id).status !== 'in-flight') backlogWrite(['set-status', id, 'in-flight', '--note', 'closing']);
   backlogWrite(['close', id, '--evidence', v.evidence,
     '--note', (verdict.note || workerSummary).slice(0, 500),
     '--data', JSON.stringify(telemetry)]);
   removeWorktree(id); // branch survives until the campaign gate is green — bisection needs it
-  tui.log(`✓ closed ${id}`);
 
   // The old batch merge's free integration gate: if mainline moved past this
   // worker's base, the fast tier re-runs on the merged tree.
-  if (shaBeforeMerge !== meta.baseSha) {
-    tui.log(`integration check after ${id} (mainline moved)…`);
-    const red = await runFastChecks();
-    if (red.length) {
-      backlogWrite(['note', '--kind', 'integration-red', '--subject', id,
-        '--body', `fast tier red after merging ${id}: [${red.join(', ')}]`]);
-      await recover({ kind: 'integration-red', ticketId: id, failing: red });
-    }
-  }
-  return true;
+  if (shaBeforeMerge === meta.baseSha) return { ok: true, integrationRed: [] };
+  tui.log(`integration check after ${id} (mainline moved)…`);
+  return { ok: true, integrationRed: await runFastChecks() };
 }
 
 async function runFastChecks(): Promise<string[]> {
@@ -475,12 +499,18 @@ export function gateGreen(): boolean {
 
 async function closeCampaignGate(): Promise<void> {
   const b = backlog();
-  const results: { name: string; ok: boolean; tail: string }[] = [];
-  for (const g of b.gate ?? []) {
-    tui.log(`campaign gate: ${g.name}…`);
-    const r = await shAsync(g.cmd, '.', { label: `gate:${g.name}` });
-    results.push({ name: g.name, ok: r.status === 0, tail: (r.stdout + r.stderr).slice(-1500) });
-  }
+  // The slow suite runs on the shared tree, so it takes the mainline for the
+  // duration. Only the run does — the red path below calls recover, which takes
+  // the mainline itself.
+  const results = await withMainline(async () => {
+    const out: { name: string; ok: boolean; tail: string }[] = [];
+    for (const g of b.gate ?? []) {
+      tui.log(`campaign gate: ${g.name}…`);
+      const r = await shAsync(g.cmd, '.', { label: `gate:${g.name}` });
+      out.push({ name: g.name, ok: r.status === 0, tail: (r.stdout + r.stderr).slice(-1500) });
+    }
+    return out;
+  });
   const red = results.filter(r => !r.ok);
 
   if (red.length) {
