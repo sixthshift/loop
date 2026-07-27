@@ -330,7 +330,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);
       for (const c of children) {
-        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, origin: c.origin || `decomposed from ${t.id}`, ...c, status: 'open' });
+        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...c, status: 'open' });
         ids.add(c.id);
       }
       // rewire dependents of the parent onto ALL children (coordinator may narrow after)

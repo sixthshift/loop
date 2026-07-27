@@ -222,11 +222,8 @@ describe('decompose', () => {
   });
 
   test('a child must carry its own provenance — none is inherited', () => {
-    // The `origin: c.origin || 'decomposed from …'` fallback in the writer is
-    // vestigial: validation rejects an origin-less child before it can apply,
-    // and the spread that follows would overwrite it regardless. Callers stamp
-    // the origin themselves (drive's tooBig path does), so this asserts the
-    // rule that actually holds rather than the one the fallback implies.
+    // Callers stamp the origin (drive's tooBig path names the parent); the
+    // writer refuses rather than inventing one, like every other required field.
     withScratchCampaign({ backlog: seed() }, () => {
       expect(() => backlogWrite(['decompose', 'T001', '-'], [{ ...CHILDREN[0]!, origin: undefined }]))
         .toThrow(/missing origin/);
