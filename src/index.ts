@@ -13,9 +13,15 @@
 import { program } from 'commander';
 import { runCampaign } from './campaign/index.ts';
 import { renderProgress } from './campaign/progress.ts';
+import { runUpdate } from './update.ts';
+// package.json is the one place the version lives — the release tag and
+// `loop --version` both read it, so they can't drift. The import is bundled
+// into the compiled binary, not read from disk at runtime.
+import { version } from '../package.json' with { type: 'json' };
 
 program
   .name('loop')
+  .version(version)
   .description('the loop-engineering toolkit — drive a locked build spec to green');
 
 program
@@ -33,5 +39,10 @@ program
   .command('status')
   .description('render the backlog tree')
   .action(() => { console.log(renderProgress()); });
+
+program
+  .command('update')
+  .description('replace this binary with the latest release')
+  .action(() => runUpdate());
 
 await program.parseAsync();

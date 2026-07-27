@@ -5,6 +5,7 @@
     "module": "Preserve",
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "noEmit": true,
     "strict": true,
@@ -12,5 +13,5 @@
     "jsx": "react-jsx",
     "types": ["bun"]
   },
-  "include": ["src"]
+  "include": ["src", "build.ts", "next-version.ts"]
 }

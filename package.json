@@ -1,10 +1,11 @@
 {
   "name": "loop",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test src"
+    "test": "bun test src",
+    "build": "bun run build.ts"
   },
   "dependencies": {
     "commander": "^15.0.0",

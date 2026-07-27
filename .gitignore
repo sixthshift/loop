@@ -1,0 +1,8 @@
+# Dependencies (bun.lock is committed)
+node_modules/
+
+# Release binaries (bun run build)
+dist/
+
+# OS junk
+.DS_Store

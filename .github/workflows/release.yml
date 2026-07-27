@@ -1,0 +1,101 @@
+# Every push to main that changes the shipped tool cuts a release: decide the
+# version from the commits, stamp it into package.json, tag it, build four
+# binaries, publish. Pushing a tag by hand is not the trigger — main is.
+#
+# One runner builds every target: bun cross-compiles, so there is no build matrix
+# and every asset in a release provably comes from one commit and one bun.
+name: release
+
+on:
+  push:
+    branches: [main]
+
+# Serialize. Two pushes landing together would otherwise both read the same last
+# tag and compute the same next version. Queue rather than cancel — a cancelled
+# run can leave a pushed tag with no release attached to it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # This job pushes its own stamp commit to main; without this guard that push
+    # would trigger the job again.
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # next-version.ts counts commits since the last tag
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      # Gate before versioning, not after: a tag that points at red main is a lie
+      # that install.sh will happily serve to everyone.
+      - run: bun run typecheck
+      - run: bun test src
+
+      - name: Decide the version
+        id: version
+        # Assigned before it is echoed, deliberately: inside `echo "$(...)"` the
+        # exit status belongs to echo, so a crashing next-version.ts would read as
+        # "nothing to release" and skip the release silently.
+        run: |
+          next="$(bun run next-version.ts)"
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Skipped
+        if: steps.version.outputs.next == ''
+        run: echo 'No releasable commits since the last tag — nothing to publish.'
+
+      - name: Stamp, tag and push
+        if: steps.version.outputs.next != ''
+        env:
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          bun -e '
+            const p = require("./package.json");
+            p.version = process.env.NEXT;
+            require("fs").writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          '
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          # The first release ships the version package.json already declares, so
+          # the stamp is a no-op and there is nothing to commit. Named explicitly
+          # rather than `|| true`, which would also swallow a real commit failure.
+          if git diff --quiet -- package.json; then
+            echo "package.json already declares $NEXT — tagging the pushed commit as-is"
+          else
+            git commit -am "chore(release): v$NEXT"
+          fi
+          git tag "v$NEXT"
+          # HEAD:main rather than main — if another push landed while this ran, this
+          # fails loudly instead of clobbering it.
+          git push origin "HEAD:main"
+          git push origin "v$NEXT"
+
+      # After the stamp, so the binaries report the version that names them.
+      - run: bun run build
+        if: steps.version.outputs.next != ''
+
+      - name: Publish
+        if: steps.version.outputs.next != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          gh release create "v$NEXT" \
+            --title "v$NEXT" \
+            --generate-notes \
+            dist/loop-darwin-arm64 \
+            dist/loop-darwin-x64 \
+            dist/loop-linux-x64 \
+            dist/loop-linux-arm64 \
+            dist/sha256sums.txt
