@@ -287,13 +287,6 @@ function workerChain(t: Ticket): string[] {
 
 // --- settle: verify → ticket-review → apply --------------------------------
 
-// Runs concurrently with dispatch, so it shares one non-obvious invariant with
-// every path below: the write that returns a ticket to the queue and the
-// teardown of its worktree are synchronous with each other, never split by an
-// await. That is what stops the dispatch rung from seeing a ticket go `open`
-// while its old worktree and branch still exist and re-cutting them underneath
-// this one. Every arm here already holds it; an await slipped between an
-// `attempt`/`set-status` write and its removeWorktree would break it.
 async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta): Promise<boolean> {
   const { id } = done;
 
@@ -302,6 +295,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     // session died or the operator killed it. --infra keeps it off the merit
     // wall so a flaky engine (or a usage-limit stretch) can't exhaust the
     // ticket's real budget; the separate infraCap still bounds a dead engine.
+    discardBuild(id);
     backlogWrite(['attempt', id, '--failed', 'worker-channel', '--infra',
       '--hypothesis', done.err.killed
         ? 'killed by the operator from the dashboard'
@@ -309,7 +303,6 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
       '--fix', done.err.killed
         ? 'not a code failure — redispatches when the frontier next offers it'
         : 'fresh dispatch; investigate if it recurs']);
-    removeWorktree(id); deleteBranch(id);
     return false;
   }
 
@@ -317,6 +310,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
   const telemetry: Telemetry = { workerTokens: done.res.tokens, workerSeconds: done.res.seconds, workerCostUsd: done.res.costUsd, model: done.res.model };
 
   if (reply.tooBig) {
+    discardBuild(id);
     const children = renumber((reply.proposedTickets ?? []).map(c => ({
       ...c, origin: `decomposed from ${id}`,
     })));
@@ -325,14 +319,13 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     } else {
       backlogWrite(['decompose', id, '-', '--note', 'worker declared tooBig'], children);
     }
-    removeWorktree(id); deleteBranch(id);
     return false;
   }
 
   if (reply.blocked) {
+    discardBuild(id);
     backlogWrite(['set-status', id, 'parked', '--note', `worker blocked: ${reply.reason}`,
       '--data', JSON.stringify(telemetry)]);
-    removeWorktree(id); deleteBranch(id);
     await recover({
       kind: 'worker-blocked', ticketId: id, reason: reply.reason,
       instruction: 'First test whether the block is a defect in a completed dependency: read the cited spec section and the delivered code. If a merged/closed ticket was built wrong or under-built against the locked spec, author a repair ticket (origin "repair: <what> under-built vs spec §…"), scoped to fix it at source, and rewire this ticket onto it — the escaped-bug rule applies, exactly as campaign-gate-red does. Escalate only if the block needs a decision the locked spec does not already answer.',
@@ -379,21 +372,21 @@ export async function reviewReturn(ctx: CampaignContext, id: string, meta: { dir
         return closeTicket(id, meta, v, verdict, telemetry, workerSummary);
 
       case 'retry':
+        discardBuild(id);
         recordAttempt(id, v, verdict, telemetry);
-        removeWorktree(id); deleteBranch(id);
         return false;
 
       case 'gamed':
         // Escaped-bug rule: the cheated check gets sharper before re-dispatch.
+        discardBuild(id);
         if (verdict.sharpenChecks?.length) amendChecks(id, verdict.sharpenChecks, `gamed: ${verdict.hypothesis ?? ''}`);
         recordAttempt(id, v, verdict, telemetry);
-        removeWorktree(id); deleteBranch(id);
         return false;
 
       case 'flake-probe': {
         if (probeResult) {
+          discardBuild(id);
           park(`judge asked for a second flake probe on ${id}`, { ticketId: id });
-          removeWorktree(id); deleteBranch(id);
           return false;
         }
         tui.log(`flake probe on ${id}: ${verdict.probeCmd}`);
@@ -413,14 +406,31 @@ export async function reviewReturn(ctx: CampaignContext, id: string, meta: { dir
       }
 
       case 'escalate':
+        discardBuild(id);
         await recover({ kind: 'judge-escalate', ticketId: id, reason: verdict.reason }, { ticketId: id });
-        removeWorktree(id); deleteBranch(id);
         return false;
     }
   }
+  discardBuild(id);
   await recover({ kind: 'judge-no-converge', ticketId: id }, { ticketId: id });
-  removeWorktree(id); deleteBranch(id);
   return false;
+}
+
+// A settle that isn't closing the ticket throws its build away, and does it
+// BEFORE the write that hands the ticket back — never after.
+//
+// Ordering, not adjacency, is what makes this safe. Settles run concurrently
+// with dispatch, so between a ticket going `open` and its worktree being
+// destroyed the dispatch rung may run and re-cut a worktree this settle still
+// owns. Writing first left a window whose size depended on whether the next
+// statement awaited: three arms here hand the ticket back from inside recover,
+// which awaits between its own mutations, so that window was real. Discarding
+// first leaves no window at all — a ticket is only ever offered for dispatch
+// after the build behind it is already gone — and no future arm can reopen one
+// by growing an await, because there is no longer an ordering to preserve.
+function discardBuild(id: string): void {
+  removeWorktree(id);
+  deleteBranch(id);
 }
 
 function recordAttempt(id: string, v: VerifyVerdict, verdict: ReviewVerdict, telemetry: Telemetry): void {
@@ -466,10 +476,10 @@ async function closeTicket(id: string, meta: { dir: string; baseSha: string }, v
     // Infra, not merit: the diff was judged closeable and only lost a race with
     // a moved mainline. Rebuilding against HEAD is mechanical, so it must not
     // burn the merit budget — --infra keeps it off the wall.
+    discardBuild(id);
     backlogWrite(['attempt', id, '--failed', 'merge-conflict', '--infra',
       '--hypothesis', `mainline moved; merge conflict: ${landed.conflict.slice(0, 300)}`,
       '--fix', 'rebuild against current HEAD', '--data', JSON.stringify(telemetry)]);
-    removeWorktree(id); deleteBranch(id);
     return false;
   }
 
@@ -619,9 +629,8 @@ async function reconcileStale(ctx: CampaignContext, workers: Workers): Promise<v
     // there is nothing to diff the survivor against.
     const wt = attachWorktree(t.id);
     if (!wt || !t.baseSha) {
+      discardBuild(t.id); // same order as every other arm, though nothing dispatches yet
       backlogWrite(['set-status', t.id, 'open', '--note', 'stale in-flight on resume; no durable work found']);
-      if (wt) removeWorktree(t.id);
-      deleteBranch(t.id);
       continue;
     }
     // Durable work survived the dead session — verify it like any result.
