@@ -109,22 +109,25 @@ locked state; `loop` drives a locked spec to green.
 and *runs* candidate commands to confirm them, yielding the campaign config: the
 fast checks (per-ticket tier), the campaign `gate` (the slow suite), and
 out-of-scope boundaries. Then decompose turns the spec into open tickets — each
-with declared `files`, `depends_on`, `resources`, prose context, acceptance, and
+with declared `modules`, `depends_on`, `resources`, prose context, acceptance, and
 its own `acceptanceChecks`. The spec's sha256 is journaled: a resume against an
 edited spec refuses rather than drive an old contract to green.
 
 **2 · Drive.** One event loop. Each pass reads the frontier — a pure function
 over `backlog.json` — and walks a priority ladder: structural problems, merit
 walls, completion, dispatch, stall. Tickets dispatch when their dependencies are
-closed and their declared files and resources are disjoint from everything in
-flight, so parallel workers can't collide.
+closed and their declared modules and resources are disjoint from everything in
+flight, so parallel workers can't collide. A ticket declares the *directories*
+it lives in, not a file list: a decomposer can predict "this ticket lives in
+`src/auth/`" from the spec alone, but not the file the implementation turns out
+to need — and a file list charges the ticket for that forecast error.
 
 Each dispatched ticket gets a fresh git worktree and branch. When its worker
 returns:
 
 - **verify** (no model — exit codes and git) refuses a dirty tree, runs the fast
   checks plus the ticket's acceptance checks, and requires the committed diff to
-  stay inside the ticket's declared files. Writes an evidence log and a patch.
+  stay inside the ticket's declared modules. Writes an evidence log and a patch.
 - **review** (fresh agent, cold read of the diff and the evidence) is the single
   adversarial gate. It rules `close`, `retry`, `gamed` (hardcoded outputs,
   weakened tests, special-cased inputs, scope creep — the cheated check gets

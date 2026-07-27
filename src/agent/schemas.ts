@@ -11,7 +11,9 @@ export type TicketDraft = {
   id: string;
   title: string;
   depends_on?: string[];
-  files: string[];
+  // Repo-relative directories the ticket lives in — its footprint. See
+  // campaign/footprint.ts for why this is a module and not a file list.
+  modules: string[];
   resources?: string[];
   origin: string;
   context: string;
@@ -111,14 +113,14 @@ export const TICKET = {
     id: { type: 'string' },
     title: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
-    files: { type: 'array', items: { type: 'string' } },
+    modules: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
     origin: { type: 'string' },
     context: { type: 'string' },
     acceptance: { type: 'string' },
     acceptanceChecks: { type: 'array', items: CHECK },
   },
-  required: ['id', 'title', 'files', 'origin', 'context', 'acceptance', 'acceptanceChecks'],
+  required: ['id', 'title', 'modules', 'origin', 'context', 'acceptance', 'acceptanceChecks'],
   additionalProperties: false,
 };
 
@@ -129,7 +131,7 @@ const TICKET_PATCH = {
   properties: {
     title: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
-    files: { type: 'array', items: { type: 'string' } },
+    modules: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
     context: { type: 'string' },
     acceptance: { type: 'string' },

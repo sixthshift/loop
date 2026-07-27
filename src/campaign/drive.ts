@@ -199,7 +199,7 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
     acceptance: t.acceptance,
     acceptanceChecks: t.acceptanceChecks,
     fastChecks: b.fastChecks,
-    files: t.files.join(', '),
+    modules: t.modules.join(', '),
     attempts: t.attempts?.length
       ? `## Prior attempts on this ticket (all failed — do differently)\n\n${JSON.stringify(t.attempts, null, 2)}`
       : '',

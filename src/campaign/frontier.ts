@@ -8,17 +8,14 @@
 // each other: this TS loop drives a single campaign-level gate (no phases),
 // while the skill retains per-phase gating. Deliberate divergence, not drift.
 
-import path from 'node:path';
 import { backlog } from './backlog.ts';
 import type { Backlog, Ticket } from './backlog.ts';
 import type { Frontier } from './state.ts';
+import { modulesCollide, normalizeModule } from './footprint.ts';
 
 const isLive = (t: Ticket) => !['closed', 'decomposed'].includes(t.status);
 
-// Manifest/lockfiles are allowlisted: many tickets legitimately touch them, so
-// they never count as a collision when deciding which tickets are file-disjoint.
-const ALLOW = new Set(['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock']);
-const declaredFiles = (t: Ticket) => (t.files ?? []).filter(f => !ALLOW.has(path.basename(f)));
+const declaredModules = (t: Ticket) => (t.modules ?? []).map(normalizeModule);
 
 export function frontier(): Frontier {
   const b = backlog();
@@ -58,8 +55,8 @@ function findProblems(b: Backlog, byId: Map<string, Ticket>): Frontier['problems
       else if (dep.status === 'decomposed' && isLive(t))
         problems.push({ ticket: t.id, issue: `stranded on decomposed ${d} — rewire onto its children` });
     }
-    if (isLive(t) && (!Array.isArray(t.files) || t.files.length === 0))
-      problems.push({ ticket: t.id, issue: 'empty files declaration — unknown footprint' });
+    if (isLive(t) && (!Array.isArray(t.modules) || t.modules.length === 0))
+      problems.push({ ticket: t.id, issue: 'empty modules declaration — unknown footprint' });
   }
   const seen = new Set<string>();
   for (const t of b.tickets) {
@@ -140,22 +137,28 @@ function findWalls(
   return { capped, stuck };
 }
 
-// --- dispatchable: greedily admit ready tickets that are file- AND resource-
+// --- dispatchable: greedily admit ready tickets that are module- AND resource-
 //     disjoint from everything in flight and from each other. Seed the occupied
-//     sets with what's already running, then stream admissions. ---------------
+//     sets with what's already running, then stream admissions. Modules nest, so
+//     the occupied footprint is a list walked with modulesCollide rather than a
+//     set membership test — `src/` holds `src/auth/`. ------------------------
 function pickDispatchable(candidates: string[], b: Backlog, byId: Map<string, Ticket>): string[] {
   const inFlight = b.tickets.filter(t => t.status === 'in-flight');
-  const occupiedFiles = new Set(inFlight.flatMap(declaredFiles));
+  const occupiedModules = inFlight.flatMap(declaredModules);
   const occupiedResources = new Set(inFlight.flatMap(t => t.resources ?? []));
   const dispatchable: string[] = [];
   for (const id of candidates) {
     const t = byId.get(id)!;
-    const files = declaredFiles(t);
+    const modules = declaredModules(t);
     const resources = t.resources ?? [];
-    if (files.some(f => occupiedFiles.has(f))) continue;
+    // An undeclared footprint collides with nothing and verifies against
+    // nothing — hold it here rather than dispatch work no scope check can
+    // measure. `problems` already reports it for recover to fix.
+    if (!modules.length) continue;
+    if (modules.some(m => occupiedModules.some(o => modulesCollide(m, o)))) continue;
     if (resources.some(r => occupiedResources.has(r))) continue;
     dispatchable.push(id);
-    files.forEach(f => occupiedFiles.add(f));
+    occupiedModules.push(...modules);
     resources.forEach(r => occupiedResources.add(r));
   }
   return dispatchable;

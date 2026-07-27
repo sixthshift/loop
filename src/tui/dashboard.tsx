@@ -376,7 +376,7 @@ function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { tic
       <Text>{' status '}<Text color={color}>{`${glyph} ${shown}`}</Text></Text>
       <Text>{`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`}</Text>
       <Text>{`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`}</Text>
-      <Text>{` files  ${t.files?.join(', ') || '(unscoped)'}`}</Text>
+      <Text>{`modules ${t.modules?.join(', ') || '(unscoped)'}`}</Text>
       {t.origin ? <Text dimColor>{` origin ${t.origin}`}</Text> : null}
       <Text> </Text>
       <Text bold> acceptance</Text>

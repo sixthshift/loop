@@ -36,7 +36,7 @@ export function backlogSummary() {
     outOfScope: b.outOfScope,
     tickets: b.tickets.map(t => ({
       id: t.id, title: t.title, status: t.status,
-      depends_on: t.depends_on, files: t.files, attempts: (t.attempts ?? []).length,
+      depends_on: t.depends_on, modules: t.modules, attempts: (t.attempts ?? []).length,
     })),
   };
 }

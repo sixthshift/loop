@@ -2,7 +2,7 @@
 //
 // Ticket mode: refuse a dirty tree (only committed work verifies), run every
 // fastCheck + the ticket's acceptanceChecks in the worktree, then require the
-// committed diff to stay within the ticket's declared files (∪ a manifest/
+// committed diff to stay inside the ticket's declared modules (∪ a manifest/
 // lockfile allowlist). Writes the evidence log + the diff patch, journals the
 // timing, returns a verdict. Flake mode: run one command N times and classify
 // real-red vs flaky.
@@ -16,13 +16,10 @@ import path from 'node:path';
 import { RUN, shAsync } from './state.ts';
 import { backlog, ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
+import { isInside, isManifest, normalizeModule } from './footprint.ts';
 
 export type VerifyVerdict = { pass: boolean; failing: string[]; scopeOverflow: string[]; evidence: string; diff: string };
 export type FlakeVerdict = { passes: number; fails: number; verdict: string; evidence: string };
-
-// Manifest/lockfiles are allowlisted: many tickets legitimately touch them, so
-// a diff into one is never a scope overflow.
-const ALLOW = new Set(['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock']);
 
 const evidenceDir = () => {
   const dir = path.join(RUN, 'evidence');
@@ -51,12 +48,14 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
     log.push(`### ${c.name} — ${ok ? 'PASS' : `FAIL (exit ${r.status})`}\n$ ${c.cmd}\n${r.stdout + r.stderr}`);
   }
 
-  // 3. scope check: the committed diff must stay within declared files ∪ allowlist.
+  // 3. scope check: every committed path must live inside a declared module (∪
+  //    the manifest allowlist). A file the decomposer never foresaw is in scope
+  //    as long as the worker wrote it where the ticket said it lives.
   const diffNames = (await shAsync(`git diff --name-only ${base}..HEAD`, dir)).stdout.trim().split('\n').filter(Boolean);
-  const declared = new Set(t.files ?? []);
-  const scopeOverflow = diffNames.filter(f => !declared.has(f) && !ALLOW.has(path.basename(f)));
+  const declared = (t.modules ?? []).map(normalizeModule);
+  const scopeOverflow = diffNames.filter(f => !isManifest(f) && !declared.some(m => isInside(f, m)));
   if (scopeOverflow.length) failing.push('scope');
-  log.push(`### scope — ${scopeOverflow.length ? 'FAIL' : 'PASS'}\ndiff files: ${diffNames.join(', ') || '(none)'}\noverflow: ${scopeOverflow.join(', ') || '(none)'}`);
+  log.push(`### scope — ${scopeOverflow.length ? 'FAIL' : 'PASS'}\ndeclared modules: ${declared.map(m => m || '(repo root)').join(', ') || '(none)'}\ndiff files: ${diffNames.join(', ') || '(none)'}\noverflow: ${scopeOverflow.join(', ') || '(none)'}`);
 
   // 4. evidence log + diff patch.
   const pass = failing.length === 0;

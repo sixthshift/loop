@@ -17,7 +17,7 @@ import type { JournalEntry } from './journal.ts';
 export function buildTicket(over: Partial<Ticket> & { id: string }): Ticket {
   return {
     title: `ticket ${over.id}`,
-    files: [`src/${over.id}.ts`],
+    modules: [`src/${over.id}`],
     origin: 'spec §1',
     context: 'context long enough to clear the sole writer\'s 40-char floor',
     acceptance: 'the check passes',

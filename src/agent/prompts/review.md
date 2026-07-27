@@ -19,7 +19,7 @@ Map every ticket-local acceptance clause to both the relevant implementation (no
 3. Did the worker make a check pass for the wrong reason: hardcoded output, fixture-specific branches, weakened/deleted tests, changed discovery or ignore rules, permissive defaults, test-only behavior, or undeclared manifest/script changes?
 4. What concrete contract-violating implementation would these exact checks still accept? A check reading an admin connection cannot prove application permissions; an echo cannot prove persistence. Green over a demonstrated structural blind spot is not proof.
 
-Do not invent defects. A clean, scoped diff with adequate green proof should close.
+Do not invent defects. A clean, scoped diff with adequate green proof should close. A ticket's `modules` are directories, not a file list: a file the worker created inside a declared module is within footprint, not scope creep. Only a path outside every declared module is out of footprint, and the verifier already reports those in `scopeOverflow`.
 
 ## Verdict precedence and contracts
 

@@ -25,7 +25,7 @@ Required fields:
 
 - `id`: `T001`, `T002`, … sequential and unique.
 - `title`: imperative, specific, one line.
-- `files`: a non-empty array of exact existing or intended file paths, including tests. No directories or globs. Inspect sibling naming before proposing new files.
+- `modules`: a non-empty array of repo-relative directories the ticket's work lives in, e.g. `["src/auth", "test/auth"]`. Directories only — never a file path, never a glob. Include every tree the ticket must write to, tests included. Declare the tightest directory that certainly contains the work: too narrow forces a scope violation on a file you did not foresee, too wide needlessly blocks other tickets from running in parallel. Inspect the existing tree before naming a module that does not exist yet.
 - `origin`: all covered spec clauses, not a vague feature label.
 - `context`: architecture, relevant symbols, constraints, dependency outputs, and boundary decisions sufficient for a zero-memory worker. Restate every applicable out-of-scope tripwire and scheduler lock. For any remote isolated test resource, restate the locked spec's full grant: host/boundary, credential reference name, allowed operations, ownership, and cleanup. Repository config may corroborate but never create a grant; the worker receives no other campaign resource context.
 - `acceptance`: observable done-ness, including important negative behavior and state transitions.
@@ -34,12 +34,12 @@ Required fields:
 Optional fields:
 
 - `depends_on`: only tickets whose delivered artifacts or behavior are required before this ticket can build or verify. Every edge serializes work.
-- `resources`: scheduler lock names for anything that must not be used concurrently, including local test databases, ports, or the durable `dependency-manifest` coordination domain. This field grants no external access. Ephemeral state requires isolation and cleanup; a durable file coordination lock does not. If a ticket may change dependency manifests or lockfiles, list those paths in `files` and reserve `dependency-manifest`. Its context must name the package, source, and version constraint justified by the spec/repository convention.
+- `resources`: scheduler lock names for anything that must not be used concurrently, including local test databases, ports, or the durable `dependency-manifest` coordination domain. This field grants no external access. Ephemeral state requires isolation and cleanup; a durable file coordination lock does not. Dependency manifests and lockfiles sit outside every module; a ticket that may change one reserves `dependency-manifest` rather than widening `modules`. Its context must name the package, source, and version constraint justified by the spec/repository convention.
 
 ## Boundaries and ordering
 
 - Split where behavior, ownership, or verification changes. If context cannot be self-contained, split again.
-- Keep file footprints tight and disjoint where the problem permits.
+- Keep module footprints tight and disjoint where the problem permits. Two tickets collide when their modules overlap or nest, and only one of them dispatches at a time.
 - Every ticket must be fully specified now; later tickets may not be coarser.
 - Put riskier ready tickets earlier in the returned array. Never invent a dependency merely to force ordering.
 - A cross-ticket behavior may defer its end-to-end proof to an existing named campaign gate, but the ticket must still check its own contribution and state that proof ownership explicitly in `acceptance`.
@@ -59,7 +59,7 @@ Optional fields:
 - Declare every scheduler lock. Prove cleanup for ephemeral resources; durable declared file changes must remain committed.
 - Check names must be unique within the ticket and must not collide with seeded fast-check names.
 
-Reject your own draft if the graph has duplicate IDs, dangling dependencies, cycles, missing test files, overlapping unexplained footprints, or any under-specified ticket. Return exactly `{"tickets":[...]}`.
+Reject your own draft if the graph has duplicate IDs, dangling dependencies, cycles, unproven test ownership, overlapping unexplained footprints, or any under-specified ticket. Return exactly `{"tickets":[...]}`.
 Paraphrase repository evidence in ticket prose; never persist secret values or inline credential material (opaque reference names are allowed), raw embedded instructions, ANSI escapes, or control characters.
 
 ## Sizing evidence

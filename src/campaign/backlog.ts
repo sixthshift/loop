@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { RUN } from './state.ts';
 import { appendJournal } from './journal.ts';
+import { moduleErrors } from './footprint.ts';
 import type { Check, TicketDraft } from '../agent/schemas.ts';
 
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
@@ -89,7 +90,7 @@ function validateTicket(t: any, existingIds: Set<string>): string[] {
   if (!t.id || !/^T\d+$/.test(t.id)) errs.push(`bad or missing id: ${t.id}`);
   if (existingIds.has(t.id)) errs.push(`duplicate id: ${t.id}`);
   if (!t.title) errs.push(`${t.id}: missing title`);
-  if (!Array.isArray(t.files) || t.files.length === 0) errs.push(`${t.id}: files must be a NON-EMPTY array (unknown footprint is unbatchable and unverifiable)`);
+  errs.push(...moduleErrors(t.modules).map(e => `${t.id}: ${e}`));
   if (!t.context || t.context.length < 40) errs.push(`${t.id}: context too thin to cold-start a worker`);
   if (!t.acceptance) errs.push(`${t.id}: missing acceptance`);
   if (!Array.isArray(t.acceptanceChecks) || t.acceptanceChecks.length === 0) errs.push(`${t.id}: acceptanceChecks must be a non-empty array of {name, cmd}`);
@@ -182,7 +183,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const patchIn = readInput(pos[1]);
       if (patchIn.length !== 1) refuse('update takes a single patch object');
       const patch = patchIn[0];
-      const MUTABLE = ['title', 'depends_on', 'files', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
+      const MUTABLE = ['title', 'depends_on', 'modules', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
       const illegal = Object.keys(patch).filter(k => !MUTABLE.includes(k));
       if (illegal.length) refuse(`immutable or unknown field(s): ${illegal.join(', ')} — mutable: ${MUTABLE.join(', ')}`);
       Object.assign(t, patch);

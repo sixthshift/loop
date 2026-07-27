@@ -1,5 +1,5 @@
 // The frontier's three folds — cycle detection, wall arithmetic, and greedy
-// file-disjoint admission — are module-private, so every assertion here drives
+// module-disjoint admission — are module-private, so every assertion here drives
 // them through `frontier()`, the real exported seam, on a scratch campaign.
 
 import { describe, expect, test } from 'bun:test';
@@ -152,73 +152,91 @@ describe('findWalls', () => {
 });
 
 describe('pickDispatchable', () => {
-  test('two tickets sharing a file — only the first is admitted', () => {
+  test('two tickets sharing a module — only the first is admitted', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['src/a.ts', 'src/b.ts'] }),
-      buildTicket({ id: 'T002', files: ['src/b.ts', 'src/c.ts'] }),
+      buildTicket({ id: 'T001', modules: ['src/auth', 'src/api'] }),
+      buildTicket({ id: 'T002', modules: ['src/api', 'src/web'] }),
     ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001']);
   });
 
   test('fully disjoint tickets are all admitted', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['src/a.ts'] }),
-      buildTicket({ id: 'T002', files: ['src/b.ts'] }),
+      buildTicket({ id: 'T001', modules: ['src/auth'] }),
+      buildTicket({ id: 'T002', modules: ['src/api'] }),
     ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001', 'T002']);
   });
 
   test('a ticket whose deps are not closed never reaches admission', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['src/a.ts'] }),
-      buildTicket({ id: 'T002', files: ['src/b.ts'], depends_on: ['T001'] }),
-      buildTicket({ id: 'T003', files: ['src/c.ts'], depends_on: ['T004'] }),
-      buildTicket({ id: 'T004', files: ['src/d.ts'], status: 'closed' }),
+      buildTicket({ id: 'T001', modules: ['src/a'] }),
+      buildTicket({ id: 'T002', modules: ['src/b'], depends_on: ['T001'] }),
+      buildTicket({ id: 'T003', modules: ['src/c'], depends_on: ['T004'] }),
+      buildTicket({ id: 'T004', modules: ['src/d'], status: 'closed' }),
     ], NO_WALLS);
     expect(f.ready).toEqual(['T001', 'T003']);
     expect(f.waiting).toEqual(['T002']);
     expect(f.dispatchable).toEqual(['T001', 'T003']);
   });
 
-  test('files held by an in-flight ticket are already occupied', () => {
+  test('a module held by an in-flight ticket is already occupied', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['src/a.ts'], status: 'in-flight' }),
-      buildTicket({ id: 'T002', files: ['src/a.ts'] }),
-      buildTicket({ id: 'T003', files: ['src/b.ts'] }),
+      buildTicket({ id: 'T001', modules: ['src/auth'], status: 'in-flight' }),
+      buildTicket({ id: 'T002', modules: ['src/auth'] }),
+      buildTicket({ id: 'T003', modules: ['src/api'] }),
     ], NO_WALLS);
     expect(f.inFlight).toEqual(['T001']);
     expect(f.dispatchable).toEqual(['T003']);
   });
 
-  test('the same manifest and lockfile in both tickets is not a collision', () => {
+  test('a nested module collides with the parent that contains it', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['package.json', 'bun.lock', 'src/a.ts'] }),
-      buildTicket({ id: 'T002', files: ['package.json', 'bun.lock', 'src/b.ts'] }),
+      buildTicket({ id: 'T001', modules: ['src'] }),
+      buildTicket({ id: 'T002', modules: ['src/auth'] }),
+      buildTicket({ id: 'T003', modules: ['test'] }),
+    ], NO_WALLS);
+    expect(f.dispatchable).toEqual(['T001', 'T003']);
+  });
+
+  test('a sibling sharing a name prefix is not a collision', () => {
+    const f = onScratch([
+      buildTicket({ id: 'T001', modules: ['src/auth'] }),
+      buildTicket({ id: 'T002', modules: ['src/authz'] }),
     ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001', 'T002']);
   });
 
-  test('the allowlist matches on basename, so a nested manifest is allowed too', () => {
+  test('trailing slashes and ./ prefixes name the same module', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['apps/web/package.json', 'src/a.ts'] }),
-      buildTicket({ id: 'T002', files: ['apps/web/package.json', 'src/b.ts'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001', 'T002']);
-  });
-
-  test('a non-allowlisted file is a collision no matter how deep it sits', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', files: ['apps/web/src/router.ts'] }),
-      buildTicket({ id: 'T002', files: ['apps/web/src/router.ts'] }),
+      buildTicket({ id: 'T001', modules: ['src/auth/'] }),
+      buildTicket({ id: 'T002', modules: ['./src/auth'] }),
     ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001']);
   });
 
-  test('a shared resource collides even when the files are disjoint', () => {
+  test('a ticket declaring the repository root blocks every other ticket', () => {
     const f = onScratch([
-      buildTicket({ id: 'T001', files: ['src/a.ts'], resources: ['postgres'] }),
-      buildTicket({ id: 'T002', files: ['src/b.ts'], resources: ['postgres'] }),
-      buildTicket({ id: 'T003', files: ['src/c.ts'], resources: ['redis'] }),
+      buildTicket({ id: 'T001', modules: ['.'] }),
+      buildTicket({ id: 'T002', modules: ['src/auth'] }),
+    ], NO_WALLS);
+    expect(f.dispatchable).toEqual(['T001']);
+  });
+
+  test('an undeclared footprint is held out of dispatch, not admitted freely', () => {
+    const f = onScratch([
+      buildTicket({ id: 'T001', modules: [] }),
+      buildTicket({ id: 'T002', modules: ['src/api'] }),
+    ], NO_WALLS);
+    expect(f.problems).toEqual([{ ticket: 'T001', issue: 'empty modules declaration — unknown footprint' }]);
+    expect(f.dispatchable).toEqual(['T002']);
+  });
+
+  test('a shared resource collides even when the modules are disjoint', () => {
+    const f = onScratch([
+      buildTicket({ id: 'T001', modules: ['src/a'], resources: ['postgres'] }),
+      buildTicket({ id: 'T002', modules: ['src/b'], resources: ['postgres'] }),
+      buildTicket({ id: 'T003', modules: ['src/c'], resources: ['redis'] }),
     ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001', 'T003']);
   });
