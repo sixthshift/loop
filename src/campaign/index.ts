@@ -84,7 +84,7 @@ function reportAwaitingHuman(): void {
     }
     if (gateParked) {
       console.log('\ncampaign gate awaiting a decision:');
-      console.log(`  • ${reasonFor('campaign-gate').slice(0, 400)}`);
+      console.log(`  • ${(b.gateState?.parked?.reason ?? 'parked (no reason recorded)').slice(0, 400)}`);
     }
   }
   console.log('\nresolve these, then `loop resume` — state is intact.');

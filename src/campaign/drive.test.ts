@@ -1,74 +1,75 @@
-// `gateGreen` is a journal fold: the campaign gate is green only if it last ran
-// green and no ticket has closed or been added since. Every case below is a
-// scratch journal read through the real export.
+// `gateGreen` is a backlog read: the campaign gate is green only if its last
+// recorded run was green and the backlog still holds the ticket counts that run
+// measured. Every case below is a scratch backlog read through the real export.
 
 import { describe, expect, test } from 'bun:test';
 import { gateGreen } from './drive.ts';
-import { buildEntry, withScratchCampaign } from './scratch-campaign.ts';
-import type { JournalEntry } from './journal.ts';
+import type { GateState, Ticket } from './backlog.ts';
+import { buildTicket, withScratchCampaign } from './scratch-campaign.ts';
 import type { Check } from '../agent/schemas.ts';
 
 const GATE: Check[] = [{ name: 'e2e', cmd: 'bun test:e2e' }];
 
-const onScratch = (gate: Check[] | undefined, journal: JournalEntry[]) => {
+const onScratch = (gate: Check[] | undefined, tickets: Ticket[], gateState?: GateState) => {
   let green!: boolean;
-  withScratchCampaign({ backlog: { tickets: [], gate }, journal }, () => { green = gateGreen(); });
+  withScratchCampaign({ backlog: { tickets, gate, gateState } }, () => { green = gateGreen(); });
   return green;
 };
 
-const entry = (seq: number | undefined, kind: string) =>
-  buildEntry({ ...(seq === undefined ? {} : { seq }), kind, subject: 'campaign-gate' });
+const ranGreen = (tickets: number, closed: number): GateState =>
+  ({ lastRun: { result: 'green', tickets, closed } });
+
+// The shape a green gate was recorded against: three tickets, all closed.
+const DRAINED: Ticket[] = ['T001', 'T002', 'T003'].map(id => buildTicket({ id, status: 'closed' }));
 
 describe('gateGreen', () => {
   test('no slow suite configured collapses completion to the tickets draining', () => {
-    expect(onScratch(undefined, [])).toBe(true);
-    expect(onScratch([], [entry(1, 'add')])).toBe(true);
+    expect(onScratch(undefined, DRAINED)).toBe(true);
+    expect(onScratch([], DRAINED)).toBe(true);
+    // …and stays true even with a stale red run on the record — an unconfigured
+    // gate has nothing to re-run.
+    expect(onScratch([], DRAINED, { lastRun: { result: 'red', tickets: 1, closed: 0 } })).toBe(true);
   });
 
   test('a configured gate that has never run is not green', () => {
-    expect(onScratch(GATE, [])).toBe(false);
-    expect(onScratch(GATE, [entry(1, 'add'), entry(2, 'close')])).toBe(false);
+    expect(onScratch(GATE, DRAINED)).toBe(false);
+    expect(onScratch(GATE, DRAINED, {})).toBe(false);
+    expect(onScratch(GATE, DRAINED, { parked: { reason: 'human call' } })).toBe(false);
   });
 
-  test('a green run with nothing after it is green', () => {
-    expect(onScratch(GATE, [entry(1, 'add'), entry(2, 'campaign-gate-close')])).toBe(true);
+  test('a red run is not green, however current its counts', () => {
+    expect(onScratch(GATE, DRAINED, { lastRun: { result: 'red', tickets: 3, closed: 3 } })).toBe(false);
+  });
+
+  test('a green run against the current counts is green', () => {
+    expect(onScratch(GATE, DRAINED, ranGreen(3, 3))).toBe(true);
   });
 
   test('a close after the green run reads stale', () => {
-    expect(onScratch(GATE, [entry(1, 'campaign-gate-close'), entry(2, 'close')])).toBe(false);
+    // The run saw two of three closed; the third has landed since.
+    expect(onScratch(GATE, DRAINED, ranGreen(3, 2))).toBe(false);
   });
 
   test('an add after the green run reads stale — coverage work must re-clear the gate', () => {
-    expect(onScratch(GATE, [entry(1, 'campaign-gate-close'), entry(2, 'add')])).toBe(false);
+    const withRepair = [...DRAINED, buildTicket({ id: 'T004', origin: 'repair' })];
+    expect(onScratch(GATE, withRepair, ranGreen(3, 3))).toBe(false);
   });
 
-  test('unrelated traffic after the green run does not stale it', () => {
-    expect(onScratch(GATE, [
-      entry(1, 'campaign-gate-close'),
-      entry(2, 'attempt'), entry(3, 'status'), entry(4, 'sweep'), entry(5, 'recover'),
-    ])).toBe(true);
+  test('status churn that is neither a close nor an add does not stale it', () => {
+    // Same three tickets, same one closed — the other two moved through
+    // in-flight and parked, which the gate never measured and never needs to.
+    const churned = [
+      buildTicket({ id: 'T001', status: 'closed' }),
+      buildTicket({ id: 'T002', status: 'in-flight' }),
+      buildTicket({ id: 'T003', status: 'parked' }),
+    ];
+    expect(onScratch(GATE, churned, ranGreen(3, 1))).toBe(true);
   });
 
-  test('the latest green run is the one that counts', () => {
-    expect(onScratch(GATE, [
-      entry(1, 'campaign-gate-close'),
-      entry(2, 'add'),                       // staled the first run…
-      entry(3, 'campaign-gate-close'),       // …and this one cleared it again
-    ])).toBe(true);
-  });
-
-  // Known blindness, pinned rather than fixed: the staleness test compares
-  // `seq ?? 0` against `seq ?? 0`, so an entry written without a seq can never
-  // read as later than anything. `appendJournal` always stamps one, which makes
-  // this reachable only from a hand-edited or foreign journal — where the failure
-  // mode is a gate reported green over work it never ran.
-  test('a seq-less close after a green run cannot stale it', () => {
-    expect(onScratch(GATE, [entry(1, 'campaign-gate-close'), entry(undefined, 'close')])).toBe(true);
-  });
-
-  test('a seq-less green run is staled by nothing at all', () => {
-    expect(onScratch(GATE, [entry(undefined, 'campaign-gate-close'), entry(undefined, 'add')])).toBe(true);
-    // …not even by a seq'd add, which sorts as later everywhere else.
-    expect(onScratch(GATE, [entry(undefined, 'campaign-gate-close'), entry(7, 'add')])).toBe(false);
+  test('an add and a close between runs stale it on both counts at once', () => {
+    const grown = [...DRAINED, buildTicket({ id: 'T004', status: 'closed' })];
+    expect(onScratch(GATE, grown, ranGreen(3, 3))).toBe(false);
+    // …and the re-run against the grown backlog clears it.
+    expect(onScratch(GATE, grown, ranGreen(4, 4))).toBe(true);
   });
 });

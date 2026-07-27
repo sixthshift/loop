@@ -12,8 +12,12 @@
 // so it throws and the process exits. It is the only remaining hard exit.
 
 import { backlog, backlogWrite, ticket } from './backlog.ts';
-import { journalEntries } from './journal.ts';
 import { campaignExists } from './index.ts';
+
+// The one non-ticket subject a park can name and have it stick: the campaign
+// gate keeps a latch on the backlog, so `park` routes it to `gate-park` rather
+// than the journal-note path.
+export const GATE_SUBJECT = 'campaign-gate';
 
 export class Escalation extends Error {
   detail: unknown;
@@ -34,13 +38,18 @@ export function escalate(reason: string, detail?: unknown): never {
   throw new Escalation(reason, detail);
 }
 
-// Park a decision for the human without stopping the campaign. Journals a
-// `parked` note keyed to the ticket/subject, and blocks a live ticket so the
-// frontier skips it. Best-effort: the note is the durable record even if the
-// status write is illegal for the ticket's current state.
+// Park a decision for the human without stopping the campaign. Two subjects
+// carry a durable flag on the backlog — a ticket (its `parked` status) and the
+// campaign gate (its latch); everything else parks as a journal note alone,
+// surfaced in the drain report. Best-effort: the record is written first, so a
+// refused status write still leaves the reason on file.
 export function park(reason: string, opts?: { ticketId?: string; subject?: string; detail?: unknown }): void {
   if (!campaignExists()) return;
   const subject = opts?.ticketId ?? opts?.subject ?? 'campaign';
+  if (subject === GATE_SUBJECT) {
+    try { backlogWrite(['gate-park', '--reason', reason]); } catch { /* the drive re-runs the gate; a failed latch is not fatal */ }
+    return;
+  }
   try {
     backlogWrite(['note', '--kind', 'parked', '--subject', subject, '--body', reason]);
     if (opts?.ticketId) {
@@ -65,14 +74,8 @@ export function parkedSummary(): { tickets: string[]; gateParked: boolean } {
 
 // The campaign gate went red and recover couldn't get it green within
 // jurisdiction — parked, so the completion path stops retrying it and drains to
-// a human decision. Parked once and unparked only by the human editing the gate
-// and resuming, so a later `gate-amendment` clears an earlier `parked`.
+// a human decision. The latch lives on the backlog: `gate-park` sets it, and
+// the `gate` amendment command is the only thing that clears it.
 export function gateParked(): boolean {
-  let parked = false;
-  for (const e of journalEntries()) {
-    if (e.subject !== 'campaign-gate') continue;
-    if (e.kind === 'parked') parked = true;
-    else if (e.kind === 'gate-amendment') parked = false;
-  }
-  return parked;
+  return backlog().gateState?.parked !== undefined;
 }

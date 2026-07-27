@@ -22,7 +22,31 @@ export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'decompo
 // ticket's own; infra failures are the machine's. The wall logic counts only
 // the merit ones, so a flaky engine can't exhaust a ticket's real budget.
 export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string; infra?: boolean };
-export type Ticket = TicketDraft & { status: TicketStatus; attempts?: Attempt[]; evidence?: string | null };
+export type Ticket = TicketDraft & {
+  status: TicketStatus;
+  attempts?: Attempt[];
+  evidence?: string | null;
+  // The mainline sha this ticket's live worktree was cut from, stamped at
+  // dispatch. A resume reads it to re-verify a surviving branch whose worker
+  // session died; it survives the in-flight → open → in-flight round trip a
+  // check amendment makes, and the next dispatch overwrites it.
+  baseSha?: string;
+};
+
+// The campaign gate's live state — what its last run decided, and whether it is
+// latched for the human. Distinct from `gate`, which is the configured checks.
+export type GateState = {
+  // A green run only covers the tree it measured. `tickets` and `closed` are
+  // the backlog's counts at run time, and either moving means work landed that
+  // the gate never saw. Both are monotone — every `add` raises `tickets`, every
+  // `close` raises `closed`, and closed is terminal — so equality is proof
+  // nothing landed, not just proof of a coincidence.
+  lastRun?: { result: 'green' | 'red'; tickets: number; closed: number };
+  // Set when recover gave up on a red gate inside its jurisdiction; cleared by
+  // a gate amendment, i.e. the human edited the gate and resumed.
+  parked?: { reason: string };
+};
+
 export type Backlog = {
   project: string;
   tickets: Ticket[];
@@ -30,6 +54,7 @@ export type Backlog = {
   // The campaign's slow suite (e2e, anything needing a live server): run once,
   // on the whole merged tree, when all ticket work has drained — not per ticket.
   gate?: Check[];
+  gateState?: GateState;
   outOfScope?: string[];
   caps?: { maxAttempts: number; thrash: number; infraCap?: number };
 };
@@ -204,9 +229,41 @@ export function backlogWrite(args: string[], input?: unknown): string {
         if (existing) { existing.cmd = g.cmd; touched.push(`~${g.name}`); }
         else { b.gate.push({ name: g.name, cmd: g.cmd }); touched.push(`+${g.name}`); }
       }
-      journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]`);
+      // Amending the gate is the human's (or recover's) answer to whatever
+      // parked it, so it releases the latch — completion retries the gate
+      // instead of draining straight back to the human.
+      const unparked = b.gateState?.parked !== undefined;
+      if (unparked) delete b.gateState!.parked;
+      journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]${unparked ? '; park latch released' : ''}`);
       save(b);
       return `campaign gate amended [${touched.join(', ')}]`;
+    }
+    case 'gate-run': {
+      // The gate's verdict, stamped against the backlog it measured. Journals
+      // under the same kinds the log always carried, so the post-mortem and the
+      // coverage pass keep reading the run as an event.
+      const b = load();
+      if (pos[0] !== 'green' && pos[0] !== 'red') refuse('gate-run takes a result: green | red');
+      if (!opts.note) refuse('gate-run requires --note (which checks ran)');
+      const result = pos[0] as 'green' | 'red';
+      (b.gateState ??= {}).lastRun = {
+        result,
+        tickets: b.tickets.length,
+        closed: b.tickets.filter(t => t.status === 'closed').length,
+      };
+      journal(result === 'green' ? 'campaign-gate-close' : 'gate-red', 'campaign-gate', opts.note as string, parseData());
+      save(b);
+      return `campaign gate ${result}`;
+    }
+    case 'gate-park': {
+      // The gate went red and recover couldn't get it green within
+      // jurisdiction. Latches until a gate amendment clears it.
+      const b = load();
+      if (!opts.reason) refuse('gate-park requires --reason');
+      (b.gateState ??= {}).parked = { reason: opts.reason as string };
+      journal('parked', 'campaign-gate', opts.reason as string);
+      save(b);
+      return 'campaign gate parked';
     }
     case 'set-status': {
       const b = load();
@@ -214,7 +271,12 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const to = pos[1];
       if (to === 'closed') refuse('use the close command (evidence is mandatory)');
       if (to === 'decomposed') refuse('use the decompose command (children are mandatory)');
+      if (opts['base-sha'] !== undefined && to !== 'in-flight') refuse('--base-sha records a dispatch — only legal on → in-flight');
       transition(t, to!);
+      // Only a dispatch carries a base — the re-stamps that put a ticket back
+      // in-flight mid-review (typo amendment, closing) leave the original in
+      // place, since the worktree they refer to was never re-cut.
+      if (opts['base-sha'] !== undefined) t.baseSha = opts['base-sha'] as string;
       journal('status', t.id, `→ ${to}${opts.note ? ` — ${opts.note}` : ''}`, parseData());
       save(b);
       return `${t.id} → ${to}`;
@@ -283,7 +345,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update set-status attempt close decompose note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update gate gate-run gate-park set-status attempt close decompose note`);
   }
 }
 

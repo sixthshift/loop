@@ -19,7 +19,7 @@ import { WORKER, REVIEW, SWEEP } from '../agent/schemas.ts';
 import type { WorkerVerdict, ReviewVerdict, SweepVerdict, Check } from '../agent/schemas.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
 import { recover, renumber, backlogSummary } from './recover.ts';
-import { escalate, park, parkedSummary, gateParked, Escalation } from './escalate.ts';
+import { escalate, park, parkedSummary, gateParked, GATE_SUBJECT, Escalation } from './escalate.ts';
 import * as tui from '../tui/tui.ts';
 import { control } from '../tui/control.ts';
 
@@ -188,7 +188,7 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   const t = ticket(id);
   const { dir, branch, baseSha } = createWorktree(id);
   backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch}`,
-    '--data', JSON.stringify({ baseSha, branch })]);
+    '--base-sha', baseSha, '--data', JSON.stringify({ baseSha, branch })]);
 
   const b = backlog();
   const learnings = readLearnings();
@@ -458,17 +458,19 @@ async function tryComplete(): Promise<'complete' | 'awaiting-human' | null> {
 }
 
 // The gate is green when it last ran green and no ticket has closed or been
-// added since — coverage/repair work after a green gate must re-clear it. No
-// gate configured collapses completion to "all tickets drained". Exported so
-// retrospective can assert the invariant it depends on (drive never returns
-// 'complete' over an unrun or stale gate).
+// added since — coverage/repair work after a green gate must re-clear it. The
+// run stamps the backlog counts it measured; comparing them against the
+// backlog now is the whole staleness test. No gate configured collapses
+// completion to "all tickets drained". Exported so retrospective can assert the
+// invariant it depends on (drive never returns 'complete' over an unrun or
+// stale gate).
 export function gateGreen(): boolean {
   const b = backlog();
   if (!b.gate?.length) return true;
-  const entries = journalEntries();
-  const lastClose = [...entries].reverse().find(j => j.kind === 'campaign-gate-close');
-  if (!lastClose) return false;
-  return !entries.some(j => (j.seq ?? 0) > (lastClose.seq ?? 0) && (j.kind === 'close' || j.kind === 'add'));
+  const run = b.gateState?.lastRun;
+  if (run?.result !== 'green') return false;
+  return run.tickets === b.tickets.length
+    && run.closed === b.tickets.filter(t => t.status === 'closed').length;
 }
 
 async function closeCampaignGate(): Promise<void> {
@@ -482,18 +484,17 @@ async function closeCampaignGate(): Promise<void> {
   const red = results.filter(r => !r.ok);
 
   if (red.length) {
-    backlogWrite(['note', '--kind', 'gate-red', '--subject', 'campaign-gate',
-      '--body', `gate red: [${red.map(r => r.name).join(', ')}]`]);
+    backlogWrite(['gate-run', 'red', '--note', `gate red: [${red.map(r => r.name).join(', ')}]`]);
     await recover({
       kind: 'campaign-gate-red', results,
       closedTickets: b.tickets.filter(t => t.status === 'closed').map(t => t.id),
       instruction: 'A red campaign gate is one of two things — decide which by reading the failures. (1) A real escaped bug: spawn a repair ticket whose checks also strengthen what let it through. (2) A gate-scoping fault (the gate runs the wrong things, or contends on shared state): narrow/serialise the gate to what it should verify and RUN the corrected gate to confirm it is green before proposing it. Park (resolved=false) only if neither holds — a genuine defect needing a human scope call.',
-    }, { subject: 'campaign-gate' });
+    }, { subject: GATE_SUBJECT });
     return; // recover spawned repairs (re-runs next drain) or parked it (gateParked drains to human)
   }
 
-  backlogWrite(['note', '--kind', 'campaign-gate-close', '--subject', 'campaign-gate',
-    '--body', `gate green: [${results.map(r => r.name).join(', ')}]`, '--data', JSON.stringify({ gate: results.map(r => r.name) })]);
+  backlogWrite(['gate-run', 'green', '--note', `gate green: [${results.map(r => r.name).join(', ')}]`,
+    '--data', JSON.stringify({ gate: results.map(r => r.name) })]);
   tui.log('■ campaign gate green');
 }
 
@@ -536,17 +537,18 @@ async function runSweep(ctx: CampaignContext): Promise<void> {
 async function reconcileStale(ctx: CampaignContext, workers: Workers): Promise<void> {
   const stale = backlog().tickets.filter(t => t.status === 'in-flight' && !workers.has(t.id));
   for (const t of stale) {
-    const dispatchEntry = [...journalEntries()].reverse()
-      .find(j => j.subject === t.id && j.data?.baseSha);
+    // Both halves of a resumable dispatch: the worktree on disk, and the base
+    // it was cut from (stamped on the ticket at dispatch). Without the base
+    // there is nothing to diff the survivor against.
     const wt = attachWorktree(t.id);
-    if (!wt || !dispatchEntry) {
+    if (!wt || !t.baseSha) {
       backlogWrite(['set-status', t.id, 'open', '--note', 'stale in-flight on resume; no durable work found']);
       if (wt) removeWorktree(t.id);
       deleteBranch(t.id);
       continue;
     }
     // Durable work survived the dead session — verify it like any result.
-    await reviewReturn(ctx, t.id, { dir: wt.dir, baseSha: dispatchEntry.data.baseSha },
+    await reviewReturn(ctx, t.id, { dir: wt.dir, baseSha: t.baseSha },
       'resumed: worker session lost, branch survived — judge on the evidence alone',
       { workerTokens: 0, workerSeconds: 0, workerCostUsd: 0, model: '' });
   }

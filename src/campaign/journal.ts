@@ -1,8 +1,15 @@
 // journal.jsonl access — the campaign's append-only event log. Backlog-state
 // entries are journaled by the sole writer as it mutates the backlog;
 // measurement telemetry (verify timings) appends directly through
-// appendJournal below — a fact about a run, never backlog state. Reads parse
-// the tail the dashboard and coordinator read back.
+// appendJournal below — a fact about a run, never backlog state.
+//
+// The log is record-only for backlog state: what happened, narrated for a
+// human, an agent's context window, and the post-mortem. No caller reconstructs
+// a ticket or gate fact by folding these entries — those live on backlog.json,
+// so a truncated, hand-edited, or seq-less journal can never change a verdict.
+// Two reads do still branch on the log, and both are about the log itself
+// rather than about the work: the kickoff record that identifies a resumable
+// campaign, and the sweep's "enough has happened since last time" cadence.
 
 import fs from 'node:fs';
 import path from 'node:path';
