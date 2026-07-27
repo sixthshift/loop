@@ -137,16 +137,32 @@ returns:
   merit one — the ticket rebuilds against the moved HEAD without burning its
   attempt budget. If mainline moved, the fast tier re-runs on the merged tree.
 
-Every 5 closes, a **sweep** agent reads the journal since the last sweep for the
-cross-ticket patterns no single per-ticket verdict can see.
+Every 5 closes, a **sweep** agent reads the *whole* journal and names the
+cross-ticket pattern no per-ticket verdict can see — a systemic landmine, a
+decomposition wrong at the seams, a check the campaign keeps re-sharpening. It
+is the only arm not scoped to a single ticket, so it runs on the strong tier;
+its output is still proposals the coordinator applies.
 
 **3 · Campaign gate.** When all ticket work drains, the slow suite (e2e, anything
 needing a live server) runs **once**, on the whole merged tree. Red is treated as
 an escaped bug: recover either spawns a repair ticket, corrects a mis-scoped
 gate, or parks it for the human.
 
-**4 · Retrospective.** A coverage agent maps spec requirements to closed tickets;
-unmapped requirements are new tickets and the drive resumes. Otherwise: harvest
+Gate edits are classified before they apply (`gate.ts`). A new gate name only
+adds coverage, so any arm may add one. Reusing a live name *replaces* the
+command currently deciding correctness — and no comparison of two shell strings
+can prove that's a tightening. So a replacement is accepted from exactly one
+caller: a recover answering that gate's own red run, the only invocation that
+holds the failure and can re-run the correction green. Sweep can't run anything
+and every other recover never saw the gate, so for them a reused name is
+refused. Either way it is journaled under its own kind, with the command it
+displaced.
+
+**4 · Retrospective.** A coverage agent grades the requirement-to-proof matrix —
+the coordinator already counted which clauses are claimed and closed, so the
+pass spends its read on whether each check observed the boundary its requirement
+names, plus one re-read of the spec for clauses the enumeration missed. Anything
+unproven becomes a new ticket and the drive resumes. Otherwise: harvest
 distils the journal into reusable learnings, a self-contained HTML post-mortem is
 written next to the spec, branches are reaped, and campaign state is deleted.
 

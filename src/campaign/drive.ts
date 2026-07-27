@@ -597,7 +597,12 @@ async function runSweep(ctx: CampaignContext): Promise<void> {
     prompt: renderPrompt('sweep', {
       outOfScope: backlog().outOfScope ?? [],
       backlogSummary: backlogSummary(),
-      journal: since.slice(-120),
+      // Cadence is measured on what's new, but the input is the whole campaign:
+      // the patterns this role exists to find (a landmine hitting its third
+      // ticket, a check re-sharpened every time) are invisible in a window that
+      // holds one instance. Prior sweep summaries are in the log too, so it can
+      // see what it already said rather than re-proposing it.
+      journal: entries,
     }),
     models: MODELS.sweep,
     schema: SWEEP,

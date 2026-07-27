@@ -23,8 +23,15 @@
 //     outage doesn't collapse the gate onto the worker's own family.
 //   • recover and coverage lead claude-opus — judgment-heavy (recover self-audits
 //     definition-of-done; coverage rules done-ness).
-//   • sweep and harvest lead claude-sonnet — advisory / no-correctness-impact,
-//     economized to the light tier.
+//   • sweep leads claude-opus — it is the campaign's only reflective arm, the
+//     one pass whose input is the whole journal rather than one ticket. The
+//     cross-ticket pattern (a systemic fixture problem, a bad decomposition,
+//     checks that keep needing the same sharpening) exists in the campaign only
+//     if sweep names it, and no per-ticket arm can: review sees one diff,
+//     recover sees one anomaly. Its output is still proposals the coordinator
+//     applies, so the tier buys judgment, not authority.
+//   • harvest leads claude-sonnet — retrospective, post-gate, no correctness
+//     impact, economized to the light tier.
 // Every chain carries the other family as a fallback, so a provider outage
 // degrades gracefully instead of stalling.
 //
@@ -37,8 +44,10 @@
 //                 outputs, weakened/deleted tests, special-cased inputs,
 //                 out-of-scope features): close / retry / gamed / flake-probe /
 //                 amend / escalate. The sole post-work authority.
-//   sweep       — periodic pass over the journal for the cross-ticket patterns
-//                 no single per-ticket verdict can see.
+//   sweep       — campaign-level reflection on a cadence: reads the whole
+//                 journal and names the pattern no per-ticket verdict can see
+//                 — a systemic landmine, a mis-decomposition, a check the
+//                 campaign keeps re-sharpening. Proposes; never applies.
 //   recover     — the universal else + full-tool fixer: every anomaly the
 //                 deterministic spine can't handle (stall, refusal, merit wall,
 //                 blocked worker, red gate, dirty mainline, coordinator crash).
@@ -76,6 +85,6 @@ export const MODELS = {
   review: ['claude-opus', 'claude-sonnet', 'codex-gpt-5.6-sol'],
   recover: ['claude-opus', 'codex-gpt-5.6-sol'],
   coverage: ['claude-opus', 'codex-gpt-5.6-sol'],
-  sweep: ['claude-sonnet', 'codex-gpt-5.6-sol'],
+  sweep: ['claude-opus', 'codex-gpt-5.6-sol'],
   harvest: ['claude-sonnet', 'codex-gpt-5.6-terra'],
 } satisfies Record<string, (string | string[])[]>;
