@@ -14,6 +14,7 @@ import { fleet, subscribe as subscribeFleet, kill, killAll } from '../agent/flee
 import type { LiveAgent } from '../agent/fleet.ts';
 import { backlog } from '../campaign/backlog.ts';
 import { campaignExists } from '../campaign/index.ts';
+import { coverage } from '../campaign/frontier.ts';
 import { journalTail } from '../campaign/journal.ts';
 import type { Backlog, Ticket } from '../campaign/backlog.ts';
 import type { JournalEntry } from '../campaign/journal.ts';
@@ -274,11 +275,27 @@ function GatePanel({ b }: { b: Backlog; cols: number }) {
     : last?.kind === 'gate-red' ? <Text color="red">[gate ✗]</Text>
     : live === 0 ? <Text color="yellow">[gate …]</Text>
     : <Text> </Text>;
+  // Two bars, because they answer different questions and can disagree: the
+  // first is the backlog closing itself out, the second is how much of the SPEC
+  // that accounts for. A campaign can be 8/8 tickets with a clause nobody
+  // claimed, and only the lower bar says so.
+  const cov = b.requirements?.length ? coverage(b) : null;
   return (
-    <Text>
-      {'  '}<Bar done={done} total={ts.length} width={24} />
-      {` ${String(done).padStart(2)}/${ts.length}  `}{gate}
-    </Text>
+    <>
+      <Text>
+        {'  '}<Bar done={done} total={ts.length} width={24} />
+        {` ${String(done).padStart(2)}/${ts.length}  `}{gate}
+      </Text>
+      {cov && (
+        <Text>
+          {'  '}<Bar done={cov.proven.length} total={cov.requirements} width={24} />
+          {` ${String(cov.proven.length).padStart(2)}/${cov.requirements}  `}
+          {cov.unmapped.length
+            ? <Text color="yellow">[{cov.unmapped.length} clause{cov.unmapped.length > 1 ? 's' : ''} unclaimed]</Text>
+            : <Text dimColor>[spec]</Text>}
+        </Text>
+      )}
+    </>
   );
 }
 

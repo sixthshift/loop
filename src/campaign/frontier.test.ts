@@ -241,3 +241,86 @@ describe('pickDispatchable', () => {
     expect(f.dispatchable).toEqual(['T001', 'T003']);
   });
 });
+
+// Closed tickets measure the backlog against itself. Coverage measures it
+// against the spec enumeration kickoff made, and the two disagree exactly when
+// the decomposition missed something — which is the case worth catching.
+describe('coverage', () => {
+  const withReqs = (tickets: Ticket[], requirements: { id: string; clause: string }[]) => {
+    let f!: ReturnType<typeof frontier>;
+    withScratchCampaign({ backlog: { tickets, requirements, caps: NO_WALLS } }, () => { f = frontier(); });
+    return f.coverage;
+  };
+
+  const REQS = [{ id: 'R1', clause: 'a' }, { id: 'R2', clause: 'b' }];
+
+  test('a requirement no ticket claims is unmapped', () => {
+    const cov = withReqs([buildTicket({ id: 'T001', satisfies: ['R1'] })], REQS);
+    expect(cov).toEqual({ requirements: 2, unmapped: ['R2'], proven: [] });
+  });
+
+  test('a requirement is proven when its claiming ticket closed', () => {
+    const cov = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'closed' }),
+      buildTicket({ id: 'T002', satisfies: ['R2'] }),
+    ], REQS);
+    expect(cov.proven).toEqual(['R1']);
+    expect(cov.unmapped).toEqual([]);
+  });
+
+  test('two tickets sharing a requirement prove it only once BOTH close', () => {
+    const half = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'closed' }),
+      buildTicket({ id: 'T002', satisfies: ['R1'] }),
+      buildTicket({ id: 'T003', satisfies: ['R2'], status: 'closed' }),
+    ], REQS);
+    expect(half.proven).toEqual(['R2']);
+
+    const both = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'closed' }),
+      buildTicket({ id: 'T002', satisfies: ['R1'], status: 'closed' }),
+      buildTicket({ id: 'T003', satisfies: ['R2'], status: 'closed' }),
+    ], REQS);
+    expect(both.proven).toEqual(['R1', 'R2']);
+  });
+
+  // The parent delegated the work; its children carry their own claims. Counting
+  // the parent would report a clause as mapped when nothing is building it.
+  test('a decomposed parent stops claiming — its children must re-claim', () => {
+    const orphaned = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'decomposed' }),
+      buildTicket({ id: 'T002' }), // a child that forgot to claim
+      buildTicket({ id: 'T003', satisfies: ['R2'] }),
+    ], REQS);
+    expect(orphaned.unmapped).toEqual(['R1']);
+
+    const rewired = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'decomposed' }),
+      buildTicket({ id: 'T002', satisfies: ['R1'] }),
+      buildTicket({ id: 'T003', satisfies: ['R2'] }),
+    ], REQS);
+    expect(rewired.unmapped).toEqual([]);
+  });
+
+  test('a parked ticket still holds its claim — parked is unfinished, not gone', () => {
+    const cov = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1'], status: 'parked' }),
+      buildTicket({ id: 'T002', satisfies: ['R2'], status: 'closed' }),
+    ], REQS);
+    expect(cov.unmapped).toEqual([]);
+    expect(cov.proven).toEqual(['R2']);
+  });
+
+  test('a campaign with no enumeration reports nothing rather than everything', () => {
+    const cov = withReqs([buildTicket({ id: 'T001', status: 'closed' })], []);
+    expect(cov).toEqual({ requirements: 0, unmapped: [], proven: [] });
+  });
+
+  test('a ticket claiming nothing does not disturb the count', () => {
+    const cov = withReqs([
+      buildTicket({ id: 'T001', satisfies: ['R1', 'R2'], status: 'closed' }),
+      buildTicket({ id: 'T002' }), // scaffolding
+    ], REQS);
+    expect(cov.proven).toEqual(['R1', 'R2']);
+  });
+});

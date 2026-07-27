@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { backlog, backlogWrite } from './backlog.ts';
+import { coverage } from './frontier.ts';
 import { journalEntries } from './journal.ts';
 import { RUN, LEARNINGS, WORKTREES, sh } from './state.ts';
 import type { CampaignContext } from './state.ts';
@@ -34,7 +35,12 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   const cov = (await agent<CoverageVerdict>({
     prompt: renderPrompt('coverage', {
       spec: ctx.spec,
-      tickets: closed.map(t => ({ id: t.id, title: t.title, acceptance: t.acceptance, evidence: t.evidence })),
+      // The enumeration plus the arithmetic over it. Supplying the counts stops
+      // the pass re-deriving what the coordinator already knows, and frees it to
+      // spend its read on the half only a judge can do: whether each check
+      // observed the boundary its requirement actually names.
+      requirements: { list: b.requirements ?? [], ...coverage(b) },
+      tickets: closed.map(t => ({ id: t.id, title: t.title, satisfies: t.satisfies, acceptance: t.acceptance, evidence: t.evidence })),
       outOfScope: b.outOfScope ?? [],
       gateEvidence: gateClose?.body ?? '(no gate configured)',
     }),

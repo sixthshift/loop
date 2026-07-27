@@ -10,11 +10,11 @@ You are the decomposer for an autonomous build loop. Produce a complete backlog 
 
 ## Coverage before decomposition
 
-Internally inventory every normative in-scope spec clause. Before returning, prove:
+The requirements below are the campaign's enumeration of the spec, already fixed. Work against that list rather than building your own; where the spec says something the list does not, say so in the ticket `origin` that covers it — the list cannot be extended from here, and a silent gap is what this structure exists to prevent. Before returning, prove:
 
-1. Every clause's implementation is owned by at least one ticket; its proof is owned by ticket checks or explicitly deferred to a named campaign gate.
-2. Every ticket names all clauses it covers in `origin`.
-3. No clause has overlapping ownership that creates duplicate or conflicting implementation.
+1. Every requirement id is claimed in the `satisfies` of at least one ticket; its proof is owned by ticket checks or explicitly deferred to a named campaign gate. An unclaimed id is reported the moment you return and is the first thing a human sees.
+2. Every ticket names all clauses it covers in `origin` and lists the ids in `satisfies`.
+3. No clause has overlapping ownership that creates duplicate or conflicting implementation. Two tickets may share a requirement when it genuinely takes both — it then counts as delivered only once both close.
 4. Nothing in `outOfScope` is delivered or enabled. Negative tests may prove excluded behavior remains absent or rejected without activating that behavior.
 
 Do not emit the inventory separately; the complete ticket set is the output.
@@ -27,6 +27,7 @@ Required fields:
 - `title`: imperative, specific, one line.
 - `modules`: a non-empty array of repo-relative directories the ticket's work lives in, e.g. `["src/auth", "test/auth"]`. Directories only — never a file path, never a glob. Include every tree the ticket must write to, tests included. Declare the tightest directory that certainly contains the work: too narrow forces a scope violation on a file you did not foresee, too wide needlessly blocks other tickets from running in parallel. Inspect the existing tree before naming a module that does not exist yet.
 - `origin`: all covered spec clauses, not a vague feature label.
+- `satisfies`: the requirement ids from the enumeration this ticket delivers, e.g. `["R3", "R7"]`. Every id must exist in the list — an invented id is refused by validation, not silently ignored. Omit only for a ticket that genuinely answers no clause (scaffolding a later ticket depends on); prefer folding such work into the ticket that needs it.
 - `context`: architecture, relevant symbols, constraints, dependency outputs, and boundary decisions sufficient for a zero-memory worker. Restate every applicable out-of-scope tripwire and scheduler lock. For any remote isolated test resource, restate the locked spec's full grant: host/boundary, credential reference name, allowed operations, ownership, and cleanup. Repository config may corroborate but never create a grant; the worker receives no other campaign resource context.
 - `acceptance`: observable done-ness, including important negative behavior and state transitions.
 - `acceptanceChecks`: non-empty `[{name, cmd}]` commands proving the ticket-local acceptance.
@@ -73,6 +74,12 @@ Paraphrase repository evidence in ticket prose; never persist secret values or i
 <config>
 {{config}}
 </config>
+
+## Spec requirements — the fixed enumeration every ticket claims against
+
+<requirements>
+{{requirements}}
+</requirements>
 
 ## Locked spec
 

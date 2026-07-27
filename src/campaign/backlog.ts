@@ -8,7 +8,7 @@ import path from 'node:path';
 import { RUN } from './state.ts';
 import { appendJournal } from './journal.ts';
 import { moduleErrors } from './footprint.ts';
-import type { Check, TicketDraft } from '../agent/schemas.ts';
+import type { Check, Requirement, TicketDraft } from '../agent/schemas.ts';
 
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
@@ -57,8 +57,16 @@ export type Backlog = {
   gate?: Check[];
   gateState?: GateState;
   outOfScope?: string[];
+  // The spec's normative clauses, enumerated once at kickoff. Tickets claim
+  // these ids in `satisfies`, and the frontier's coverage arithmetic is a join
+  // between the two — which is why the sole writer refuses a claim on an id
+  // that isn't here.
+  requirements?: Requirement[];
   caps?: { maxAttempts: number; thrash: number; infraCap?: number };
 };
+
+export const requirementIds = (b: Backlog): Set<string> =>
+  new Set((b.requirements ?? []).map(r => r.id));
 
 export function backlog(): Backlog {
   return JSON.parse(fs.readFileSync(path.join(RUN, 'backlog.json'), 'utf8'));
@@ -92,7 +100,7 @@ const LEGAL: Record<string, string[]> = { // from → allowed to
   'closed': [], 'decomposed': [],
 };
 
-function validateTicket(t: any, existingIds: Set<string>): string[] {
+function validateTicket(t: any, existingIds: Set<string>, requirementIds: Set<string>): string[] {
   const errs: string[] = [];
   if (!t.id || !/^T\d+$/.test(t.id)) errs.push(`bad or missing id: ${t.id}`);
   if (existingIds.has(t.id)) errs.push(`duplicate id: ${t.id}`);
@@ -104,6 +112,15 @@ function validateTicket(t: any, existingIds: Set<string>): string[] {
   (t.acceptanceChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`${t.id}: acceptanceCheck missing name or cmd`); });
   if (t.resources !== undefined && !Array.isArray(t.resources)) errs.push(`${t.id}: resources must be an array of shared-resource names`);
   if (!t.origin) errs.push(`${t.id}: missing origin (spec §, decomposed-from, or repair)`);
+  // A claim on a requirement that doesn't exist is worse than no claim: the
+  // frontier counts the clause as unmapped while the ticket reads as covering
+  // it, and nothing downstream would ever disagree out loud.
+  if (t.satisfies !== undefined) {
+    if (!Array.isArray(t.satisfies)) errs.push(`${t.id}: satisfies must be an array of requirement ids`);
+    else for (const r of t.satisfies) {
+      if (!requirementIds.has(r)) errs.push(`${t.id}: satisfies unknown requirement ${JSON.stringify(r)} (ids come from the kickoff enumeration)`);
+    }
+  }
   return errs;
 }
 
@@ -169,15 +186,24 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (b.tickets.length && !opts.amend) refuse('config is seeded before the first ticket exists — after that, re-run with --amend --note "why" (a journaled amendment)');
       if (opts.amend && !opts.note) refuse('--amend requires --note — the rationale is the record');
       const cfg = readInput(pos[0]);
-      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?}');
+      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?, requirements?}');
       const c0 = cfg[0];
       const errs: string[] = [];
-      for (const k of Object.keys(c0)) if (!['fastChecks', 'gate', 'outOfScope'].includes(k)) errs.push(`unknown key ${k} (seed takes fastChecks, gate, outOfScope)`);
+      const KEYS = ['fastChecks', 'gate', 'outOfScope', 'requirements'] as const;
+      for (const k of Object.keys(c0)) if (!(KEYS as readonly string[]).includes(k)) errs.push(`unknown key ${k} (seed takes ${KEYS.join(', ')})`);
       (c0.fastChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`fastCheck missing name or cmd: ${JSON.stringify(c)}`); });
       (c0.gate || []).forEach((g: any) => { if (!g.name || !g.cmd) errs.push(`gate command missing name or cmd: ${JSON.stringify(g)}`); });
       (c0.outOfScope || []).forEach((o: any) => { if (typeof o !== 'string') errs.push(`outOfScope entries are strings: ${JSON.stringify(o)}`); });
+      // Requirement ids are the join key every later claim is checked against, so
+      // a duplicate or blank id is a corrupt enumeration, not a typo to tolerate.
+      const reqIds = new Set<string>();
+      (c0.requirements || []).forEach((r: any) => {
+        if (!r?.id || typeof r.id !== 'string' || !r.clause) errs.push(`requirement needs id and clause: ${JSON.stringify(r)}`);
+        else if (reqIds.has(r.id)) errs.push(`duplicate requirement id: ${r.id}`);
+        else reqIds.add(r.id);
+      });
       if (errs.length) refuse(errs.join('\n'));
-      for (const k of ['fastChecks', 'gate', 'outOfScope'] as const) if (c0[k] !== undefined) (b as any)[k] = c0[k];
+      for (const k of KEYS) if (c0[k] !== undefined) (b as any)[k] = c0[k];
       journal(opts.amend ? 'amend-config' : 'seed', 'campaign',
         `${opts.amend ? 'amended' : 'seeded'} ${Object.keys(c0).join(', ')}${opts.note ? ` — ${opts.note}` : ''}`);
       save(b);
@@ -194,7 +220,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const illegal = Object.keys(patch).filter(k => !MUTABLE.includes(k));
       if (illegal.length) refuse(`immutable or unknown field(s): ${illegal.join(', ')} — mutable: ${MUTABLE.join(', ')}`);
       Object.assign(t, patch);
-      const errs = validateTicket(t, new Set()).filter(e => !e.includes('duplicate'));
+      const errs = validateTicket(t, new Set(), requirementIds(b)).filter(e => !e.includes('duplicate'));
       if (errs.length) refuse(`patch leaves ${t.id} invalid:\n${errs.join('\n')}`);
       // Opt-in: the prior attempts were measured against a contract that this
       // patch just changed, so they no longer describe THIS ticket — a stale
@@ -210,7 +236,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const b = load();
       const ids = new Set(b.tickets.map(t => t.id));
       const incoming = readInput(pos[0]);
-      const errs = incoming.flatMap((t: any) => validateTicket(t, ids));
+      const errs = incoming.flatMap((t: any) => validateTicket(t, ids, requirementIds(b)));
       if (errs.length) refuse(errs.join('\n'));
       for (const t of incoming) {
         b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...t, status: 'open' });
@@ -328,7 +354,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const ids = new Set(b.tickets.map(x => x.id));
       const children = readInput(pos[1]);
       if (!children.length) refuse('decompose requires child tickets');
-      const errs = children.flatMap((c: any) => validateTicket(c, ids));
+      const errs = children.flatMap((c: any) => validateTicket(c, ids, requirementIds(b)));
       if (errs.length) refuse(errs.join('\n'));
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);

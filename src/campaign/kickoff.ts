@@ -4,7 +4,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { backlogWrite } from './backlog.ts';
+import { backlog, backlogWrite } from './backlog.ts';
+import { coverage } from './frontier.ts';
 import { RUN, specSha, readLearnings } from './state.ts';
 import { agent, renderPrompt } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
@@ -45,7 +46,18 @@ export async function kickoff(specPath: string): Promise<void> {
   fs.mkdirSync(RUN, { recursive: true });
   backlogWrite(['init', '--project', project]);
   ensureGitignore();
-  backlogWrite(['seed', '-'], { fastChecks: kv.fastChecks, gate: kv.gate, outOfScope: kv.outOfScope });
+  backlogWrite(['seed', '-'], {
+    fastChecks: kv.fastChecks, gate: kv.gate, outOfScope: kv.outOfScope, requirements: kv.requirements,
+  });
+  // The enumeration is load-bearing from here on: every later reading of "how
+  // much of the spec is done" joins against these ids, and a clause missing here
+  // is a clause the frontier can never report as unmapped. Kickoff is the one
+  // moment a human is present, so the list is put in front of them and into the
+  // journal — a contract nobody was shown is not a contract they reviewed.
+  backlogWrite(['note', '--kind', 'requirements', '--subject', 'spec',
+    '--body', kv.requirements.map(r => `${r.id}: ${r.clause}`).join('\n') || '(none enumerated)',
+    '--data', JSON.stringify({ requirements: kv.requirements })]);
+  tui.log(`kickoff: ${kv.requirements.length} spec requirement(s) enumerated`);
   backlogWrite(['note', '--kind', 'kickoff', '--subject', 'spec',
     '--body', `sha256=${sha} coordinator=script`, '--data', JSON.stringify({ specPath, sha })]);
   if (learnings?.['flakes.json']) {
@@ -58,6 +70,7 @@ export async function kickoff(specPath: string): Promise<void> {
     const res = (await agent<DecomposeVerdict>({
       prompt: renderPrompt('decompose', {
         spec,
+        requirements: kv.requirements,
         config: { fastChecks: kv.fastChecks, gate: kv.gate, outOfScope: kv.outOfScope },
         learnings: learnings?.['sizing.md']
           ? `## Sizing priors from past campaigns (decompose preemptively)\n\n${learnings['sizing.md']}`
@@ -72,10 +85,18 @@ export async function kickoff(specPath: string): Promise<void> {
     try {
       backlogWrite(['add', '-'], res.tickets);
       // The pre-flight report goes to the journal — it must outlive the screen.
+      // It carries the unmapped clauses because this is the last point before
+      // the loop runs unattended: a requirement no ticket claims will otherwise
+      // surface as a coverage gap only at termination, after the whole tree has
+      // been built around its absence.
       const gateNames = kv.gate.map(g => g.name).join(', ') || 'none';
+      const { unmapped, requirements } = coverage(backlog());
+      const cover = requirements
+        ? ` requirements: ${requirements - unmapped.length}/${requirements} claimed${unmapped.length ? ` — UNCLAIMED [${unmapped.join(', ')}]` : ''}.`
+        : '';
       backlogWrite(['note', '--kind', 'preflight', '--subject', 'campaign',
-        '--body', `${res.tickets.length} open ticket(s). campaign gate: [${gateNames}]${kv.notes ? ` — ${kv.notes}` : ''}`]);
-      tui.log(`kickoff complete: ${res.tickets.length} open ticket(s)`);
+        '--body', `${res.tickets.length} open ticket(s). campaign gate: [${gateNames}].${cover}${kv.notes ? ` — ${kv.notes}` : ''}`]);
+      tui.log(`kickoff complete: ${res.tickets.length} open ticket(s)${unmapped.length ? `; ${unmapped.length} spec requirement(s) unclaimed` : ''}`);
       return;
     } catch (e: any) {
       if (attempt >= 2) escalate(`kickoff: decomposition refused twice by backlog-write`, e.message);

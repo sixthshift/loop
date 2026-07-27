@@ -54,6 +54,7 @@ Run `git status --porcelain --untracked-files=all` again after all probes. Any n
 - `fastChecks`: the green per-ticket baseline as `[{name, cmd}]`.
 - `gate`: the merged-tree integration/e2e commands as `[{name, cmd}]`; empty only when ticket checks plus fast checks can settle every requirement.
 - `outOfScope`: restate the spec's explicit exclusions faithfully as concise behavioral tripwires. Do not copy unrelated operational prose or infer extra exclusions.
+- `requirements`: every normative in-scope clause of the spec, as `[{id, clause}]` with ids `R1`, `R2`, … This enumeration is the campaign's contract with the spec and it is made exactly once — here. Tickets reference these ids, progress is counted against them, and the final coverage pass grades proof clause by clause, so a clause you omit is one nothing downstream is looking for. Walk the whole spec, including failure behavior, permissions, persistence, migration/compatibility, and stated non-functional requirements; one clause per requirement, worded so that whether it holds is decidable by inspection. Do not enumerate the exclusions (they are `outOfScope`) or restate implementation suggestions as requirements.
 - `notes`: non-empty provenance from the probes above.
 
 If any blocker exists, do not soften it into `notes`.

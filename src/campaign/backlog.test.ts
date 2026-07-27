@@ -364,3 +364,64 @@ describe('attempt', () => {
     });
   });
 });
+
+// The enumeration is the join key between the spec and the backlog. A claim on
+// an id that does not exist would leave the frontier reporting the clause as
+// unmapped while the ticket reads as covering it — a disagreement no arm would
+// ever voice, so the sole writer refuses it at the door.
+describe('requirement claims', () => {
+  const REQS = [{ id: 'R1', clause: 'tokens expire' }, { id: 'R2', clause: 'refresh rotates' }];
+
+  test('seed stores the enumeration', () => {
+    const b = afterWrites({ tickets: [] }, () => {
+      backlogWrite(['seed', '-'], { requirements: REQS });
+    });
+    expect(b.requirements).toEqual(REQS);
+  });
+
+  test('seed refuses a duplicate requirement id — a corrupt join key, not a typo', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => backlogWrite(['seed', '-'], {
+        requirements: [{ id: 'R1', clause: 'a' }, { id: 'R1', clause: 'b' }],
+      })).toThrow(/duplicate requirement id: R1/);
+    });
+  });
+
+  test('seed refuses a requirement missing its clause', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => backlogWrite(['seed', '-'], { requirements: [{ id: 'R1' }] }))
+        .toThrow(/requirement needs id and clause/);
+    });
+  });
+
+  test('a ticket may claim an enumerated requirement', () => {
+    const b = afterWrites({ tickets: [], requirements: REQS }, () => {
+      backlogWrite(['add', '-'], [buildTicket({ id: 'T001', satisfies: ['R1', 'R2'] })]);
+    });
+    expect(b.tickets[0]!.satisfies).toEqual(['R1', 'R2']);
+  });
+
+  test('a ticket claiming an unknown requirement is refused, and lands nothing', () => {
+    withScratchCampaign({ backlog: { tickets: [], requirements: REQS } }, () => {
+      expect(() => backlogWrite(['add', '-'], [buildTicket({ id: 'T001', satisfies: ['R9'] })]))
+        .toThrow(/satisfies unknown requirement "R9"/);
+      expect(backlog().tickets).toEqual([]);
+    });
+  });
+
+  test('a decomposition child claiming an unknown requirement is refused too', () => {
+    withScratchCampaign({ backlog: { tickets: [buildTicket({ id: 'T001' })], requirements: REQS } }, () => {
+      expect(() => backlogWrite(['decompose', 'T001', '-', '--note', 'split'],
+        [buildTicket({ id: 'T002', satisfies: ['nope'] })])).toThrow(/satisfies unknown requirement/);
+      expect(backlog().tickets.map(t => t.status)).toEqual(['open']); // parent untouched
+    });
+  });
+
+  test('a claim survives an update — the patch cannot reach it', () => {
+    withScratchCampaign({ backlog: { tickets: [buildTicket({ id: 'T001', satisfies: ['R1'] })], requirements: REQS } }, () => {
+      expect(() => backlogWrite(['update', 'T001', '-', '--note', 'rewire'], { satisfies: [] }))
+        .toThrow(/immutable or unknown field/);
+      expect(backlog().tickets[0]!.satisfies).toEqual(['R1']);
+    });
+  });
+});

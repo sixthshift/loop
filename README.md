@@ -10,7 +10,7 @@ The coordinator seat — the control flow — is deterministic TypeScript. Every
 recover, coverage, harvest. The coordinator never grades work it dispatched.
 
 > **Status: pre-first-campaign.** The mechanical spine and the agent layer are
-> unit- and smoke-tested (44 tests); a full spec-to-green run has not happened
+> unit- and smoke-tested (152 tests); a full spec-to-green run has not happened
 > yet. Workers run with permissions bypassed — see [Known limits](#known-limits).
 
 ## Requirements
@@ -108,10 +108,28 @@ locked state; `loop` drives a locked spec to green.
 **1 · Kickoff** (once, only when no campaign exists). One agent reads the spec
 and *runs* candidate commands to confirm them, yielding the campaign config: the
 fast checks (per-ticket tier), the campaign `gate` (the slow suite), and
-out-of-scope boundaries. Then decompose turns the spec into open tickets — each
-with declared `modules`, `depends_on`, `resources`, prose context, acceptance, and
-its own `acceptanceChecks`. The spec's sha256 is journaled: a resume against an
-edited spec refuses rather than drive an old contract to green.
+out-of-scope boundaries, and an enumeration of the spec's normative clauses as
+`requirements` — `R1`, `R2`, … Then decompose turns the spec into open tickets —
+each with declared `modules`, `depends_on`, `resources`, prose context,
+acceptance, its own `acceptanceChecks`, and the requirement ids it `satisfies`.
+The spec's sha256 is journaled: a resume against an edited spec refuses rather
+than drive an old contract to green.
+
+The enumeration is what makes spec coverage *arithmetic* rather than a verdict
+delivered at the end. The frontier joins tickets to requirement ids on every
+pass, so "3 clauses nobody claimed" shows up in the pre-flight report and on the
+dashboard's second progress bar — while the campaign can still act on it —
+instead of surfacing at termination after the whole tree was built around the
+absence. Two bars, because they answer different questions and can disagree: a
+campaign can be 8/8 tickets closed with a clause no ticket ever claimed. The
+sole writer refuses a ticket claiming an id that isn't enumerated; a claim
+nothing can be joined to is worse than no claim, because it reads as coverage.
+
+The list is made once, by one agent, before any code exists — so it is
+load-bearing, and a clause missed there is invisible to every count downstream.
+Two things hedge that: kickoff prints and journals the enumeration at the one
+moment a human is present, and the terminal coverage pass still re-reads the
+spec against the list and reports clauses missing from it as enumeration gaps.
 
 **2 · Drive.** One event loop. Each pass reads the frontier — a pure function
 over `backlog.json` — and walks a priority ladder: structural problems, merit
@@ -281,14 +299,14 @@ change, and resume never guesses.
 ## Development
 
 ```sh
-bun test src        # 44 tests
+bun test src        # 152 tests
 bun run typecheck   # tsc --noEmit, strict
 ```
 
 | Path | |
 |---|---|
 | `src/index.ts` | CLI shell — verb wiring only |
-| `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `kickoff`, `retrospective`, `worktree`, `journal`, `models` |
+| `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `jurisdiction` (recover's enforced boundary), `gate` (amendment authority), `kickoff`, `retrospective`, `worktree`, `journal`, `models` |
 | `src/agent/` | spawning agents: `agent` (spawn, timeout, fallback, consensus), `engine` + `engines/`, `schemas`, `fleet` |
 | `src/agent/prompts/` | one markdown prompt per role — the judgment layer, editable without touching control flow |
 | `src/tui/` | dashboard (Ink), rail graph, control flags, liveness |

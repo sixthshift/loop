@@ -15,19 +15,29 @@ export type TicketDraft = {
   // campaign/footprint.ts for why this is a module and not a file list.
   modules: string[];
   resources?: string[];
+  // Requirement ids from the kickoff enumeration that this ticket delivers.
+  satisfies?: string[];
   origin: string;
   context: string;
   acceptance: string;
   acceptanceChecks: Check[];
 };
 
-export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin'>>;
+// `satisfies` is deliberately absent: a patch may reshape how a ticket does its
+// job, never which clause it answers for. Losing a claim silently un-covers a
+// requirement, and the frontier would report the gap with no one to blame.
+export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin' | 'satisfies'>>;
+
+// One normative clause of the locked spec. `id` is stable for the campaign's
+// life — tickets, the frontier, and coverage all join on it.
+export type Requirement = { id: string; clause: string };
 
 export type KickoffVerdict = {
   blockers: { item: string; needed: string }[];
   fastChecks: Check[];
   gate: Check[];
   outOfScope: string[];
+  requirements: Requirement[];
   notes: string;
 };
 
@@ -107,6 +117,16 @@ const CHECK = {
   additionalProperties: false,
 };
 
+// One normative clause of the locked spec, enumerated once at kickoff and
+// referenced by id thereafter. The id is the join key between the spec and the
+// backlog: tickets claim it, the frontier counts it, coverage grades it.
+const REQUIREMENT = {
+  type: 'object',
+  properties: { id: { type: 'string' }, clause: { type: 'string' } },
+  required: ['id', 'clause'],
+  additionalProperties: false,
+};
+
 export const TICKET = {
   type: 'object',
   properties: {
@@ -115,6 +135,11 @@ export const TICKET = {
     depends_on: { type: 'array', items: { type: 'string' } },
     modules: { type: 'array', items: { type: 'string' } },
     resources: { type: 'array', items: { type: 'string' } },
+    // Requirement ids this ticket delivers. Optional in the schema because a
+    // repair or proof ticket answers a defect rather than a clause; decompose's
+    // prompt requires it, and an unclaimed requirement is what the frontier's
+    // coverage arithmetic reports.
+    satisfies: { type: 'array', items: { type: 'string' } },
     origin: { type: 'string' },
     context: { type: 'string' },
     acceptance: { type: 'string' },
@@ -155,9 +180,10 @@ export const KICKOFF = {
     fastChecks: { type: 'array', items: CHECK },
     gate: { type: 'array', items: CHECK },
     outOfScope: { type: 'array', items: { type: 'string' } },
+    requirements: { type: 'array', items: REQUIREMENT },
     notes: { type: 'string' },
   },
-  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'notes'],
+  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'requirements', 'notes'],
   additionalProperties: false,
 };
 

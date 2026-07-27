@@ -25,6 +25,12 @@ export type Frontier = {
   inFlight: string[];
   complete: boolean;
   counts: Record<string, number>;
+  // Spec coverage as arithmetic rather than a terminal judgement: which
+  // enumerated requirements no ticket claims, and which are delivered by
+  // tickets that all closed. Advisory — it never gates dispatch — but it is the
+  // only reading of "how much of the spec is actually done" available while the
+  // campaign is still running.
+  coverage: { requirements: number; unmapped: string[]; proven: string[] };
 };
 
 

@@ -3,6 +3,7 @@
 // view is the Ink dashboard, so the watch mode the old script carried is gone.
 
 import { backlog } from './backlog.ts';
+import { coverage } from './frontier.ts';
 
 const GLYPH: Record<string, string> = {
   open: '·', 'in-flight': '◐', closed: '●', parked: '✕', decomposed: '▽',
@@ -18,6 +19,14 @@ export function renderProgress(): string {
   const done = b.tickets.filter(t => t.status === 'closed').length;
   const liveN = b.tickets.filter(t => !['closed', 'decomposed'].includes(t.status)).length;
   lines.push(`[${done}/${done + liveN} closed]${liveN === 0 && b.tickets.length ? '  ← DRAINED' : ''}`);
+  // Tickets closed measures the backlog against itself; this measures it against
+  // the spec, and the two disagree exactly when the decomposition missed
+  // something.
+  const cov = coverage(b);
+  if (cov.requirements) {
+    lines.push(`[${cov.proven.length}/${cov.requirements} spec requirements proven]`
+      + (cov.unmapped.length ? `  ⚠ unclaimed: ${cov.unmapped.join(', ')}` : ''));
+  }
   for (const t of b.tickets) {
     const att = (t.attempts ?? []).length ? ` (a${t.attempts!.length})` : '';
     const deps = (t.depends_on ?? []).length ? `  ⇐ ${t.depends_on!.join(',')}` : '';

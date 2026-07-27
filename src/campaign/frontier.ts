@@ -3,6 +3,12 @@
 // directly: no subprocess, no JSON parse of an untyped blob. The type is the
 // whole contract.
 //
+// Most of it reads the backlog against itself (what is runnable, what is
+// walled, what may run together). `coverage` is the exception: it reads the
+// backlog against the SPEC, joining tickets to the requirement ids kickoff
+// enumerated, which is the only way the loop can notice work nobody wrote a
+// ticket for while there is still time to write one.
+//
 // The ailoop skill ships its own terminal-runnable copy (frontier.mjs) for its
 // agent-driven path. The two are independent by design and no longer mirror
 // each other: this TS loop drives a single campaign-level gate (no phases),
@@ -42,7 +48,41 @@ export function frontier(): Frontier {
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
-  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts };
+  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts,
+    coverage: coverage(b) };
+}
+
+// --- coverage: the spec-side reading of progress ----------------------------
+// Exported as well as folded into the frontier: the views already hold a
+// Backlog, and the dashboard re-renders every second — no reason to re-read the
+// file and re-walk the dependency graph to answer a question about two fields.
+// Closed tickets measure the backlog against itself. This measures it against
+// the enumeration kickoff made from the spec, which is the only thing that can
+// notice work nobody ever wrote a ticket for.
+//
+// A decomposed parent's claim doesn't count: it delegated the work, and its
+// children carry their own claims — counting the parent would report a clause as
+// mapped when the ticket that would deliver it may never have been written.
+//
+// `proven` demands that EVERY claiming ticket closed, not that one did. Two
+// tickets claiming a clause are two halves of it; a requirement isn't delivered
+// while a ticket for it is still open. Nothing here is a judgement about proof
+// quality — a closed ticket only means its own checks went green at the
+// boundary they observe. That grading is still the terminal coverage pass's job.
+export function coverage(b: Backlog): Frontier['coverage'] {
+  const requirements = b.requirements ?? [];
+  const claimants = new Map(requirements.map(r => [r.id, [] as Ticket[]]));
+  for (const t of b.tickets) {
+    if (t.status === 'decomposed') continue;
+    for (const r of t.satisfies ?? []) claimants.get(r)?.push(t);
+  }
+  const unmapped: string[] = [];
+  const proven: string[] = [];
+  for (const [id, tickets] of claimants) {
+    if (!tickets.length) unmapped.push(id);
+    else if (tickets.every(t => t.status === 'closed')) proven.push(id);
+  }
+  return { requirements: requirements.length, unmapped, proven };
 }
 
 // --- structural problems: the graph lying about what's runnable ------------
