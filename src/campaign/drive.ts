@@ -37,10 +37,21 @@ type WorkerMeta = { promise: Promise<WorkerDone>; dir: string; branch: string; b
 type Workers = Map<string, WorkerMeta>;
 type Telemetry = { workerTokens: number; workerSeconds: number; workerCostUsd: number; model: string };
 
+// The two channels a pass can wake on. A worker finishing is not the end of the
+// ticket — verify, up to four review rounds, a flake probe and the merge all
+// come after it — so the settle runs as its own channel rather than inline,
+// and the pass that started it goes straight back to dispatching.
+type LoopEvent =
+  | { kind: 'worker'; done: WorkerDone }
+  | { kind: 'settled'; id: string; closed?: boolean; err?: unknown };
+type Settles = Map<string, Promise<LoopEvent>>;
+
 // Two predicates the ladder leans on more than once; every other rung reads
 // its fact inline off the destructured frontier below.
 const hasOpen = () => backlog().tickets.some(t => t.status === 'open');
-const isIdle = (workers: Workers) => workers.size === 0;
+// A settling ticket is still live work: its diff is unjudged and its branch
+// unmerged, so completion and the stall arm must both wait for it.
+const isIdle = (workers: Workers, settles: Settles) => workers.size === 0 && settles.size === 0;
 
 // Stage 2 — the drive. One event loop: each pass reads the frontier once into
 // named locals, walks the priority ladder those locals feed, takes one action,
@@ -49,6 +60,14 @@ const isIdle = (workers: Workers) => workers.size === 0;
 // reconcileStale runs once on resume, before the first pass — surviving
 // in-flight work is judged like any other result.
 //
+// A pass ends by waking on either of two channels: a worker returning, or a
+// settle finishing. They are separate because the worker is the short half —
+// everything that decides whether the ticket closed (verify, up to four review
+// rounds, a flake probe, the merge, the integration check) happens after it,
+// and running that inline held the whole ladder, so the other workers finished
+// into an idle loop. Settling now runs concurrently with dispatch and with
+// other settles, which is why the shared checkout needs mainline.ts.
+//
 // The whole body sits inside the crash membrane — the universal else, error
 // edition. An unenumerated throw anywhere in a pass is an anomaly like any
 // other: journal it, hand it to a fresh recover agent, keep driving. The same
@@ -56,6 +75,7 @@ const isIdle = (workers: Workers) => workers.size === 0;
 // through untouched: they are the honest exit, not a crash.
 export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaiting-human'> {
   const workers: Workers = new Map();
+  const settles: Settles = new Map();
   let closesSinceSweep = 0;
   let reconciled = false;
   let lastCrash: string | null = null;
@@ -117,7 +137,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         continue; // re-read the frontier — recovered tickets re-dispatch, parked ones are gone
       }
 
-      if (complete && isIdle(workers)) {
+      if (complete && isIdle(workers, settles)) {
         const verdict = await tryComplete();
         if (verdict) return verdict; // gate green → retrospective, or parked → human
         continue; // gate just ran (repairs spawned, or newly green) — re-read
@@ -130,7 +150,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         }
       }
 
-      if (isIdle(workers)) {
+      if (isIdle(workers, settles)) {
         // No work in flight and nothing dispatched: either the graph is stuck
         // or state is wedged. Never report done over live tickets.
         if (complete) {
@@ -155,10 +175,30 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         return 'awaiting-human';
       }
 
-      const done = await Promise.race([...workers.values()].map(w => w.promise));
-      const meta = workers.get(done.id)!;
-      workers.delete(done.id);
-      if (await settle(ctx, done, meta)) closesSinceSweep++;
+      // Both channels, raced together. Whichever fires, the pass ends and the
+      // ladder runs again from the top — so a worker handing off to a settle
+      // frees its slot for the next dispatch immediately, instead of the loop
+      // sitting inside verify → review → merge with its other workers idle.
+      const event = await Promise.race<LoopEvent>([
+        ...[...workers.values()].map(w => w.promise.then((done): LoopEvent => ({ kind: 'worker', done }))),
+        ...settles.values(),
+      ]);
+
+      if (event.kind === 'worker') {
+        const { done } = event;
+        const meta = workers.get(done.id)!;
+        workers.delete(done.id);
+        // Never rejects: the error rides the envelope, so the losers of every
+        // later race can't become unhandled rejections.
+        settles.set(done.id, settle(ctx, done, meta).then(
+          (closed): LoopEvent => ({ kind: 'settled', id: done.id, closed }),
+          (err): LoopEvent => ({ kind: 'settled', id: done.id, err })));
+        continue;
+      }
+
+      settles.delete(event.id);
+      if (event.err) throw event.err; // back to the crash membrane, as when settle ran inline
+      if (event.closed) closesSinceSweep++;
       if (closesSinceSweep >= SWEEP_EVERY) {
         await runSweep(ctx);
         closesSinceSweep = 0;
@@ -247,6 +287,13 @@ function workerChain(t: Ticket): string[] {
 
 // --- settle: verify → ticket-review → apply --------------------------------
 
+// Runs concurrently with dispatch, so it shares one non-obvious invariant with
+// every path below: the write that returns a ticket to the queue and the
+// teardown of its worktree are synchronous with each other, never split by an
+// await. That is what stops the dispatch rung from seeing a ticket go `open`
+// while its old worktree and branch still exist and re-cutting them underneath
+// this one. Every arm here already holds it; an await slipped between an
+// `attempt`/`set-status` write and its removeWorktree would break it.
 async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta): Promise<boolean> {
   const { id } = done;
 

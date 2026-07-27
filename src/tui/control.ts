@@ -10,6 +10,10 @@
 
 export const control = {
   paused: false,          // stop dispatching; in-flight workers finish and settle
+  // Concurrent *build* sessions. A ticket that has returned and is settling no
+  // longer holds a slot — its review agent runs on top of the cap, deliberately:
+  // holding the slot until the merge is what left workers idle behind one slow
+  // settle. So live agents can exceed this, bounded by the dispatch graph.
   workerCap: parseInt(process.env.AILOOP_WORKERS ?? '3', 10),
   forceSweep: false,      // run the sweep at the next loop turn
 };
