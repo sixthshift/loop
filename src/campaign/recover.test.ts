@@ -1,10 +1,13 @@
-// `renumber` takes the coordinator's side of id allocation back from the agent:
-// proposed ids are placeholders, and any edge between two proposals has to
-// follow its endpoints to the ids actually allocated.
+// The two things the coordinator keeps for itself when it applies a recover
+// verdict. `renumber` takes id allocation back from the agent: proposed ids are
+// placeholders, and any edge between two proposals has to follow its endpoints
+// to the ids actually allocated. `gateAuthority` takes the right to replace a
+// live gate command, granting it by the anomaly the seat was opened for.
 
 import { describe, expect, test } from 'bun:test';
-import { renumber } from './recover.ts';
-import { buildTicket, withScratchCampaign } from './scratch-campaign.ts';
+import { gateAuthority, priorRecoveries, recoverKey, renumber } from './recover.ts';
+import { GATE_RED } from './gate.ts';
+import { buildEntry, buildTicket, withScratchCampaign } from './scratch-campaign.ts';
 import type { Ticket } from './backlog.ts';
 
 const onScratch = (existing: Ticket[], drafts: Ticket[]) => {
@@ -76,5 +79,66 @@ describe('renumber', () => {
 
   test('nothing proposed allocates nothing', () => {
     expect(onScratch([buildTicket({ id: 'T001' })], [])).toEqual([]);
+  });
+});
+
+// Recover is fresh-context every time, so it cannot notice that it has answered
+// this exact anomaly before. The budget is the coordinator's memory on its
+// behalf, and it is keyed by what "the same anomaly" means for that kind.
+describe('the recover budget', () => {
+  const recovered = (key: string, body = 'fixed it') =>
+    buildEntry({ kind: 'recovered', subject: key.split(':')[0], body, data: { key } });
+
+  const spent = (journal: ReturnType<typeof buildEntry>[], key: string) => {
+    let n = 0;
+    withScratchCampaign({ journal }, () => { n = priorRecoveries(key).length; });
+    return n;
+  };
+
+  test('a ticket-scoped anomaly is budgeted per ticket, so two tickets walling once each is not a pattern', () => {
+    expect(recoverKey({ kind: 'attempt-wall', ticketId: 'T007' })).toBe('attempt-wall:T007');
+    const journal = [recovered('attempt-wall:T007'), recovered('attempt-wall:T009')];
+    expect(spent(journal, 'attempt-wall:T007')).toBe(1);
+  });
+
+  test('a campaign-scoped anomaly is budgeted per campaign', () => {
+    expect(recoverKey({ kind: GATE_RED, results: [] })).toBe(GATE_RED);
+    expect(spent([recovered(GATE_RED), recovered(GATE_RED)], GATE_RED)).toBe(2);
+  });
+
+  test('only resolutions count — an unresolved recover parked, and nothing re-arms a park', () => {
+    const journal = [
+      recovered(GATE_RED),
+      buildEntry({ kind: 'parked', subject: 'campaign-gate', body: 'gave up' }),
+      buildEntry({ kind: 'recover-refused', subject: 'gate', body: 'illegal action' }),
+    ];
+    expect(spent(journal, GATE_RED)).toBe(1);
+  });
+
+  test('the prior fixes are returned, not just counted — they are the evidence a park cites', () => {
+    let bodies: (string | undefined)[] = [];
+    withScratchCampaign({ journal: [recovered(GATE_RED, 'narrowed the e2e gate'), recovered(GATE_RED, 'narrowed it again')] }, () => {
+      bodies = priorRecoveries(GATE_RED).map(e => e.body);
+    });
+    expect(bodies).toEqual(['narrowed the e2e gate', 'narrowed it again']);
+  });
+});
+
+// One recover seat serves every anomaly, but only one of them arrives holding a
+// gate's own failure. The authority to replace a live gate command tracks that
+// distinction rather than the seat.
+describe('gateAuthority', () => {
+  test('the gate\'s own red run may replace the command that produced it', () => {
+    expect(gateAuthority({ kind: GATE_RED, results: [] })).toBe('apply');
+  });
+
+  test('every other anomaly reaches recover without having run the gate, so it may only add', () => {
+    for (const kind of ['stalled', 'attempt-wall', 'dirty-mainline', 'worker-blocked', 'coordinator-error']) {
+      expect(gateAuthority({ kind })).toBe('refuse');
+    }
+  });
+
+  test('a kind that merely mentions the gate is not the gate anomaly', () => {
+    expect(gateAuthority({ kind: 'gate-red' })).toBe('refuse');
   });
 });

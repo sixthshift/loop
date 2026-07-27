@@ -5,6 +5,7 @@
 
 import { backlog, backlogWrite, ticket } from './backlog.ts';
 import type { Ticket } from './backlog.ts';
+import { amendGate, GATE_RED } from './gate.ts';
 import { journalEntries, journalTail } from './journal.ts';
 import { shAsync, readLearnings } from './state.ts';
 import type { CampaignContext } from './state.ts';
@@ -116,6 +117,11 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
         // that doesn't hold means the diagnosis was wrong — try a different one)
         // before the wall is conceded to the human as a park. Either way the
         // ticket leaves `ready`, so the loop keeps driving everything disjoint.
+        //
+        // This budget is the wall's own, and it also escalates the prompt on the
+        // second pass. recover.ts holds a matching campaign-wide budget per
+        // anomaly key that survives a resume; the two agree on the number, and
+        // this one is reached first because it counts before the call.
         for (const w of [...capped, ...stuck]) {
           const t = ticket(w.ticket);
           const last = t.attempts?.[t.attempts.length - 1];
@@ -131,7 +137,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
           wallRecoveries.set(w.ticket, spent + 1);
           await recover({
             kind: 'attempt-wall', ticketId: w.ticket, attempts: t.attempts ?? [], recoveryAttempt: spent + 1,
-            instruction: `This ticket failed its own checks repeatedly. Read every attempt hypothesis and find the ROOT cause in the campaign definition — a check that never matched the stated DoD, an acceptance clause that contradicts a delivered/closed dependency, a missing or under-built dependency, or a footprint too small to satisfy the acceptance. Fix it at the source within jurisdiction: amend the ticket contract (with resetAttempts:true, since the prior failures were against the old contract), author a repair ticket for an under-built dependency and rewire this ticket onto it, or correct the gate. Never weaken a named invariant or the acceptance to force green.${spent > 0 ? ' A PRIOR recovery already changed this ticket and it STILL walled — that diagnosis was wrong or incomplete, so find a DIFFERENT root cause; do not repeat the previous fix.' : ''} Park only if the fix is genuinely a human scope/security decision the locked spec does not answer.`,
+            instruction: `This ticket failed its own checks repeatedly. Read every attempt hypothesis and find the ROOT cause in the campaign definition — a check that never matched the stated DoD, an acceptance clause that contradicts a delivered/closed dependency, a missing or under-built dependency, or a footprint too small to satisfy the acceptance. Fix it at the source within jurisdiction: amend the ticket contract (with resetAttempts:true, since the prior failures were against the old contract), author a repair ticket for an under-built dependency and rewire this ticket onto it, or add a missing merged-tree gate check (only a red gate's own recovery may replace a gate command in force). Never weaken a named invariant or the acceptance to force green.${spent > 0 ? ' A PRIOR recovery already changed this ticket and it STILL walled — that diagnosis was wrong or incomplete, so find a DIFFERENT root cause; do not repeat the previous fix.' : ''} Park only if the fix is genuinely a human scope/security decision the locked spec does not answer.`,
           }, { ticketId: w.ticket });
         }
         continue; // re-read the frontier — recovered tickets re-dispatch, parked ones are gone
@@ -316,6 +322,7 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     })));
     if (!children.length) {
       await recover({ kind: 'toobig-without-split', ticketId: id });
+      reopenIfStranded(id, 'worker declared tooBig with no split and recover returned without moving the ticket');
     } else {
       backlogWrite(['decompose', id, '-', '--note', 'worker declared tooBig'], children);
     }
@@ -408,11 +415,13 @@ export async function reviewReturn(ctx: CampaignContext, id: string, meta: { dir
       case 'escalate':
         discardBuild(id);
         await recover({ kind: 'judge-escalate', ticketId: id, reason: verdict.reason }, { ticketId: id });
+        reopenIfStranded(id, 'judge escalated and recover returned without moving the ticket');
         return false;
     }
   }
   discardBuild(id);
   await recover({ kind: 'judge-no-converge', ticketId: id }, { ticketId: id });
+  reopenIfStranded(id, 'review did not converge and recover returned without moving the ticket');
   return false;
 }
 
@@ -431,6 +440,18 @@ export async function reviewReturn(ctx: CampaignContext, id: string, meta: { dir
 function discardBuild(id: string): void {
   removeWorktree(id);
   deleteBranch(id);
+}
+
+// Every handoff to recover that discarded the build has already destroyed the
+// ticket's worktree and branch, so an in-flight status afterwards describes a
+// worker that no longer exists. Recover normally moves the ticket itself (a
+// set-status action, or the park its target implies); this catches the case
+// where it resolved the anomaly some other way and never touched the status —
+// otherwise the ticket sits in-flight, undispatchable, until a restart's
+// reconcileStale notices. A no-op whenever recover did its own bookkeeping.
+function reopenIfStranded(id: string, why: string): void {
+  if (ticket(id).status !== 'in-flight') return;
+  backlogWrite(['set-status', id, 'open', '--note', `${why}; no worker or branch remains`]);
 }
 
 function recordAttempt(id: string, v: VerifyVerdict, verdict: ReviewVerdict, telemetry: Telemetry): void {
@@ -573,7 +594,7 @@ async function closeCampaignGate(): Promise<void> {
   if (red.length) {
     backlogWrite(['gate-run', 'red', '--note', `gate red: [${red.map(r => r.name).join(', ')}]`]);
     await recover({
-      kind: 'campaign-gate-red', results,
+      kind: GATE_RED, results,
       closedTickets: b.tickets.filter(t => t.status === 'closed').map(t => t.id),
       instruction: 'A red campaign gate is one of two things — decide which by reading the failures. (1) A real escaped bug: spawn a repair ticket whose checks also strengthen what let it through. (2) A gate-scoping fault (the gate runs the wrong things, or contends on shared state): narrow/serialise the gate to what it should verify and RUN the corrected gate to confirm it is green before proposing it. Park (resolved=false) only if neither holds — a genuine defect needing a human scope call.',
     }, { subject: GATE_SUBJECT });
@@ -616,7 +637,14 @@ async function runSweep(ctx: CampaignContext): Promise<void> {
       if (p.type === 'note') backlogWrite(['note', '--kind', p.kind ?? 'sweep-note', '--subject', p.subject ?? 'campaign', '--body', p.body ?? '']);
       if (p.type === 'ticket' && p.ticket) backlogWrite(['add', '-'], renumber([p.ticket]));
       if (p.type === 'sharpen') backlogWrite(['update', p.ticketId!, '-', '--note', p.note ?? 'sweep'], p.patch ?? {});
-      if (p.type === 'gate' && p.gates?.length) backlogWrite(['gate', '-', '--note', p.note ?? 'sweep'], p.gates);
+      // Sweep may add a merged-tree invariant — naming one the per-ticket checks
+      // can't hold is exactly what a campaign-level pass is for — but not
+      // replace a gate command in force: its toolset is read-only, so it can
+      // never have proven the replacement green, and no red gate obliges it to
+      // re-scope one. A replacement proposal is refused on the record.
+      if (p.type === 'gate' && p.gates?.length) {
+        amendGate(p.gates, { by: 'sweep', note: p.note || 'sweep', replacements: 'refuse' });
+      }
     } catch (e: any) {
       backlogWrite(['note', '--kind', 'sweep-refused', '--subject', p.ticketId ?? p.type, '--body', e.message]);
     }

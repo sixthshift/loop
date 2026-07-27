@@ -27,7 +27,7 @@ All prose must paraphrase evidence. Never copy secret values or inline credentia
 
 - `sizingMd`: splits or oversized-ticket patterns actually demonstrated by `tooBig`/decomposition outcomes.
 - `gamingMd`: only confirmed deliberate evasion. Require a coordinator-stamped gamed check-amendment event, a matching `cheat:` attempt, and supporting verifier/journal evidence; the prefix alone is not confirmation. Never classify `blind:` structural coverage gaps, normal defects, or failed attempts as gaming.
-- `landminesMd`: repository/toolchain surprises that demonstrably cost a dispatch and are likely to recur, not ordinary implementation bugs.
+- `landminesMd`: repository/toolchain surprises that demonstrably cost a dispatch and are likely to recur, not ordinary implementation bugs. A `gate-replaced` event belongs here when the campaign re-scoped the same merged-tree gate more than once: one re-scope is usually a genuine mis-scoping, a repeated one says that gate was never expressible as written, and each entry records the command that was displaced.
 
 ## Human report
 

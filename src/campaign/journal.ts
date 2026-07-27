@@ -7,9 +7,12 @@
 // human, an agent's context window, and the post-mortem. No caller reconstructs
 // a ticket or gate fact by folding these entries — those live on backlog.json,
 // so a truncated, hand-edited, or seq-less journal can never change a verdict.
-// Two reads do still branch on the log, and both are about the log itself
-// rather than about the work: the kickoff record that identifies a resumable
-// campaign, and the sweep's "enough has happened since last time" cadence.
+// Three reads do still branch on the log, and all three are about the log
+// itself rather than about the work: the kickoff record that identifies a
+// resumable campaign, the sweep's "enough has happened since last time"
+// cadence, and recover's "how many times have I already resolved this one"
+// budget — a count of past events is exactly what a ledger of current state
+// cannot hold.
 
 import fs from 'node:fs';
 import path from 'node:path';

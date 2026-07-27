@@ -66,19 +66,28 @@ describe('the gate park latch', () => {
     });
   });
 
-  test('an amendment releases the latch — the human edited the gate and resumed', () => {
+  test('an amendment claiming the authority releases the latch — the answer to the park', () => {
     const b = afterWrites({ tickets: [], gate: [] }, () => {
       backlogWrite(['gate-park', '--reason', 'recover out of jurisdiction']);
-      backlogWrite(['gate', '-', '--note', 'narrowed to the suite it should own'], GATE);
+      backlogWrite(['gate', '-', '--note', 'narrowed to the suite it should own', '--release-latch'], GATE);
     });
     expect(b.gateState?.parked).toBeUndefined();
     expect(b.gate).toEqual(GATE);
   });
 
+  test('an amendment that does not claim it leaves the latch — adding a check is not answering the human', () => {
+    const b = afterWrites({ tickets: [], gate: [] }, () => {
+      backlogWrite(['gate-park', '--reason', 'e2e red against a spec clause nobody owns']);
+      backlogWrite(['gate', '-', '--note', 'sweep: merged-tree invariant nothing owns'], GATE);
+    });
+    expect(b.gateState?.parked?.reason).toBe('e2e red against a spec clause nobody owns');
+    expect(b.gate).toEqual(GATE); // the edit still landed
+  });
+
   test('a park after an amendment latches again', () => {
     const b = afterWrites({ tickets: [], gate: [] }, () => {
       backlogWrite(['gate-park', '--reason', 'first']);
-      backlogWrite(['gate', '-', '--note', 'amended'], GATE);
+      backlogWrite(['gate', '-', '--note', 'amended', '--release-latch'], GATE);
       backlogWrite(['gate-park', '--reason', 'second']);
     });
     expect(b.gateState?.parked?.reason).toBe('second');

@@ -183,6 +183,21 @@ written next to the spec, branches are reaped, and campaign state is deleted.
   jurisdiction it parks. It never hard-stops. Every invocation is journaled: the
   recover log is the coordinator's own escaped-bug record, and a recurring kind
   should be promoted to a real arm in `drive.ts`.
+
+  Two things contain the most privileged actor in the loop. **The product-code
+  boundary is enforced, not trusted** (`jurisdiction.ts`): recover holds the
+  mainline lock for its whole run, so the checkout before and after is
+  attributable to it alone. Any tracked, non-manifest file it changed —
+  committed or not — is reverted, and the reverted diff becomes a repair ticket
+  a worker builds and the review judges. Untracked scratch files, manifests
+  (an install *is* a manifest edit) and cleaning away pre-existing dirt all stay
+  in bounds. **And a recurring anomaly stops being recoverable**: the
+  coordinator counts recover's *resolutions* per anomaly — per ticket for
+  ticket-scoped kinds, per campaign for the rest — and past two it parks with
+  the prior fixes attached instead of calling a fresh agent that will write a
+  third confident success note. The count comes off the journal, so it survives a
+  resume; that is also what bounds the gate-red → repair → gate-red loop, since
+  every round of it resolves.
 - **Opportunistic noticing → the sweep**, above. A scheduled substitute for
   ambient attention.
 

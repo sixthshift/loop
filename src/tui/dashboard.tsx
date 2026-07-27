@@ -47,6 +47,7 @@ const KIND_ICON: Record<string, string> = {
   close: '✓', attempt: '✗', status: '⇢', add: '+', decompose: '⑂',
   recovered: '▲', 'recover-refused': '▲', parked: '⏸', sweep: '◎', 'campaign-gate-close': '■',
   'gate-red': '‼', escalation: '‼', 'flake-probe': '≈',
+  'gate-replaced': '⚠', 'gate-refused': '⚠', 'recover-out-of-bounds': '⚠',
   'integration-red': '‼', verify: '·', kickoff: '◈', seed: '◈', init: '◈',
 };
 

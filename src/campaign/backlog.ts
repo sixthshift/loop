@@ -237,10 +237,13 @@ export function backlogWrite(args: string[], input?: unknown): string {
         if (existing) { existing.cmd = g.cmd; touched.push(`~${g.name}`); }
         else { b.gate.push({ name: g.name, cmd: g.cmd }); touched.push(`+${g.name}`); }
       }
-      // Amending the gate is the human's (or recover's) answer to whatever
-      // parked it, so it releases the latch — completion retries the gate
-      // instead of draining straight back to the human.
-      const unparked = b.gateState?.parked !== undefined;
+      // Releasing the human's park latch is a SEPARATE authority from editing
+      // the gate, and opt-in so that a new caller has to claim it. An arm may
+      // legitimately add a check while the campaign is held for a human
+      // decision — sweep does — and that addition must not answer the decision
+      // on the human's behalf. Only an amendment that IS the answer to the park
+      // (the red gate's own recovery, or the human) passes the flag.
+      const unparked = opts['release-latch'] === true && b.gateState?.parked !== undefined;
       if (unparked) delete b.gateState!.parked;
       journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]${unparked ? '; park latch released' : ''}`);
       save(b);
