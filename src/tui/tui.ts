@@ -22,13 +22,21 @@ export type ScriptView = {
   ticketId?: string;
 };
 
+// The coordinator's narration, ring-buffered like a script's output rather than
+// held one line at a time. A single `statusLine` meant the newest message erased
+// the one before it, so the dashboard could show what the loop is doing and never
+// what it just did — and a message longer than the terminal was unreadable in the
+// only place it appeared. The journal is the durable record; this is the running
+// commentary between its entries, and it has to survive long enough to be read.
+const LOG_KEEP = 200;
+
 export const store: {
   scripts: Map<string, ScriptView>;
-  statusLine: string;
+  logs: { ts: number; line: string }[];
   startedAt: number | null;
 } = {
   scripts: new Map(),
-  statusLine: '',
+  logs: [],
   startedAt: null,
 };
 
@@ -62,7 +70,8 @@ export function stop(): void {
 }
 
 export function log(msg: string): void {
-  store.statusLine = msg;
+  store.logs.push({ ts: Date.now(), line: msg });
+  if (store.logs.length > LOG_KEEP) store.logs.splice(0, store.logs.length - LOG_KEEP);
   if (!tty) console.log(`${hhmm(Date.now())} ${msg}`);
   else emit();
 }

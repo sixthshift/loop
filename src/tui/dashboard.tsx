@@ -23,6 +23,17 @@ import { liveness } from './liveness.ts';
 import type { Liveness as LivenessSample } from './liveness.ts';
 import { railGraph } from './railgraph.ts';
 import type { RailGraph, RailLine } from './railgraph.ts';
+import { wrapText, windowAround } from './layout.ts';
+
+// Rows the active view keeps for the coordinator's narration. Fixed, because the
+// panels above it grow with the campaign and the footer must stay on screen.
+const LOG_ROWS = 6;
+
+// Where a ticket row's title starts: '  ' + glyph + ' ' + id + '  ' + status(11) + ' '.
+// One constant because two things must agree — the width a title is wrapped to and
+// the column its continuation rows align at — and they drift the moment they are
+// written out twice.
+const TITLE_COL = 22;
 
 export function mount() {
   return render(<Dashboard />, { exitOnCtrlC: false });
@@ -209,17 +220,34 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
       {b && <>
         <GatePanel b={b} cols={cols} />
         <Rule cols={cols} />
-        <CountsLine b={b} />
+        <CountsLine b={b} cols={cols} />
         <Rule cols={cols} />
       </>}
       <Text bold>▸ active{procs.length ? '' : '  (nothing running)'}<Text dimColor>   active · journal (tab)</Text></Text>
       {procs.map((p, i) => <ProcRow key={p.label} p={p} selected={i === procSel} live={live} cols={cols} />)}
       <Rule cols={cols} />
-      {store.statusLine ? <Text color="cyan">{trunc(' ' + store.statusLine, cols - 1)}</Text> : null}
+      <LogPane cols={cols} budget={LOG_ROWS} />
       <Footer cols={cols} confirm={confirm}
         hint="tab journal · j/k move · ↵ inspect · t tickets · g graph · p pause · +/- cap · r review · x kill · q quit · ? help" />
     </Box>
   );
+}
+
+// The coordinator's narration, newest last, wrapped so a long message is readable
+// where it appears. A fixed budget at the bottom for the same reason the live
+// regions have one: the panels above it grow with the campaign, and a pane that
+// grows with its content would push the footer off the screen. Older lines scroll
+// out of view rather than out of memory — tui.ts keeps the last 200.
+function LogPane({ cols, budget }: { cols: number; budget: number }) {
+  const rows = store.logs
+    .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
+    .slice(-budget);
+  if (!rows.length) return null;
+  return <>{rows.map((r, i) => (
+    // Dim everything but the newest message: the running commentary reads as
+    // history, with what the loop is doing right now at the bottom in colour.
+    <Text key={i} color={i === rows.length - 1 ? 'cyan' : undefined} dimColor={i !== rows.length - 1}>{r.line}</Text>
+  ))}</>;
 }
 
 function ProcRow({ p, selected, live, cols }: { p: Proc; selected: boolean; live: Map<number, LivenessSample>; cols: number }) {
@@ -299,26 +327,32 @@ function GatePanel({ b }: { b: Backlog; cols: number }) {
   );
 }
 
-function CountsLine({ b }: { b: Backlog }) {
+function CountsLine({ b, cols }: { b: Backlog; cols: number }) {
   const counts = b.tickets.reduce<Record<string, number>>((m, t) => ((m[t.status] = (m[t.status] || 0) + 1), m), {});
   const attempts = b.tickets.reduce((n, t) => n + (t.attempts?.length ?? 0), 0);
-  return (
-    <Text>
-      {' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked']
-        .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')}
-      {`   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`}
-    </Text>
-  );
+  const line = ' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked']
+    .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')
+    + `   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`;
+  // Wrapped here rather than left to Ink, whose continuation starts at column 0 and
+  // reads as a stray line rather than as the rest of this one.
+  return <>{wrapText(line, cols, 1).map((l, i) => <Text key={i}>{l}</Text>)}</>;
 }
 
 // --- journal view (its own tab) ---------------------------------------------
 
+// Scrolling is by ROW, not by entry: a park reason is a paragraph, and an entry
+// that occupies six rows must cost six rows of the frame or the pane overflows.
+// The whole point of the pane is that the reason a campaign stopped is legible
+// here, which was exactly what cutting at the right edge took away.
 function JournalView({ rows, cols, confirm, journalOff, filterIdx }: Frame & { journalOff: number; filterIdx: number }) {
   const filter = FILTERS[filterIdx]!;
   const entries = journalTail(500).filter(filter.test);
   const feedRows = Math.max(3, rows - 3);
-  const off = Math.min(journalOff, Math.max(0, entries.length - feedRows));
-  const visible = entries.slice(Math.max(0, entries.length - off - feedRows), entries.length - off || undefined);
+  const lines = entries.flatMap(j =>
+    wrapText(`  ${hhmm(Date.parse(j.ts))} ${KIND_ICON[j.kind] ?? '·'} ${String(j.subject ?? '').padEnd(8)} ${j.body ?? ''}`, cols - 1, 12)
+      .map(line => ({ j, line })));
+  const off = Math.min(journalOff, Math.max(0, lines.length - feedRows));
+  const visible = lines.slice(Math.max(0, lines.length - off - feedRows), lines.length - off || undefined);
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>
@@ -326,19 +360,15 @@ function JournalView({ rows, cols, confirm, journalOff, filterIdx }: Frame & { j
         <Text dimColor>   (tab → active)</Text>
       </Text>
       <Rule cols={cols} />
-      {visible.map(j => <JournalLine key={j.seq ?? j.ts} j={j} cols={cols} />)}
+      {visible.map((l, i) => <JournalLine key={i} j={l.j} line={l.line} />)}
       <Footer cols={cols} confirm={confirm} hint="tab active · j/k scroll · f filter · ↵ tail · esc back" />
     </Box>
   );
 }
 
-function JournalLine({ j, cols }: { j: JournalEntry; cols: number }) {
+function JournalLine({ j, line }: { j: JournalEntry; line: string }) {
   const warm = ['gate-red', 'escalation', 'integration-red', 'attempt'].includes(j.kind);
-  return (
-    <Text color={warm ? 'red' : undefined} dimColor={j.kind === 'verify'}>
-      {trunc(`  ${hhmm(Date.parse(j.ts))} ${KIND_ICON[j.kind] ?? '·'} ${String(j.subject ?? '').padEnd(8)} ${j.body ?? ''}`, cols - 1)}
-    </Text>
-  );
+  return <Text color={warm ? 'red' : undefined} dimColor={j.kind === 'verify'}>{line}</Text>;
 }
 
 // --- ticket browser ----------------------------------------------------------
@@ -357,22 +387,40 @@ function displayStatus(t: Ticket, byId: Map<string, Ticket>): string {
 
 function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: Ticket[]; sel: number }) {
   const listRows = Math.max(3, rows - 3);
-  const start = Math.max(0, Math.min(sel - Math.floor(listRows / 2), tickets.length - listRows));
   const byId = new Map(tickets.map(t => [t.id, t]));
+  // A wrapped title makes a ticket taller than one row, so the window is computed
+  // from real heights and grown around the selection rather than from a fixed
+  // count of tickets.
+  const shownRows = tickets.map(t => {
+    const deps = t.depends_on?.length ? `  ⇐ ${t.depends_on.join(',')}` : '';
+    // Wrapped to the width available AFTER the row's prefix, with the indent
+    // rendered below rather than passed in: wrapText counts a continuation column
+    // against its width, so asking it to indent here would give the continuation
+    // rows a third of the room the first row had.
+    return { t, deps, title: wrapText(t.title, Math.max(12, cols - TITLE_COL - deps.length - 2)) };
+  });
+  const [start, end] = windowAround(shownRows.map(r => r.title.length), sel, listRows);
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>{` tickets (${tickets.length})`}</Text>
       <Rule cols={cols} />
-      {tickets.slice(start, start + listRows).map((t, i) => {
+      {shownRows.slice(start, end).map(({ t, deps, title }, i) => {
         const shown = displayStatus(t, byId);
         const [glyph, color] = STATUS_GLYPH[shown] ?? ['·', undefined];
-        const deps = t.depends_on?.length ? `  ⇐ ${t.depends_on.join(',')}` : '';
+        const selected = start + i === sel;
         return (
-          <Text key={t.id} inverse={start + i === sel}>
-            {'  '}<Text color={color}>{glyph}</Text>
-            {` ${t.id}  ${shown.padEnd(11)} ${trunc(t.title, cols - 28 - deps.length)}`}
-            <Text dimColor>{deps}</Text>
-          </Text>
+          <Box key={t.id} flexDirection="column">
+            <Text inverse={selected}>
+              {'  '}<Text color={color}>{glyph}</Text>
+              {` ${t.id}  ${shown.padEnd(11)} ${title[0] ?? ''}`}
+              <Text dimColor>{deps}</Text>
+            </Text>
+            {/* The rest of a long title, aligned under it — same highlight, so a
+                selected ticket reads as one block rather than as two rows. */}
+            {title.slice(1).map((line, k) => (
+              <Text key={k} inverse={selected}>{' '.repeat(TITLE_COL) + line}</Text>
+            ))}
+          </Box>
         );
       })}
       <Footer cols={cols} confirm={confirm} hint="j/k move · ↵ detail · g graph · esc back" />
@@ -387,31 +435,70 @@ function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { tic
   const [glyph, color] = STATUS_GLYPH[shown] ?? ['·', undefined];
   const depGlyph = (id: string) => (STATUS_GLYPH[byId.get(id)?.status ?? '']?.[0]) ?? '?';
   const unblocks = all.filter(x => x.depends_on?.includes(t.id)).map(x => x.id);
+
+  // Labels are right-aligned into a 7-character column, so the leading spaces are
+  // the layout and every value — wrapped or not — lives at column 8.
+  const field = (text: string, style: Omit<Row, 'text'> = {}, col = 8): Row[] =>
+    wrapText(text, cols - 1, col).map(line => ({ text: line, ...style }));
+  const head: Row[] = [
+    ...field(` status ${glyph} ${shown}`, { color }),
+    ...field(`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`),
+    ...field(`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`, {}, 12),
+    ...field(`modules ${t.modules?.join(', ') || '(unscoped)'}`),
+    ...(t.origin ? field(` origin ${t.origin}`, { dim: true }) : []),
+    { text: ' ' },
+  ];
+  const attemptRows: Row[] = [];
+  detailRows(t, cols, r => head.push(r), r => attemptRows.push(r));
+
+  // The contract is always shown; the attempts yield to the frame, newest kept —
+  // and whatever does not fit is declared rather than silently dropped, since a
+  // pane that hides evidence without saying so is how the incident stayed
+  // misdiagnosed for an hour.
+  // The heading wraps too on a narrow terminal, so it is wrapped here rather than
+  // left to Ink (whose continuation starts at column 0) and its real height is
+  // measured — a budget that assumes one row overflows the frame by however many
+  // rows the title actually took.
+  const titleRows = wrapText(` ${t.id} — ${t.title}`, cols, 1);
+  const budget = Math.max(1, rows - 3 - titleRows.length);
+  const room = budget - head.length;
+  const visible = room > 0 ? [...head, ...attemptRows.slice(-room)] : head.slice(0, budget);
+  const hidden = (head.length + attemptRows.length) - visible.length;
   return (
     <Box flexDirection="column" width={cols}>
-      <Text bold>{` ${t.id} — ${t.title}`}</Text>
+      {titleRows.map((line, i) => <Text key={i} bold>{line}</Text>)}
       <Rule cols={cols} />
-      <Text>{' status '}<Text color={color}>{`${glyph} ${shown}`}</Text></Text>
-      <Text>{`   deps ${t.depends_on?.length ? t.depends_on.map(d => `${depGlyph(d)} ${d}`).join('   ') : '(none)'}`}</Text>
-      <Text>{`   unblocks ${unblocks.length ? unblocks.join(', ') : '(none)'}`}</Text>
-      <Text>{`modules ${t.modules?.join(', ') || '(unscoped)'}`}</Text>
-      {t.origin ? <Text dimColor>{` origin ${t.origin}`}</Text> : null}
-      <Text> </Text>
-      <Text bold> acceptance</Text>
-      <Text>{`  ${t.acceptance}`}</Text>
-      {(t.acceptanceChecks ?? []).map((c, i) => <Text key={i} dimColor>{`   $ ${c.cmd}`}</Text>)}
-      <Text> </Text>
-      <Text bold>{` attempts (${t.attempts?.length ?? 0})`}</Text>
-      {(t.attempts ?? []).slice(-Math.max(1, rows - 14)).map((a, i) => (
-        <Box key={i} flexDirection="column">
-          <Text color="red">{trunc(`  ✗ [${Array.isArray(a.failed) ? a.failed.join(',') : a.failed}]`, cols - 2)}</Text>
-          <Text>{trunc(`    ${a.hypothesis ?? ''}`, cols - 2)}</Text>
-          {a.fix ? <Text dimColor>{trunc(`    fix: ${a.fix}`, cols - 2)}</Text> : null}
-        </Box>
-      ))}
+      {visible.map((r, i) => <Text key={i} color={r.color} dimColor={r.dim} bold={r.bold}>{r.text}</Text>)}
+      {hidden > 0 ? <Text dimColor>{` … ${hidden} more row(s) than this terminal has`}</Text> : null}
       <Footer cols={cols} confirm={confirm} hint="esc back" />
     </Box>
   );
+}
+
+// A styled display row. Panes that wrap build these instead of nesting <Text>,
+// because a wrapped span cannot carry a sub-span's colour across a row boundary.
+type Row = { text: string; color?: string; dim?: boolean; bold?: boolean };
+
+// The detail body as rows, wrapped: the ticket's contract and every attempt's
+// hypothesis are the prose a human reads to decide what went wrong, and this is
+// the only place either is shown.
+function detailRows(t: Ticket, cols: number, head: (r: Row) => void, attempts: (r: Row) => void): void {
+  const add = (into: (r: Row) => void) => (text: unknown, style: Omit<Row, 'text'> = {}, indent = 0) => {
+    for (const line of wrapText(text, cols - 1, indent)) into({ text: line, ...style });
+  };
+  const h = add(head), a = add(attempts);
+
+  h(' acceptance', { bold: true });
+  h(`  ${t.acceptance}`, {}, 2);
+  for (const c of t.acceptanceChecks ?? []) h(`   $ ${c.cmd}`, { dim: true }, 5);
+  h(' ');
+  h(` attempts (${t.attempts?.length ?? 0})`, { bold: true });
+
+  for (const at of t.attempts ?? []) {
+    a(`  ✗ [${Array.isArray(at.failed) ? at.failed.join(',') : at.failed}]`, { color: 'red' }, 4);
+    a(`    ${at.hypothesis ?? ''}`, {}, 4);
+    if (at.fix) a(`    fix: ${at.fix}`, { dim: true }, 9); // under the text after 'fix: '
+  }
 }
 
 // --- dependency graph: the backlog DAG as git-log-style rails ---------------
@@ -525,7 +612,11 @@ function AgentTailView({ rows, cols, confirm, label }: Frame & { label: string }
   }
   // The live region gets a fixed budget at the bottom; history yields to it.
   const liveRows = a.live?.text ? 6 : 0;
-  const lines = a.transcript.slice(-(Math.max(3, rows - 4 - liveRows)));
+  // Wrapped, then windowed by row: an event whose text runs past the terminal is
+  // the event you most want to read, and this is where you came to read it.
+  const lines = a.transcript
+    .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
+    .slice(-(Math.max(3, rows - 4 - liveRows)));
   const lv = a.pid ? liveness([a.pid]).get(a.pid) : undefined;
   const last = a.transcript.at(-1);
   return (
@@ -537,7 +628,7 @@ function AgentTailView({ rows, cols, confirm, label }: Frame & { label: string }
       </Text>
       <Rule cols={cols} />
       {lines.length ? lines.map((l, i) => (
-        <Text key={i}><Text dimColor>{hhmm(l.ts)}</Text>{` ${trunc(l.line, cols - 10)}`}</Text>
+        <Text key={i}>{l.line}</Text>
       )) : <Text dimColor> (no events yet — the session is starting)</Text>}
       {a.live?.text ? <>
         <Rule cols={cols} />
@@ -569,7 +660,9 @@ function ScriptTailView({ rows, cols, confirm, label }: Frame & { label: string 
   // The in-progress line (a progress bar, a prompt) gets a fixed live region;
   // completed output history yields to it.
   const liveRows = s.partial ? 2 : 0;
-  const lines = s.output.slice(-(Math.max(3, rows - 5 - liveRows)));
+  const lines = s.output
+    .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
+    .slice(-(Math.max(3, rows - 5 - liveRows)));
   const lv = s.pid ? liveness([s.pid]).get(s.pid) : undefined;
   const last = s.output.at(-1);
   return (
@@ -579,13 +672,15 @@ function ScriptTailView({ rows, cols, confirm, label }: Frame & { label: string 
         <Liveness lv={lv} />
         {last ? ` · last line ${dur(Date.now() - last.ts)} ago` : ''}
       </Text>
-      <Text dimColor>{trunc(`   ${s.cmd}`, cols - 1)}</Text>
+      {wrapText(`   ${s.cmd}`, cols - 1, 5).map((line, i) => <Text key={i} dimColor>{line}</Text>)}
       <Rule cols={cols} />
       {lines.length ? lines.map((l, i) => (
-        <Text key={i}><Text dimColor>{hhmm(l.ts)}</Text>{` ${trunc(l.line, cols - 10)}`}</Text>
+        <Text key={i}>{l.line}</Text>
       )) : <Text dimColor> (no output yet — the process is starting)</Text>}
       {s.partial ? <>
         <Rule cols={cols} />
+        {/* The in-progress line keeps its fixed budget: a progress bar rewriting
+            itself must not resize the pane on every write. */}
         <Text color="cyan">{` ${trunc(s.partial, cols - 3)}`}<Text color="cyan">▌</Text></Text>
       </> : null}
       <Footer cols={cols} confirm={confirm} hint="esc back" />

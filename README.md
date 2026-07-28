@@ -250,11 +250,25 @@ mid-output its row shows the newest text instead of a stale event, and each row
 carries a measured liveness cell (`liveness.ts` samples process-subtree CPU;
 output silence is a false hang signal — a long e2e run is silent by design).
 
+Below the process rows sits the coordinator's running commentary — the last 200
+messages, wrapped, newest at the bottom.
+
 Reading is free-roam: `tab` to the filterable journal, `t` for tickets, `g` for
 the dependency DAG as a rail graph, `enter` on any process to tail its live
 output — an agent's transcript with its raw token stream, or a script's
 stdout/stderr as it runs. Per-process rings are windows; the journal is the
 record.
+
+Prose **wraps rather than truncating**, everywhere it is the thing you came to
+read: log lines, journal bodies (a park reason is a paragraph), ticket titles and
+contracts, every attempt's hypothesis, and inspected agent/script output. Panes
+therefore budget the frame in display *rows*, not entries, and scrolling moves by
+row (`layout.ts` holds that arithmetic). Four things still cut at the edge on
+purpose: process rows and the rail graph's labels, which are one-line summaries
+of something `enter` opens in full; a script's in-progress line, so a progress bar
+rewriting itself cannot resize the pane; and the header/footer chrome. Where a
+pane genuinely cannot fit its content — a ticket detail in a short terminal — it
+says how many rows it is hiding rather than dropping them silently.
 
 Acting is deliberately narrow — `p` pause dispatch, `+`/`-` worker cap, `r` queue
 a sweep, `x` kill a worker, `q` quit with state intact, `?` keys. Every mutation
@@ -332,7 +346,7 @@ bun run typecheck   # tsc --noEmit, strict
 | `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `jurisdiction` (recover's enforced boundary), `gate` + `fastcheck` (check-amendment authority), `kickoff`, `retrospective`, `worktree` + `provision`, `journal`, `models` |
 | `src/agent/` | spawning agents: `agent` (spawn, timeout, fallback, consensus), `engine` + `engines/`, `schemas`, `fleet` |
 | `src/agent/prompts/` | one markdown prompt per role — the judgment layer, editable without touching control flow |
-| `src/tui/` | dashboard (Ink), rail graph, control flags, liveness |
+| `src/tui/` | dashboard (Ink), rail graph, `layout` (wrapping + row budgets), control flags, liveness |
 | `src/update.ts` | `loop update` — verified self-replacement |
 | `build.ts` | the release build: four cross-compiled binaries + `sha256sums.txt` |
 | `next-version.ts` | the version a push earns, read off its commits |
