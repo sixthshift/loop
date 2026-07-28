@@ -151,9 +151,11 @@ returns:
   weakened tests, special-cased inputs, scope creep — the cheated check gets
   sharpened before re-dispatch), `flake-probe` (re-run a command N times),
   `amend-typo`, or `escalate`.
-- **close** merges to mainline. A merge conflict is an *infra* failure, not a
-  merit one — the ticket rebuilds against the moved HEAD without burning its
-  attempt budget. If mainline moved, the fast tier re-runs on the merged tree.
+- **close** merges to mainline, fast-forwarding when the ticket's base is still
+  the tip — a merge commit there would record nothing the journal's close event
+  doesn't. A merge conflict is an *infra* failure, not a merit one — the ticket
+  rebuilds against the moved HEAD without burning its attempt budget. If mainline
+  moved, the fast tier re-runs on the merged tree.
 
 Every 5 closes, a **sweep** agent reads the *whole* journal and names the
 cross-ticket pattern no per-ticket verdict can see — a systemic landmine, a

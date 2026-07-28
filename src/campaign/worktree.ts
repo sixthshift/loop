@@ -110,9 +110,15 @@ export function deleteBranch(id: string): void {
   sh(`git branch -D ${branchOf(id)}`);
 }
 
+// `--ff` is explicit, not left to git's default: a repository (or user) carrying
+// `merge.ff = false` would otherwise reintroduce the merge commit this avoids, and
+// the campaign's own history should not be shaped by ambient config. A landing
+// whose base is still mainline's tip is exactly a fast-forward, and a merge commit
+// there records nothing the journal's close event doesn't already hold; the `-m`
+// message is used only when mainline has genuinely diverged.
 export function mergeBranch(id: string): MergeResult {
   const branch = branchOf(id);
-  const r = sh(`git merge --no-ff --no-edit -m "loop: merge ${id}" ${branch}`);
+  const r = sh(`git merge --ff --no-edit -m "loop: merge ${id}" ${branch}`);
   if (r.status === 0) return { ok: true };
   sh('git merge --abort');
   const out = r.stdout + r.stderr;

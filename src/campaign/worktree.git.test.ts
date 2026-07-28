@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
-import { createWorktree, attachWorktree, removeWorktree, worktreesRoot } from './worktree.ts';
+import { createWorktree, attachWorktree, removeWorktree, worktreesRoot, mergeBranch } from './worktree.ts';
 
 const git = (cmd: string, cwd?: string) => execSync(`git ${cmd}`, { stdio: 'pipe', cwd }).toString();
 
@@ -142,6 +142,48 @@ describe('provisioning', () => {
       const { dir } = createWorktree('T001');
       removeWorktree('T001');
       expect(fs.existsSync(dir)).toBe(false); // hundreds of megabytes per ticket, so a leak here compounds
+    });
+  });
+});
+
+describe('landing a ticket', () => {
+  // One commit's worth of work on the ticket's branch, as a worker leaves it.
+  const workOn = (id: string): void => {
+    const { dir } = createWorktree(id);
+    fs.writeFileSync(path.join(dir, 'src/a.ts'), `export const a = ${id};\n`);
+    git('add -A && git commit -qm "feat: work for the ticket"', dir);
+  };
+
+  const parents = () => git('log -1 --pretty=%P').trim().split(/\s+/).filter(Boolean);
+
+  test('fast-forwards when mainline has not moved — no merge commit', () => {
+    inRepo(() => {
+      workOn('T001');
+      expect(mergeBranch('T001')).toEqual({ ok: true });
+      expect(parents()).toHaveLength(1);
+      expect(git('log -1 --pretty=%s').trim()).toBe('feat: work for the ticket');
+    });
+  });
+
+  test('fast-forwards even where the repository configures merge.ff = false', () => {
+    inRepo(() => {
+      // Ambient config must not shape the campaign's history — the whole reason
+      // mergeBranch passes --ff explicitly.
+      git('config merge.ff false');
+      workOn('T001');
+      expect(mergeBranch('T001')).toEqual({ ok: true });
+      expect(parents()).toHaveLength(1);
+    });
+  });
+
+  test('still merges when mainline has genuinely diverged', () => {
+    inRepo(() => {
+      workOn('T001');
+      fs.writeFileSync('README.md', 'landed something else first\n');
+      git('add -A && git commit -qm "other work"'); // mainline moved past T001's base
+      expect(mergeBranch('T001')).toEqual({ ok: true });
+      expect(parents()).toHaveLength(2);
+      expect(git('log -1 --pretty=%s').trim()).toBe('loop: merge T001');
     });
   });
 });
