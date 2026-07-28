@@ -81,6 +81,7 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
   let reconciled = false;
   let lastCrash: string | null = null;
   const handledProblemSigs = new Set<string>(); // frontier problem-sets already handed to recover
+  const handledStallSigs = new Set<string>();   // wedged frontiers already handed to recover
   const wallRecoveries = new Map<string, number>(); // ticket → recover interventions spent on its merit wall
 
   while (true) {
@@ -165,10 +166,22 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
           continue;
         }
         if (control.paused) { await idle(); continue; } // operator pause, not a stall
-        await recover({ kind: 'stalled', frontier: frontier() }); // full snapshot; locals omit ready/inFlight/counts
-        const after = frontier();
-        const canProgress = after.dispatchable.length > 0 || hasOpen() || after.complete;
-        if (canProgress) continue;
+        // One recovery per shape of stall, for the same reason the frontier arm
+        // above works that way: a recover that parked changed nothing, so the next
+        // pass reads the identical wedged frontier and would hand a fresh agent
+        // the same campaign again. Every one of them parks, and the human is paged
+        // once per pass for a single decision — which is the opposite of what
+        // parking is for. The signature is the whole frontier because the whole
+        // frontier is derived from the backlog: if any of it moved, something
+        // actually happened and this is a different stall.
+        const snapshot = frontier(); // full picture; the locals above omit ready/inFlight/counts
+        const sig = JSON.stringify(snapshot);
+        if (!handledStallSigs.has(sig)) {
+          handledStallSigs.add(sig);
+          await recover({ kind: 'stalled', frontier: snapshot });
+          const after = frontier();
+          if (after.dispatchable.length > 0 || hasOpen() || after.complete) continue;
+        }
         // Nothing autonomous left, and it's not completion — everything the loop
         // could resolve has run; what remains is a decision genuinely the
         // human's. This is a graceful PAUSE, not a stop: state is intact and
