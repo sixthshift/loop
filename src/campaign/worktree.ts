@@ -17,7 +17,6 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sh } from './state.ts';
-import { provision } from './provision.ts';
 import * as tui from '../tui/tui.ts';
 
 export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
@@ -79,7 +78,11 @@ function stateRoot(repo: string): string {
   return path.join(home, 'loop', 'worktrees', `${path.basename(repo)}-${key}`);
 }
 
-export function createWorktree(id: string): { dir: string; branch: string; baseSha: string; provisioned: string } {
+// Cutting the checkout only. Filling it — copying the primary tree's installed
+// dependencies in — is provision.ts's job and the caller's to schedule, because on
+// a filesystem without clone or hardlink it takes seconds per ticket and must not
+// run on the coordinator's critical path.
+export function createWorktree(id: string): { dir: string; branch: string; baseSha: string } {
   removeWorktree(id); // a stale worktree from a dead run must not block re-dispatch
   const dir = dirOf(id);
   const branch = branchOf(id);
@@ -87,7 +90,7 @@ export function createWorktree(id: string): { dir: string; branch: string; baseS
   const r = sh(`git worktree add -b ${branch} "${dir}" HEAD`);
   if (r.status !== 0) throw new Error(`worktree add ${id}: ${r.stderr}`);
   const baseSha = sh('git rev-parse HEAD', dir).stdout.trim();
-  return { dir, branch, baseSha, provisioned: provision(dir) };
+  return { dir, branch, baseSha };
 }
 
 export function attachWorktree(id: string): { dir: string; branch: string } | null { // resume: rebuild a worktree from a surviving branch
@@ -97,7 +100,6 @@ export function attachWorktree(id: string): { dir: string; branch: string } | nu
   sh(`git worktree remove --force "${dir}"`);
   const r = sh(`git worktree add "${dir}" ${branch}`);
   if (r.status !== 0) throw new Error(`worktree attach ${id}: ${r.stderr}`);
-  provision(dir); // the surviving work is re-verified in here, so it needs the environment a dispatch would have given it
   return { dir, branch };
 }
 

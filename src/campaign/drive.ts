@@ -19,6 +19,7 @@ import { MODELS } from './models.ts';
 import { WORKER, REVIEW, SWEEP } from '../agent/schemas.ts';
 import type { WorkerVerdict, ReviewVerdict, SweepVerdict, Check } from '../agent/schemas.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch, mainSha } from './worktree.ts';
+import { provision } from './provision.ts';
 import { withMainline } from './mainline.ts';
 import { recover, renumber, backlogSummary } from './recover.ts';
 import { escalate, park, parkedSummary, gateParked, GATE_SUBJECT, Escalation } from './escalate.ts';
@@ -244,11 +245,17 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
 
 // --- dispatch -------------------------------------------------------------
 
+// The worker channel carries an AgentError. A provisioning failure isn't one, but
+// it ends the channel the same way — before any worker ran — so it is wrapped
+// rather than cast: the envelope's type stays true, and the settle treats it as
+// infra, re-dispatching without burning the ticket's merit budget.
+const asAgentError = (e: Error): AgentError => e instanceof AgentError ? e : new AgentError(e.message);
+
 function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   const t = ticket(id);
-  const { dir, branch, baseSha, provisioned } = createWorktree(id);
-  backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch} — ${provisioned}`,
-    '--base-sha', baseSha, '--data', JSON.stringify({ baseSha, branch, provisioned })]);
+  const { dir, branch, baseSha } = createWorktree(id);
+  backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch}`,
+    '--base-sha', baseSha, '--data', JSON.stringify({ baseSha, branch })]);
 
   const b = backlog();
   const learnings = readLearnings();
@@ -268,15 +275,29 @@ function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   // Model selection is centralised in models.ts. The worker chain doubles as an
   // escalation ladder: this ticket's Nth merit failure starts it at the Nth rung
   // (workerChain), so a proven-hard ticket climbs terra → sol → opus.
-  const promise: Promise<WorkerDone> = agent<WorkerVerdict>({
-    prompt,
-    models: workerChain(t),
-    schema: WORKER,
-    cwd: dir,
-    bypassPermissions: true,
-    timeoutMs: WORKER_TIMEOUT_MS,
-    label: `worker:${id}`,
-  }).then(res => ({ id, res }), (err: AgentError) => ({ id, err }));
+  //
+  // Provisioning the checkout runs INSIDE this channel rather than ahead of it.
+  // Where the filesystem can neither clone nor hardlink it copies hundreds of
+  // megabytes, so doing it before the promise exists would hold the pass — the
+  // display included — and serialise a wave of dispatches behind each other's
+  // copies. Chained here, the pass returns to dispatching at once and the wave
+  // provisions concurrently. The channel is the right home for the failure too: a
+  // checkout that cannot be provisioned is a worker that never ran, which is
+  // exactly what the settle already classifies as infra rather than merit.
+  const promise: Promise<WorkerDone> = provision(id, dir)
+    .then(summary => {
+      backlogWrite(['note', '--kind', 'provisioned', '--subject', id, '--body', summary]);
+      return agent<WorkerVerdict>({
+        prompt,
+        models: workerChain(t),
+        schema: WORKER,
+        cwd: dir,
+        bypassPermissions: true,
+        timeoutMs: WORKER_TIMEOUT_MS,
+        label: `worker:${id}`,
+      });
+    })
+    .then(res => ({ id, res }), (err: Error) => ({ id, err: asAgentError(err) }));
 
   workers.set(id, { promise, dir, branch, baseSha });
   // Name the model that will actually be tried first — the preference head is a
@@ -318,7 +339,9 @@ async function settle(ctx: CampaignContext, done: WorkerDone, meta: WorkerMeta):
     backlogWrite(['attempt', id, '--failed', 'worker-channel', '--infra',
       '--hypothesis', done.err.killed
         ? 'killed by the operator from the dashboard'
-        : `worker session died: ${done.err.message.slice(0, 300)}`,
+        // "channel ended", not "session died": the same envelope also carries a
+        // worktree that could not be provisioned, where no session ever started.
+        : `worker channel ended with no verdict: ${done.err.message.slice(0, 300)}`,
       '--fix', done.err.killed
         ? 'not a code failure — redispatches when the frontier next offers it'
         : 'fresh dispatch; investigate if it recurs']);
@@ -679,7 +702,11 @@ async function reconcileStale(ctx: CampaignContext, workers: Workers): Promise<v
       backlogWrite(['set-status', t.id, 'open', '--note', 'stale in-flight on resume; no durable work found']);
       continue;
     }
-    // Durable work survived the dead session — verify it like any result.
+    // Durable work survived the dead session — verify it like any result, in a
+    // checkout provisioned the way a dispatch would have provisioned it. Awaited
+    // rather than chained: this runs once before the first pass, with no worker
+    // yet in flight and nothing else for the loop to be doing.
+    await provision(t.id, wt.dir);
     await reviewReturn(ctx, t.id, { dir: wt.dir, baseSha: t.baseSha },
       'resumed: worker session lost, branch survived — judge on the evidence alone',
       { workerTokens: 0, workerSeconds: 0, workerCostUsd: 0, model: '' });

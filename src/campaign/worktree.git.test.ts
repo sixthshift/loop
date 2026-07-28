@@ -14,6 +14,7 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
 import { createWorktree, attachWorktree, removeWorktree, worktreesRoot, mergeBranch } from './worktree.ts';
+import { provision } from './provision.ts';
 
 const git = (cmd: string, cwd?: string) => execSync(`git ${cmd}`, { stdio: 'pipe', cwd }).toString();
 
@@ -21,30 +22,51 @@ const git = (cmd: string, cwd?: string) => execSync(`git ${cmd}`, { stdio: 'pipe
 // ignored installed dependency tree at the root, a second one nested under a
 // workspace package, and an ignored build output that is NOT a dependency tree.
 function inRepo(body: (repo: string) => void): void {
+  const entered = enter();
+  try {
+    body(entered.repo);
+  } finally {
+    leave(entered);
+  }
+}
+
+// The same repository for a case that awaits — provisioning is async, so that it
+// cannot hold the coordinator's event loop while it copies.
+async function inRepoAsync(body: (repo: string) => Promise<void>): Promise<void> {
+  const entered = enter();
+  try {
+    await body(entered.repo);
+  } finally {
+    leave(entered);
+  }
+}
+
+function enter(): { repo: string; dir: string; cwd: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-worktree-'));
   const repo = fs.realpathSync(dir); // macOS hands out /var → /private/var symlinks; git reports the real path
   const cwd = process.cwd();
   process.chdir(repo);
-  try {
-    git('init -q .');
-    git('config user.email loop@test && git config user.name loop');
-    fs.writeFileSync('.gitignore', 'node_modules/\ndist/\n.ailoop/\n');
-    fs.mkdirSync('src', { recursive: true });
-    fs.writeFileSync('src/a.ts', 'export const a = 1;\n');
-    fs.mkdirSync('packages/ui/src', { recursive: true });
-    fs.writeFileSync('packages/ui/src/b.ts', 'export const b = 2;\n');
-    git('add -A && git commit -qm base');
 
-    write('node_modules/dep/index.js', 'module.exports = 1;\n');
-    write('packages/ui/node_modules/dep/index.js', 'module.exports = 2;\n');
-    write('dist/bundle.js', 'built\n');
+  git('init -q .');
+  git('config user.email loop@test && git config user.name loop');
+  fs.writeFileSync('.gitignore', 'node_modules/\ndist/\n.ailoop/\n');
+  fs.mkdirSync('src', { recursive: true });
+  fs.writeFileSync('src/a.ts', 'export const a = 1;\n');
+  fs.mkdirSync('packages/ui/src', { recursive: true });
+  fs.writeFileSync('packages/ui/src/b.ts', 'export const b = 2;\n');
+  git('add -A && git commit -qm base');
 
-    body(repo);
-  } finally {
-    fs.rmSync(worktreesRoot(), { recursive: true, force: true });
-    process.chdir(cwd);
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  write('node_modules/dep/index.js', 'module.exports = 1;\n');
+  write('packages/ui/node_modules/dep/index.js', 'module.exports = 2;\n');
+  write('dist/bundle.js', 'built\n');
+
+  return { repo, dir, cwd };
+}
+
+function leave({ dir, cwd }: { repo: string; dir: string; cwd: string }): void {
+  fs.rmSync(worktreesRoot(), { recursive: true, force: true });
+  process.chdir(cwd);
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 function write(rel: string, content: string): void {
@@ -97,49 +119,61 @@ describe('a checkout nested inside another repository', () => {
 });
 
 describe('provisioning', () => {
-  test('brings every ignored dependency tree, workspace-nested ones included', () => {
-    inRepo(() => {
-      const { dir, provisioned } = createWorktree('T001');
+  test('brings every ignored dependency tree, workspace-nested ones included', async () => {
+    await inRepoAsync(async () => {
+      const { dir } = createWorktree('T001');
+      const summary = await provision('T001', dir);
       expect(fs.readFileSync(path.join(dir, 'node_modules/dep/index.js'), 'utf8')).toBe('module.exports = 1;\n');
       expect(fs.readFileSync(path.join(dir, 'packages/ui/node_modules/dep/index.js'), 'utf8')).toBe('module.exports = 2;\n');
-      expect(provisioned).toContain('node_modules');
-      expect(provisioned).toContain('packages/ui/node_modules');
+      expect(summary).toContain('node_modules');
+      expect(summary).toContain('packages/ui/node_modules');
     });
   });
 
-  test('leaves an ignored non-dependency directory behind', () => {
-    inRepo(() => {
+  test('leaves an ignored non-dependency directory behind', async () => {
+    await inRepoAsync(async () => {
       // `dist/` is ignored and present, and copying it would hand the worker a
       // stale build of the code it is about to change.
-      const { dir, provisioned } = createWorktree('T001');
+      const { dir } = createWorktree('T001');
+      const summary = await provision('T001', dir);
       expect(fs.existsSync(path.join(dir, 'dist'))).toBe(false);
-      expect(provisioned).not.toContain('dist');
+      expect(summary).not.toContain('dist');
     });
   });
 
-  test('leaves the worktree clean, which is what verify refuses over', () => {
-    inRepo(() => {
+  test('leaves the worktree clean, which is what verify refuses over', async () => {
+    await inRepoAsync(async () => {
       // The load-bearing consequence of taking the list from git's ignore rules:
       // everything provisioned is ignored in the worktree too, so verify's
       // dirty-tree refusal cannot see it. A tree copied in by name could.
       const { dir } = createWorktree('T001');
+      await provision('T001', dir);
       expect(git('status --porcelain --untracked-files=all', dir)).toBe('');
     });
   });
 
-  test('a resumed worktree is provisioned like a dispatched one', () => {
-    inRepo(() => {
+  test('a resumed worktree can be provisioned like a dispatched one', async () => {
+    await inRepoAsync(async () => {
       const { dir } = createWorktree('T001');
       fs.rmSync(dir, { recursive: true, force: true }); // the session died; the branch survives
       const attached = attachWorktree('T001');
       expect(attached).not.toBeNull();
+      await provision('T001', attached!.dir);
       expect(fs.existsSync(path.join(attached!.dir, 'node_modules/dep/index.js'))).toBe(true);
     });
   });
 
-  test('removing the worktree takes the provisioned tree with it', () => {
-    inRepo(() => {
+  // Not tested here: that a long copy never holds the coordinator's event loop.
+  // The property is real and is why every shell call in provision.ts is async, but
+  // it is not observable on this filesystem — a copy-on-write clone finishes in
+  // milliseconds whatever the tree's size, so no timing assertion can tell a
+  // blocking copy from a yielding one. A tick-counting test written here passed
+  // against a deliberately synchronous copy, which is why there isn't one.
+
+  test('removing the worktree takes the provisioned tree with it', async () => {
+    await inRepoAsync(async () => {
       const { dir } = createWorktree('T001');
+      await provision('T001', dir);
       removeWorktree('T001');
       expect(fs.existsSync(dir)).toBe(false); // hundreds of megabytes per ticket, so a leak here compounds
     });
