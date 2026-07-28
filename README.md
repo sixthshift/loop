@@ -287,10 +287,21 @@ In the target repo, gitignored automatically at kickoff:
   journal.jsonl            append-only record; every resume rebuilds from it
   evidence/                per-ticket check logs and diff patches
   coordinator.pid          single-coordinator lock
-.ailoop/worktrees/         one worktree per in-flight ticket
 .ailoop/learnings/         SURVIVES the campaign — priors for the next one
 <spec>.postmortem.html     self-contained archive of the journal
 ```
+
+Worker worktrees live **outside** the repository — `../.loop-worktrees/<repo>/<ticket>`,
+or `$XDG_STATE_HOME/loop/worktrees/` when the repo's parent isn't writable. Inside
+the repo, a worktree is swept up by every root-anchored test collector, and a
+runtime resolving dependencies from it silently walks up into the primary
+checkout's installed tree — so a missing dependency looks like a broken test
+rather than an unprovisioned worktree. Each worktree is provisioned at dispatch
+by copying the primary checkout's ignored dependency trees (`node_modules` and
+friends, workspace-nested ones included) with copy-on-write clone → hardlink →
+byte copy, whichever the filesystem allows. Nothing is installed: no network, no
+build hooks. On a filesystem without clone or hardlink support that is real disk
+per in-flight ticket, and the dispatch note records which rung ran.
 
 Every `backlog.json` mutation goes through one writer that validates status
 transitions and journals as it writes — so the journal explains every state

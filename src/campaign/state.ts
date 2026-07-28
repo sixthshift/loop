@@ -40,7 +40,6 @@ export type CampaignContext = { specPath: string; spec: string };
 
 export const RUN = '.ailoop/campaign';
 export const LEARNINGS = '.ailoop/learnings';
-export const WORKTREES = '.ailoop/worktrees';
 export function sh(cmd: string, cwd = '.'): ShResult {
   return spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }

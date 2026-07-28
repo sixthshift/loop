@@ -7,7 +7,7 @@ import path from 'node:path';
 import { backlog, backlogWrite } from './backlog.ts';
 import { coverage } from './frontier.ts';
 import { journalEntries } from './journal.ts';
-import { RUN, LEARNINGS, WORKTREES, sh } from './state.ts';
+import { RUN, LEARNINGS, sh } from './state.ts';
 import type { CampaignContext } from './state.ts';
 import { agent, renderPrompt } from '../agent/agent.ts';
 import { MODELS } from './models.ts';
@@ -15,7 +15,7 @@ import { COVERAGE, HARVEST } from '../agent/schemas.ts';
 import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
 import { renumber } from './recover.ts';
 import { gateGreen } from './drive.ts';
-import { deleteBranch } from './worktree.ts';
+import { deleteBranch, worktreesRoot } from './worktree.ts';
 import { mergeLearnings } from './learn.ts';
 import { writePostmortem } from './postmortem.ts';
 import { escalate } from './escalate.ts';
@@ -104,7 +104,9 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   // and archived, so the window is over — reap them before tearing down.
   for (const t of closed) deleteBranch(t.id);
   fs.rmSync(RUN, { recursive: true, force: true });
-  fs.rmSync(WORKTREES, { recursive: true, force: true });
+  // The worktree root lives outside the repository, so tearing it down is this
+  // campaign's job alone — nothing here is reachable by a `git clean` a human runs.
+  fs.rmSync(worktreesRoot(), { recursive: true, force: true });
   sh('git worktree prune');
   return { resume: false };
 }

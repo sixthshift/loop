@@ -106,7 +106,9 @@ export async function kickoff(specPath: string): Promise<void> {
 }
 
 function ensureGitignore(): void {
-  const lines = ['.ailoop/campaign/', '.ailoop/worktrees/'];
+  // Worker worktrees are not listed: they live outside the repository entirely
+  // (see worktree.ts), so there is nothing here for git to ignore.
+  const lines = ['.ailoop/campaign/'];
   const existing = fs.existsSync('.gitignore') ? fs.readFileSync('.gitignore', 'utf8') : '';
   const missing = lines.filter(l => !existing.split('\n').includes(l));
   if (missing.length) fs.appendFileSync('.gitignore', (existing.endsWith('\n') || !existing ? '' : '\n') + missing.join('\n') + '\n');

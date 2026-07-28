@@ -180,8 +180,8 @@ async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResul
   // codex joins its `-C` onto its own process cwd, so a *relative* dir handed to
   // both spawn's cwd and the engine's `-C` resolves twice into a nonexistent
   // nested path — a startup ENOENT the fallback chain then silently ate. Both
-  // callers pass a relative WORKTREES dir; absolutize once here so every engine
-  // gets a real path no matter how the caller expressed it.
+  // callers pass a worktree dir; absolutize once here so every engine gets a real
+  // path no matter how the caller expressed it.
   const dir = path.resolve(cwd);
   const { argv, stdin, cleanup, env } = engine.buildArgv({ prompt, model: cliModel, cwd: dir, schema, tools, bypassPermissions });
   const reader = engine.reader();

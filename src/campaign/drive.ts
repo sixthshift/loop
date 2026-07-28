@@ -233,9 +233,9 @@ export async function drive(ctx: CampaignContext): Promise<'complete' | 'awaitin
 
 function dispatch(ctx: CampaignContext, workers: Workers, id: string): void {
   const t = ticket(id);
-  const { dir, branch, baseSha } = createWorktree(id);
-  backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch}`,
-    '--base-sha', baseSha, '--data', JSON.stringify({ baseSha, branch })]);
+  const { dir, branch, baseSha, provisioned } = createWorktree(id);
+  backlogWrite(['set-status', id, 'in-flight', '--note', `dispatched on ${branch} — ${provisioned}`,
+    '--base-sha', baseSha, '--data', JSON.stringify({ baseSha, branch, provisioned })]);
 
   const b = backlog();
   const learnings = readLearnings();
