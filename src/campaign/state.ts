@@ -1,14 +1,13 @@
-// Campaign-level state that is neither the backlog nor the journal: the
-// .ailoop paths, shell execution, and the derived or out-of-band state the
-// coordinator reads — the frontier, verification verdicts, the single-
-// coordinator lock, learnings, and the spec hash. backlog.ts and journal.ts
-// build on the paths and shell helpers defined here.
+// Campaign-level runtime infrastructure: the .ailoop paths, shell execution,
+// the repository-scoped coordinator lock, learnings, and spec hashing.
+// Durable campaign decisions live in backlog.json; journal.jsonl is the audit
+// trail around them.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
 
 export type ShResult = { status: number | null; stdout: string; stderr: string };
 
@@ -81,27 +80,80 @@ export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId
 }
 
 
-// Single-coordinator lock. backlog-write.mjs validates transitions but has
-// no lock — two coordinators interleaving writes on one campaign is silent
-// corruption, so the second one must refuse to start.
-const PIDFILE = () => path.join(RUN, 'coordinator.pid');
+// The lock belongs to the target repository, not to campaign state: it must
+// exist before kickoff creates backlog.json, and a refused kickoff must still
+// leave no campaign residue. `wx` is the exclusion primitive — checking then
+// writing is a race in which two coordinators can both pass the check.
+const lockFile = (): string => {
+  const common = sh('git rev-parse --git-common-dir');
+  if (common.status !== 0) throw new Error('loop must run from a git repository');
+  return path.join(path.resolve(common.stdout.trim()), 'ailoop', 'coordinator.pid');
+};
 
-export function lockHolder(): number | null {
-  if (!fs.existsSync(PIDFILE())) return null;
-  const pid = parseInt(fs.readFileSync(PIDFILE(), 'utf8'), 10);
-  if (!pid || pid === process.pid) return null;
-  try { process.kill(pid, 0); return pid; }   // alive → held
-  catch { return null; }                       // stale → claimable
+export class LockHeldError extends Error {
+  pid: number | null;
+  constructor(pid: number | null) {
+    super(pid
+      ? `another coordinator (pid ${pid}) is already driving this repository`
+      : 'another coordinator is already driving this repository');
+    this.pid = pid;
+  }
 }
+
+let heldLock: string | null = null;
 
 export function acquireLock(): void {
-  fs.writeFileSync(PIDFILE(), String(process.pid));
-  process.on('exit', () => {
+  const file = lockFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      if (parseInt(fs.readFileSync(PIDFILE(), 'utf8'), 10) === process.pid) fs.unlinkSync(PIDFILE());
-    } catch { /* campaign/ already deleted at campaign close */ }
-  });
+      fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
+      heldLock = file;
+      process.once('exit', releaseLock);
+      return;
+    } catch (e: any) {
+      if (e.code !== 'EEXIST') throw e;
+      const pid = readLockPid(file);
+      if (pid === process.pid) { heldLock = file; return; }
+      if (pid !== null && processAlive(pid)) throw new LockHeldError(pid);
+      // A dead owner left the pidfile behind. Remove it, then retry the
+      // exclusive create; that retry decides ownership if another coordinator
+      // reached the same point.
+      try { fs.unlinkSync(file); } catch (unlink: any) {
+        if (unlink.code !== 'ENOENT') throw unlink;
+      }
+    }
+  }
+  throw new LockHeldError(readLockPid(file));
 }
+
+export function releaseLock(): void {
+  const file = heldLock;
+  heldLock = null;
+  if (!file) return;
+  try {
+    if (readLockPid(file) === process.pid) fs.unlinkSync(file);
+  } catch { /* already released */ }
+}
+
+const readLockPid = (file: string): number | null => {
+  try {
+    const pid = parseInt(fs.readFileSync(file, 'utf8'), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+};
+
+const processAlive = (pid: number): boolean => {
+  try { process.kill(pid, 0); return true; }
+  catch (error: any) {
+    // EPERM still proves the process exists; a shared repository must not let
+    // one user reclaim another user's live coordinator.
+    return error.code === 'EPERM';
+  }
+};
 
 export function specSha(specPath: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(specPath)).digest('hex');

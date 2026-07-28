@@ -7,12 +7,13 @@ import path from 'node:path';
 import { backlog, backlogWrite } from './backlog.ts';
 import { coverage } from './frontier.ts';
 import { RUN, specSha, readLearnings } from './state.ts';
-import { agent, renderPrompt } from '../agent/agent.ts';
-import { MODELS } from './models.ts';
-import { KICKOFF, DECOMPOSE } from '../agent/schemas.ts';
-import type { KickoffVerdict, DecomposeVerdict } from '../agent/schemas.ts';
+import { agent, renderPrompt } from './agents/run.ts';
+import { MODELS } from './agents/models.ts';
+import { KICKOFF, DECOMPOSE } from './agents/schemas.ts';
+import type { KickoffVerdict, DecomposeVerdict } from './agents/schemas.ts';
 import { escalate } from './escalate.ts';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
+import { stop as stopDisplay } from '../tui/app.ts';
 
 export async function kickoff(specPath: string): Promise<void> {
   const spec = fs.readFileSync(specPath, 'utf8');
@@ -35,7 +36,7 @@ export async function kickoff(specPath: string): Promise<void> {
   })).output;
 
   if (kv.blockers.length) {
-    tui.stop();
+    stopDisplay();
     console.error('REFUSED TO START — resolve these and re-run:');
     for (const b of kv.blockers) console.error(`  · ${b.item}\n    needed: ${b.needed}`);
     process.exit(3);
@@ -44,7 +45,7 @@ export async function kickoff(specPath: string): Promise<void> {
   // State exists only past the gate — a refused kickoff leaves no residue.
   const project = path.basename(specPath).replace(/\.[^.]+$/, '');
   fs.mkdirSync(RUN, { recursive: true });
-  backlogWrite(['init', '--project', project]);
+  backlogWrite(['init', '--project', project, '--spec-path', specPath, '--spec-sha', sha]);
   ensureGitignore();
   backlogWrite(['seed', '-'], {
     fastChecks: kv.fastChecks, gate: kv.gate, outOfScope: kv.outOfScope, requirements: kv.requirements,
@@ -57,6 +58,7 @@ export async function kickoff(specPath: string): Promise<void> {
   backlogWrite(['note', '--kind', 'requirements', '--subject', 'spec',
     '--body', kv.requirements.map(r => `${r.id}: ${r.clause}`).join('\n') || '(none enumerated)',
     '--data', JSON.stringify({ requirements: kv.requirements })]);
+  tui.showRequirements(kv.requirements);
   tui.log(`kickoff: ${kv.requirements.length} spec requirement(s) enumerated`);
   backlogWrite(['note', '--kind', 'kickoff', '--subject', 'spec',
     '--body', `sha256=${sha} coordinator=script`, '--data', JSON.stringify({ specPath, sha })]);

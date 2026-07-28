@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { shAsync } from './state.ts';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
 
 // Directory names a toolchain resolves relative to the working directory. Fixed
 // names rather than detection: the list is short and additive, and being wrong on

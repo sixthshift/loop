@@ -1,6 +1,6 @@
 // Termination — coverage pass, report, post-mortem, learnings harvest,
 // campaign close. Runs only when the frontier reports complete and the
-// campaign gate is journaled green.
+// campaign gate is persistently recorded green.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,17 +9,18 @@ import { coverage } from './frontier.ts';
 import { journalEntries } from './journal.ts';
 import { RUN, LEARNINGS, sh } from './state.ts';
 import type { CampaignContext } from './state.ts';
-import { agent, renderPrompt } from '../agent/agent.ts';
-import { MODELS } from './models.ts';
-import { COVERAGE, HARVEST } from '../agent/schemas.ts';
-import type { CoverageVerdict, HarvestVerdict } from '../agent/schemas.ts';
+import { agent, renderPrompt } from './agents/run.ts';
+import { MODELS } from './agents/models.ts';
+import { COVERAGE, HARVEST } from './agents/schemas.ts';
+import type { CoverageVerdict, HarvestVerdict } from './agents/schemas.ts';
 import { renumber } from './recover.ts';
-import { gateGreen } from './drive.ts';
+import { gateGreen } from './gate.ts';
 import { deleteBranch, worktreesRoot } from './worktree.ts';
 import { mergeLearnings } from './learn.ts';
 import { writePostmortem } from './postmortem.ts';
 import { escalate } from './escalate.ts';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
+import { stop as stopDisplay } from '../tui/app.ts';
 
 // Returns { resume: true } when coverage found unmapped requirements —
 // the drive picks the new tickets up and the campaign continues.
@@ -30,7 +31,6 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   if (!gateGreen()) escalate('termination reached with an unrun or stale campaign gate');
 
   tui.log('retrospective: coverage pass…');
-  const gateClose = [...journalEntries()].reverse().find(j => j.kind === 'campaign-gate-close');
   const closed = b.tickets.filter(t => t.status === 'closed');
   const cov = (await agent<CoverageVerdict>({
     prompt: renderPrompt('coverage', {
@@ -42,7 +42,7 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
       requirements: { list: b.requirements ?? [], ...coverage(b) },
       tickets: closed.map(t => ({ id: t.id, title: t.title, satisfies: t.satisfies, acceptance: t.acceptance, evidence: t.evidence })),
       outOfScope: b.outOfScope ?? [],
-      gateEvidence: gateClose?.body ?? '(no gate configured)',
+      gateEvidence: b.gateState?.lastRun?.evidence ?? '(no gate configured)',
     }),
     models: MODELS.coverage,
     schema: COVERAGE,
@@ -95,7 +95,7 @@ export async function retrospective(ctx: CampaignContext): Promise<{ resume: boo
   flipSpecDone(ctx.specPath);
   backlogWrite(['note', '--kind', 'campaign-close', '--subject', 'campaign', '--body', 'complete; all gates green']);
 
-  tui.stop(); // the report is for a scrollback reader, not a live pane
+  stopDisplay(); // the report is for a scrollback reader, not a live pane
   console.log('\n════════ CAMPAIGN REPORT ════════\n');
   console.log(h.report);
   console.log(`\npost-mortem: ${postmortem}`);

@@ -9,7 +9,7 @@ import { amendFastChecks, classifyFastCheckEdit } from './fastcheck.ts';
 import { backlog } from './backlog.ts';
 import { journalEntries } from './journal.ts';
 import { withScratchCampaign, withScratchCampaignAsync } from './scratch-campaign.ts';
-import type { Check } from '../agent/schemas.ts';
+import type { Check } from './agents/schemas.ts';
 
 const UNIT: Check = { name: 'unit', cmd: 'true' };
 
@@ -58,8 +58,8 @@ describe('a proposal that runs green on the mainline', () => {
     const audit = out.kinds.find(k => k.kind === 'fast-check-replaced');
     expect(audit?.body).toContain('was: true');
     expect(audit?.body).toContain('now: true # in the worktree this time');
-    // Journaled BEFORE the amendment, so a refused write still leaves the before.
-    expect(out.kinds.map(k => k.kind)).toEqual(['fast-check-replaced', 'fast-check-amendment']);
+    // The behavioral state is durable before its audit annotation.
+    expect(out.kinds.map(k => k.kind)).toEqual(['fast-check-amendment', 'fast-check-replaced']);
     expect(out.returned).toBe('fast tier [~unit]');
   });
 });

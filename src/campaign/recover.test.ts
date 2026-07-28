@@ -86,41 +86,51 @@ describe('renumber', () => {
 // this exact anomaly before. The budget is the coordinator's memory on its
 // behalf, and it is keyed by what "the same anomaly" means for that kind.
 describe('the recover budget', () => {
-  const recovered = (key: string, body = 'fixed it') =>
-    buildEntry({ kind: 'recovered', subject: key.split(':')[0], body, data: { key } });
+  const recovered = (key: string, ...summaries: string[]) => ({
+    [key]: { count: summaries.length, summaries },
+  });
 
-  const spent = (journal: ReturnType<typeof buildEntry>[], key: string) => {
+  const spent = (recoveries: NonNullable<import('./backlog.ts').Backlog['recoveries']>, key: string) => {
     let n = 0;
-    withScratchCampaign({ journal }, () => { n = priorRecoveries(key).length; });
+    withScratchCampaign({ backlog: { recoveries } }, () => { n = priorRecoveries(key).length; });
     return n;
   };
 
   test('a ticket-scoped anomaly is budgeted per ticket, so two tickets walling once each is not a pattern', () => {
     expect(recoverKey({ kind: 'attempt-wall', ticketId: 'T007' })).toBe('attempt-wall:T007');
-    const journal = [recovered('attempt-wall:T007'), recovered('attempt-wall:T009')];
-    expect(spent(journal, 'attempt-wall:T007')).toBe(1);
+    const recoveries = {
+      ...recovered('attempt-wall:T007', 'fixed seven'),
+      ...recovered('attempt-wall:T009', 'fixed nine'),
+    };
+    expect(spent(recoveries, 'attempt-wall:T007')).toBe(1);
   });
 
   test('a campaign-scoped anomaly is budgeted per campaign', () => {
     expect(recoverKey({ kind: GATE_RED, results: [] })).toBe(GATE_RED);
-    expect(spent([recovered(GATE_RED), recovered(GATE_RED)], GATE_RED)).toBe(2);
+    expect(spent(recovered(GATE_RED, 'first fix', 'second fix'), GATE_RED)).toBe(2);
   });
 
-  test('only resolutions count — an unresolved recover parked, and nothing re-arms a park', () => {
+  test('audit events do not reconstruct or change the persistent budget', () => {
     const journal = [
-      recovered(GATE_RED),
       buildEntry({ kind: 'parked', subject: 'campaign-gate', body: 'gave up' }),
       buildEntry({ kind: 'recover-refused', subject: 'gate', body: 'illegal action' }),
     ];
-    expect(spent(journal, GATE_RED)).toBe(1);
+    let count = 0;
+    withScratchCampaign({
+      backlog: { recoveries: recovered(GATE_RED, 'one durable resolution') },
+      journal,
+    }, () => { count = priorRecoveries(GATE_RED).length; });
+    expect(count).toBe(1);
   });
 
   test('the prior fixes are returned, not just counted — they are the evidence a park cites', () => {
-    let bodies: (string | undefined)[] = [];
-    withScratchCampaign({ journal: [recovered(GATE_RED, 'narrowed the e2e gate'), recovered(GATE_RED, 'narrowed it again')] }, () => {
-      bodies = priorRecoveries(GATE_RED).map(e => e.body);
+    let summaries: string[] = [];
+    withScratchCampaign({ backlog: {
+      recoveries: recovered(GATE_RED, 'narrowed the e2e gate', 'narrowed it again'),
+    } }, () => {
+      summaries = priorRecoveries(GATE_RED);
     });
-    expect(bodies).toEqual(['narrowed the e2e gate', 'narrowed it again']);
+    expect(summaries).toEqual(['narrowed the e2e gate', 'narrowed it again']);
   });
 });
 

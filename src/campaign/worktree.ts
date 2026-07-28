@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sh } from './state.ts';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
 
 export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
 

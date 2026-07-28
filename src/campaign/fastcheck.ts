@@ -29,7 +29,7 @@
 
 import { backlog, backlogWrite } from './backlog.ts';
 import { shAsync } from './state.ts';
-import type { Check } from '../agent/schemas.ts';
+import type { Check } from './agents/schemas.ts';
 
 export type FastCheckEdit = {
   added: Check[];
@@ -70,16 +70,15 @@ export async function amendFastChecks(
       '--body', `${opts.by} proposed \`${c.cmd}\` for the fast tier and it exited ${r.status} on the mainline — the tier's one invariant is that it is green there. ${opts.note}\n${(r.stdout + r.stderr).slice(-1500)}`]);
   }
 
-  // Journaled before the write, so a refused amendment still leaves the before on
-  // file — and under its own kind, because a baseline check being swapped is an
-  // event a post-mortem must be able to find without reading prose.
+  if (admitted.length) backlogWrite(['fast-checks', '-', '--note', opts.note], admitted);
+
+  // The persistent tier lands before its replacement audit. A missing audit
+  // must never leave the backlog claiming the old command is still in force.
   for (const r of replaced) {
     if (!admitted.includes(r.check)) continue;
     backlogWrite(['note', '--kind', 'fast-check-replaced', '--subject', r.check.name,
       '--body', `${opts.by} replaced the fast-tier command — was: ${r.was} — now: ${r.check.cmd} — ${opts.note}`]);
   }
-
-  if (admitted.length) backlogWrite(['fast-checks', '-', '--note', opts.note], admitted);
 
   const touched = candidates.map(c => {
     const mark = !admitted.includes(c) ? '✗' : replaced.some(r => r.check === c) ? '~' : '+';

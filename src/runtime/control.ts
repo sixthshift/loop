@@ -1,7 +1,7 @@
-// The operator's control surface — the one channel through which the
-// dashboard reaches the coordinator. Flags only: the drive loop reads them
-// at its next decision point, so no keypress can interleave with a backlog
-// write (those are spawnSync — the event loop is parked while they run).
+// The operator's control surface — the one channel through which a display
+// reaches the coordinator. Flags only: the drive loop reads them at its next
+// decision point, so no input can interleave with a backlog write (those are
+// synchronous — the event loop is parked while they run).
 //
 // Killing is the exception — it acts immediately on a child process, never on
 // state — and lives with the processes it acts on: fleet.kill / fleet.killAll

@@ -4,21 +4,20 @@
 // every mutation goes through control.ts flags the drive loop honors at its next
 // decision point, or a child-process kill that settles as an ordinary failed
 // attempt. The dashboard never writes campaign state: kill it, `loop resume`,
-// and the picture rebuilds from the journal.
+// and the picture rebuilds from backlog.json plus surviving process artifacts.
 
 import React, { useEffect, useState } from 'react';
 import { render, Box, Text, useInput, useStdout } from 'ink';
-import { store, subscribe, log, hhmm, dur } from './tui.ts';
-import type { ScriptView } from './tui.ts';
+import { store, subscribe, log, hhmm, dur, takeRequestedView } from '../runtime/reporting.ts';
+import type { ScriptView } from '../runtime/reporting.ts';
 import { fleet, subscribe as subscribeFleet, kill, killAll } from '../agent/fleet.ts';
 import type { LiveAgent } from '../agent/fleet.ts';
-import { backlog } from '../campaign/backlog.ts';
-import { campaignExists } from '../campaign/index.ts';
+import { backlog, campaignExists } from '../campaign/backlog.ts';
 import { coverage } from '../campaign/frontier.ts';
 import { journalTail } from '../campaign/journal.ts';
 import type { Backlog, Ticket } from '../campaign/backlog.ts';
 import type { JournalEntry } from '../campaign/journal.ts';
-import { control } from './control.ts';
+import { control } from '../runtime/control.ts';
 import { liveness } from './liveness.ts';
 import type { Liveness as LivenessSample } from './liveness.ts';
 import { railGraph } from './railgraph.ts';
@@ -48,6 +47,7 @@ type View =
   | { name: 'active' }
   | { name: 'journal' }
   | { name: 'help' }
+  | { name: 'requirements' }
   | { name: 'tickets' }
   | { name: 'graph' }
   | { name: 'ticket'; id: string; from: 'tickets' | 'graph' }
@@ -87,6 +87,7 @@ function Dashboard() {
   const [view, setView] = useState<View>({ name: 'active' });
   const [procSel, setProcSel] = useState(0);
   const [ticketSel, setTicketSel] = useState(0);
+  const [requirementSel, setRequirementSel] = useState(0);
   const [graphSel, setGraphSel] = useState(0);
   const [journalOff, setJournalOff] = useState(0); // 0 = follow the tail
   const [filterIdx, setFilterIdx] = useState(0);
@@ -99,6 +100,12 @@ function Dashboard() {
   const procs = procList();
   const tickets = ticketList(b);
   const graph = railGraph(tickets);
+
+  useEffect(() => {
+    if (takeRequestedView() !== 'requirements') return;
+    setRequirementSel(0);
+    setView({ name: 'requirements' });
+  }, [b?.requirements?.length]);
 
   function quit() {
     killAll(); // stale in-flight reconciliation re-judges surviving branches on resume
@@ -128,6 +135,15 @@ function Dashboard() {
 
     if (view.name === 'help') { if (key.escape || input === 'q' || input === '?') setView({ name: 'active' }); return; }
     if (view.name === 'ticket') { if (key.escape || input === 'q') setView(view.from === 'graph' ? { name: 'graph' } : { name: 'tickets' }); return; }
+
+    if (view.name === 'requirements') {
+      const count = b?.requirements?.length ?? 0;
+      if (key.escape || input === 'q' || input === 'R') return setView({ name: 'active' });
+      if (key.upArrow || input === 'k') setRequirementSel(selection => Math.max(0, selection - 1));
+      if (key.downArrow || input === 'j')
+        setRequirementSel(selection => Math.min(Math.max(0, count - 1), selection + 1));
+      return;
+    }
 
     if (view.name === 'tickets') {
       if (key.escape || input === 'q') return setView({ name: 'active' });
@@ -169,6 +185,7 @@ function Dashboard() {
     // --- active ---
     if (input === '?') return setView({ name: 'help' });
     if (key.tab) return setView({ name: 'journal' });
+    if (input === 'R') { setRequirementSel(0); return setView({ name: 'requirements' }); }
     if (input === 't') { setTicketSel(0); return setView({ name: 'tickets' }); }
     if (input === 'g') { setGraphSel(0); return setView({ name: 'graph' }); }
     if (input === 'p') {
@@ -198,6 +215,8 @@ function Dashboard() {
 
   const frame: Frame = { rows, cols, confirm };
   if (view.name === 'help') return <HelpView {...frame} />;
+  if (view.name === 'requirements')
+    return <RequirementsView {...frame} b={b} sel={clamp(requirementSel, b?.requirements?.length ?? 0)} />;
   if (view.name === 'tickets') return <TicketsView {...frame} tickets={tickets} sel={clamp(ticketSel, tickets.length)} />;
   if (view.name === 'graph') return <GraphView {...frame} graph={graph} sel={clamp(graphSel, graph.order.length)} />;
   if (view.name === 'ticket') return <TicketDetailView {...frame} ticket={tickets.find(t => t.id === view.id)} all={tickets} />;
@@ -228,7 +247,7 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
       <Rule cols={cols} />
       <LogPane cols={cols} budget={LOG_ROWS} />
       <Footer cols={cols} confirm={confirm}
-        hint="tab journal · j/k move · ↵ inspect · t tickets · g graph · p pause · +/- cap · r review · x kill · q quit · ? help" />
+        hint="tab journal · R requirements · t tickets · g graph · p pause · +/- cap · r sweep · x kill · q quit · ? help" />
     </Box>
   );
 }
@@ -237,7 +256,7 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
 // where it appears. A fixed budget at the bottom for the same reason the live
 // regions have one: the panels above it grow with the campaign, and a pane that
 // grows with its content would push the footer off the screen. Older lines scroll
-// out of view rather than out of memory — tui.ts keeps the last 200.
+// out of view rather than out of memory — reporting.ts keeps the last 200.
 function LogPane({ cols, budget }: { cols: number; budget: number }) {
   const rows = store.logs
     .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
@@ -296,11 +315,13 @@ function GatePanel({ b }: { b: Backlog; cols: number }) {
   const ts = b.tickets.filter(t => t.status !== 'decomposed');
   const done = ts.filter(t => t.status === 'closed').length;
   const live = ts.filter(t => t.status !== 'closed').length;
-  const last = [...journalTail(5000)].reverse()
-    .find(j => j.subject === 'campaign-gate' && (j.kind === 'campaign-gate-close' || j.kind === 'gate-red'));
+  const last = b.gateState?.lastRun;
+  const current = last?.tickets === b.tickets.length
+    && last.closed === b.tickets.filter(ticket => ticket.status === 'closed').length;
   const gate = !b.gate?.length ? <Text dimColor>[no gate]</Text>
-    : last?.kind === 'campaign-gate-close' && live === 0 ? <Text color="green">[gate ✓]</Text>
-    : last?.kind === 'gate-red' ? <Text color="red">[gate ✗]</Text>
+    : b.gateState?.parked ? <Text color="red">[gate parked]</Text>
+    : last?.result === 'green' && current ? <Text color="green">[gate ✓]</Text>
+    : last?.result === 'red' && current ? <Text color="red">[gate ✗]</Text>
     : live === 0 ? <Text color="yellow">[gate …]</Text>
     : <Text> </Text>;
   // Two bars, because they answer different questions and can disagree: the
@@ -369,6 +390,59 @@ function JournalView({ rows, cols, confirm, journalOff, filterIdx }: Frame & { j
 function JournalLine({ j, line }: { j: JournalEntry; line: string }) {
   const warm = ['gate-red', 'escalation', 'integration-red', 'attempt'].includes(j.kind);
   return <Text color={warm ? 'red' : undefined} dimColor={j.kind === 'verify'}>{line}</Text>;
+}
+
+// --- requirement contract ---------------------------------------------------
+
+function RequirementsView({ rows, cols, confirm, b, sel }: Frame & {
+  b: Backlog | null | undefined;
+  sel: number;
+}) {
+  const requirements = b?.requirements ?? [];
+  const tickets = b?.tickets ?? [];
+  const entries = requirements.map(requirement => {
+    const claimants = tickets.filter(ticket =>
+      ticket.status !== 'decomposed' && ticket.satisfies?.includes(requirement.id));
+    const state = !tickets.length ? 'enumerated'
+      : !claimants.length ? 'unclaimed'
+        : claimants.every(ticket => ticket.status === 'closed') ? 'proven' : 'claimed';
+    const mark = state === 'proven' ? '✓'
+      : state === 'unclaimed' ? '!'
+        : state === 'claimed' ? '◐' : '·';
+    const suffix = claimants.length ? `  [${claimants.map(ticket => ticket.id).join(', ')}]` : '';
+    return {
+      state,
+      lines: wrapText(`  ${mark} ${requirement.id}  ${requirement.clause}${suffix}`, cols - 1, 10),
+    };
+  });
+  const [start, end] = windowAround(
+    entries.map(entry => entry.lines.length),
+    sel,
+    Math.max(3, rows - 3),
+  );
+  return (
+    <Box flexDirection="column" width={cols}>
+      <Text bold>
+        {` requirements (${requirements.length})`}
+        {!tickets.length ? <Text dimColor> · decomposition pending</Text> : null}
+      </Text>
+      <Rule cols={cols} />
+      {entries.slice(start, end).map((entry, offset) => {
+        const selected = start + offset === sel;
+        const color = entry.state === 'proven' ? 'green'
+          : entry.state === 'unclaimed' ? 'yellow'
+            : entry.state === 'claimed' ? 'cyan' : undefined;
+        return (
+          <Box key={start + offset} flexDirection="column">
+            {entry.lines.map((line, row) => (
+              <Text key={row} inverse={selected} color={color}>{line}</Text>
+            ))}
+          </Box>
+        );
+      })}
+      <Footer cols={cols} confirm={confirm} hint="j/k move · R/esc back" />
+    </Box>
+  );
 }
 
 // --- ticket browser ----------------------------------------------------------
@@ -696,6 +770,7 @@ function HelpView({ cols, confirm }: Frame) {
     ['j/k ↑/↓', 'move selection / scroll the journal'],
     ['↵', 'inspect the selected agent or script live; open ticket detail'],
     ['t', 'ticket browser'],
+    ['R', 'requirements — the locked clauses and their claiming tickets'],
     ['g', 'dependency graph — rails; j/k lights the selected ticket’s edges'],
     ['f', `journal filter (${FILTERS.map(f => f.name).join(' → ')})`],
     ['p', 'pause/resume dispatch (in-flight workers still settle)'],

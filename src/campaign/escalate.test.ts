@@ -21,7 +21,9 @@ describe('gateParked', () => {
   });
 
   test('a red run is not a park — recover gets its turn before the human does', () => {
-    expect(onScratch({ lastRun: { result: 'red', tickets: 1, closed: 1 } })).toBe(false);
+    expect(onScratch({
+      lastRun: { result: 'red', tickets: 1, closed: 1, evidence: 'gate red' },
+    })).toBe(false);
   });
 
   test('the latch reads off the recorded reason', () => {

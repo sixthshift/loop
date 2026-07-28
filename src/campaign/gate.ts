@@ -1,7 +1,7 @@
 // Amending the campaign gate — the one agent-proposed mutation that edits the
-// criteria deciding whether the product is correct. (Running the gate stays in
-// drive.ts, beside the loop that schedules it; this file is only about who may
-// change it, and how the change is recorded.)
+// criteria deciding whether the product is correct. gate-run.ts owns execution;
+// this file owns the derived green policy plus who may change the gate and how
+// the change is recorded.
 //
 // The sole writer's `gate` command upserts by name, so one action shape carries
 // two different acts. A name not yet in force only ADDS coverage — a green
@@ -24,7 +24,7 @@
 // inside a `recovered` note.
 
 import { backlog, backlogWrite } from './backlog.ts';
-import type { Check } from '../agent/schemas.ts';
+import type { Check } from './agents/schemas.ts';
 
 // The anomaly kind the drive stamps when the merged-tree gate fails. Shared
 // because it is the discriminator for gate authority below: it names the one
@@ -41,6 +41,19 @@ export type GateEdit = {
   // is worthless without the before.
   replaced: { gate: Check; was: string }[];
 };
+
+// A green run only covers the backlog snapshot it measured. Ticket and closed
+// counts are monotone, so equality proves no work was added or landed since.
+// This is gate-state policy, not drive-loop orchestration; completion and
+// retrospective both depend on the same derived fact.
+export function gateGreen(): boolean {
+  const b = backlog();
+  if (!b.gate?.length) return true;
+  const run = b.gateState?.lastRun;
+  if (run?.result !== 'green') return false;
+  return run.tickets === b.tickets.length
+    && run.closed === b.tickets.filter(t => t.status === 'closed').length;
+}
 
 // Re-proposing a gate exactly as it stands is neither act: it is an idempotent
 // no-op, and dignifying it with an audit entry would bury the real ones.
@@ -68,17 +81,17 @@ export function amendGate(
   const { added, replaced } = classifyGateEdit(proposed);
   const apply = opts.replacements === 'apply';
 
-  for (const r of replaced) {
-    backlogWrite(['note', '--kind', apply ? 'gate-replaced' : 'gate-refused', '--subject', r.gate.name,
-      '--body', `${opts.by} ${apply ? 'replaced' : 'proposed replacing'} the gate command — was: ${r.was} — now: ${r.gate.cmd} — ${opts.note}`]);
-  }
-
   // The authority to replace and the authority to answer a park are the same
   // fact about the caller: it is the arm the red gate handed its own failure to.
   // Sweep adding a check while the campaign waits on a human must leave the
   // latch exactly where the human left it.
   const applied = apply ? [...added, ...replaced.map(r => r.gate)] : added;
   if (applied.length) backlogWrite(['gate', '-', '--note', opts.note, ...(apply ? ['--release-latch'] : [])], applied);
+
+  for (const r of replaced) {
+    backlogWrite(['note', '--kind', apply ? 'gate-replaced' : 'gate-refused', '--subject', r.gate.name,
+      '--body', `${opts.by} ${apply ? 'replaced' : 'proposed replacing'} the gate command — was: ${r.was} — now: ${r.gate.cmd} — ${opts.note}`]);
+  }
 
   const touched = [
     ...added.map(g => `+${g.name}`),

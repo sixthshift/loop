@@ -9,7 +9,7 @@ import { amendGate, classifyGateEdit } from './gate.ts';
 import { backlog, backlogWrite } from './backlog.ts';
 import { journalEntries } from './journal.ts';
 import { withScratchCampaign } from './scratch-campaign.ts';
-import type { Check } from '../agent/schemas.ts';
+import type { Check } from './agents/schemas.ts';
 
 const E2E = { name: 'e2e', cmd: 'bun test:e2e' };
 
@@ -63,8 +63,8 @@ describe('amendGate under an arm that may replace', () => {
     const audit = out.kinds.find(k => k.kind === 'gate-replaced');
     expect(audit?.body).toContain('was: bun test:e2e');
     expect(audit?.body).toContain('now: bun test:e2e --only smoke');
-    // Journaled BEFORE the amendment, so a refused write leaves the record.
-    expect(out.kinds.map(k => k.kind)).toEqual(['gate-replaced', 'gate-amendment']);
+    // The behavioral state is durable before its audit annotation.
+    expect(out.kinds.map(k => k.kind)).toEqual(['gate-amendment', 'gate-replaced']);
   });
 });
 
@@ -96,7 +96,7 @@ describe('amendGate under an arm that may not replace', () => {
       'refuse',
     );
     expect(out.gate).toEqual([E2E, { name: 'lint', cmd: 'bun run lint' }]);
-    expect(out.kinds.map(k => k.kind)).toEqual(['gate-refused', 'gate-amendment']);
+    expect(out.kinds.map(k => k.kind)).toEqual(['gate-amendment', 'gate-refused']);
     expect(out.returned).toBe('gate [+lint, ✗e2e]');
   });
 

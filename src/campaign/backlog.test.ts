@@ -33,7 +33,12 @@ describe('gate-run', () => {
       ],
       gate: GATE,
     }, () => { backlogWrite(['gate-run', 'green', '--note', 'gate green: [e2e]']); });
-    expect(b.gateState?.lastRun).toEqual({ result: 'green', tickets: 3, closed: 2 });
+    expect(b.gateState?.lastRun).toEqual({
+      result: 'green',
+      tickets: 3,
+      closed: 2,
+      evidence: 'gate green: [e2e]',
+    });
   });
 
   test('a later run overwrites the earlier verdict', () => {
@@ -423,5 +428,75 @@ describe('requirement claims', () => {
         .toThrow(/immutable or unknown field/);
       expect(backlog().tickets[0]!.satisfies).toEqual(['R1']);
     });
+  });
+});
+
+describe('persistent coordinator state', () => {
+  test('init stores the locked contract in the backlog, not only the kickoff audit', () => {
+    let b!: Backlog;
+    withScratchCampaign({}, () => {
+      backlogWrite([
+        'init',
+        '--project', 'example',
+        '--spec-path', 'spec.md',
+        '--spec-sha', 'abc123',
+      ]);
+      b = backlog();
+    });
+    expect(b.contract).toEqual({ specPath: 'spec.md', sha256: 'abc123' });
+  });
+
+  test('a recover resolution persists its budget and evidence summary', () => {
+    const b = afterWrites({ tickets: [] }, () => {
+      backlogWrite(['recover-resolution', '--key', 'attempt-wall:T001',
+        '--subject', 'attempt-wall', '--body', 'corrected the ticket contract']);
+    });
+    expect(b.recoveries?.['attempt-wall:T001']).toEqual({
+      count: 1,
+      summaries: ['corrected the ticket contract'],
+    });
+  });
+
+  test('a sweep records the snapshot it inspected, not later closes', () => {
+    const b = afterWrites({
+      tickets: [
+        buildTicket({ id: 'T001', status: 'closed' }),
+        buildTicket({ id: 'T002', status: 'closed' }),
+      ],
+    }, () => {
+      backlogWrite(['sweep-run', '--closed', '1', '--body', 'no cross-ticket pattern']);
+    });
+    expect(b.sweep).toEqual({ closed: 1 });
+  });
+
+  test('a parked ticket carries the human-facing reason in backlog state', () => {
+    const b = afterWrites({
+      tickets: [buildTicket({ id: 'T001' })],
+    }, () => {
+      backlogWrite(['set-status', 'T001', 'parked', '--note', 'scope decision needed']);
+    });
+    expect(b.tickets[0]!.parkReason).toBe('scope decision needed');
+  });
+
+  test('an unavailable audit sink cannot roll back a state transition', () => {
+    let b!: Backlog;
+    withScratchCampaign({
+      backlog: { tickets: [buildTicket({ id: 'T001' })] },
+      journal: [],
+    }, () => {
+      const audit = '.ailoop/campaign/journal.jsonl';
+      fs.rmSync(audit);
+      fs.mkdirSync(audit);
+      const report = console.error;
+      console.error = () => {};
+      try {
+        backlogWrite(['set-status', 'T001', 'in-flight', '--base-sha', 'abc123']);
+      } finally {
+        console.error = report;
+      }
+      b = backlog();
+    });
+    expect(b.tickets[0]!.status).toBe('in-flight');
+    expect(b.tickets[0]!.baseSha).toBe('abc123');
   });
 });

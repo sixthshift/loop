@@ -12,27 +12,15 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import * as fleet from './fleet.ts';
-import { log } from '../tui/tui.ts';
-import { appendJournal } from '../campaign/journal.ts';
 import { engineFor, available } from './engine.ts';
 import type { EngineEnvelope } from './engine.ts';
+import consensus from './consensus.md' with { type: 'text' };
 
-import consensus from './prompts/consensus.md' with { type: 'text' };
-import coverage from './prompts/coverage.md' with { type: 'text' };
-import decompose from './prompts/decompose.md' with { type: 'text' };
-import harvest from './prompts/harvest.md' with { type: 'text' };
-import kickoff from './prompts/kickoff.md' with { type: 'text' };
-import recover from './prompts/recover.md' with { type: 'text' };
-import review from './prompts/review.md' with { type: 'text' };
-import sweep from './prompts/sweep.md' with { type: 'text' };
-import worker from './prompts/worker.md' with { type: 'text' };
-
-// Embedded as text, not read from disk: a compiled binary has no ./prompts/ to
-// resolve off import.meta.url, and the prompts are the only runtime asset the
-// tool reads. The cost of the swap is that a new prompt is a line here, not just
-// a file dropped in the directory.
-const PROMPTS: Record<string, string> = {
-  consensus, coverage, decompose, harvest, kickoff, recover, review, sweep, worker,
+export type AgentEvent = {
+  kind: 'engine-fallback' | 'consensus';
+  subject: string;
+  body: string;
+  message: string;
 };
 
 export type AgentOptions = {
@@ -46,6 +34,9 @@ export type AgentOptions = {
   bypassPermissions?: boolean;
   timeoutMs?: number;
   label?: string;
+  // Campaign journaling and presentation are outer concerns. The runtime emits
+  // facts; its caller decides where they are recorded or displayed.
+  report?: (event: AgentEvent) => void;
 };
 
 export type AgentResult<T> = { output: T; model: string; tokens: number; seconds: number; costUsd: number };
@@ -58,19 +49,6 @@ export class AgentError extends Error {
     this.transient = transient;
     this.killed = killed;
   }
-}
-
-// {{key}} substitution; objects render as pretty JSON. A missing key is a
-// programming error, not a prompt to silently ship with a hole in it.
-export function renderPrompt(name: string, vars: Record<string, unknown> = {}): string {
-  const raw = PROMPTS[name];
-  if (raw === undefined) throw new Error(`unknown prompt: ${name}`);
-  const text = raw.replace(/\{\{(\w+)\}\}/g, (_, key) => {
-    if (!(key in vars)) throw new Error(`prompt ${name}: missing var ${key}`);
-    const v = vars[key];
-    return typeof v === 'string' ? v : JSON.stringify(v, null, 2);
-  });
-  return text;
 }
 
 // The display name of a candidate: a bare model, or the members of a consensus
@@ -110,9 +88,12 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
       const move = !next ? `${from} failed, no fallback left`
         : next === cand ? `${from} failed → retrying`
           : `${from} failed → falling back to ${candidateName(next)}`;
-      try { appendJournal({ kind: 'engine-fallback', subject: label, body: `${move}: ${full}` }); }
-      catch { /* outside a campaign (no journal) — the tui line still surfaces it */ }
-      log(`⚠ ${label}: ${move} (${full.slice(0, 200)})`);
+      emit(opts, {
+        kind: 'engine-fallback',
+        subject: label,
+        body: `${move}: ${full}`,
+        message: `⚠ ${label}: ${move} (${full.slice(0, 200)})`,
+      });
     }
   }
   throw last;
@@ -149,7 +130,9 @@ async function runConsensus<T>(group: string[], opts: AgentOptions): Promise<Age
   const block = drafts
     .map((d, i) => `### Draft ${i + 1}\n${typeof d.output === 'string' ? d.output : JSON.stringify(d.output, null, 2)}`)
     .join('\n\n');
-  const mergePrompt = renderPrompt('consensus', { base: opts.prompt, drafts: block });
+  const mergePrompt = consensus
+    .replace('{{base}}', opts.prompt)
+    .replace('{{drafts}}', block);
 
   let merged: AgentResult<T>;
   try {
@@ -158,12 +141,21 @@ async function runConsensus<T>(group: string[], opts: AgentOptions): Promise<Age
     // The drafts are valid; only the reconcile failed. Degrade to the primary
     // draft and disclose it rather than lose the role's work to a merge flake.
     const full = (e as Error).message ?? String(e);
-    try { appendJournal({ kind: 'consensus', subject: label, body: `merge failed, returning primary draft: ${full}` }); } catch {}
-    log(`⚠ ${label}: consensus merge failed → primary draft (${full.slice(0, 200)})`);
+    emit(opts, {
+      kind: 'consensus',
+      subject: label,
+      body: `merge failed, returning primary draft: ${full}`,
+      message: `⚠ ${label}: consensus merge failed → primary draft (${full.slice(0, 200)})`,
+    });
     return drafts[0]!;
   }
 
-  try { appendJournal({ kind: 'consensus', subject: label, body: `${drafts.map(d => d.model).join(' + ')} → reconciled by ${reconciler}` }); } catch {}
+  emit(opts, {
+    kind: 'consensus',
+    subject: label,
+    body: `${drafts.map(d => d.model).join(' + ')} → reconciled by ${reconciler}`,
+    message: `✓ ${label}: consensus reconciled by ${reconciler}`,
+  });
   return {
     output: merged.output,
     model: `consensus(${drafts.map(d => d.model).join('+')}→${reconciler})`,
@@ -172,6 +164,12 @@ async function runConsensus<T>(group: string[], opts: AgentOptions): Promise<Age
     seconds: Math.max(...drafts.map(d => d.seconds)) + merged.seconds,
     costUsd: drafts.reduce((s, d) => s + d.costUsd, 0) + merged.costUsd,
   };
+}
+
+// Reporting is observational: a broken UI or audit sink cannot turn a valid
+// model verdict into an engine failure and trigger a different fallback.
+function emit(opts: AgentOptions, event: AgentEvent): void {
+  try { opts.report?.(event); } catch { /* outer observer failed */ }
 }
 
 async function runOnce<T>(model: string, opts: AgentOptions): Promise<AgentResult<T>> {

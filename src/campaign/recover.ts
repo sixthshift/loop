@@ -29,15 +29,14 @@ import type { GateAuthority } from './gate.ts';
 import { amendFastChecks } from './fastcheck.ts';
 import { breachedModules, revertOutOfBounds, snapshotTree } from './jurisdiction.ts';
 import type { Breach } from './jurisdiction.ts';
-import { journalEntries, journalTail } from './journal.ts';
-import type { JournalEntry } from './journal.ts';
+import { journalTail } from './journal.ts';
 import { withMainline } from './mainline.ts';
-import { agent, renderPrompt } from '../agent/agent.ts';
-import { MODELS } from './models.ts';
-import { RECOVER } from '../agent/schemas.ts';
-import type { RecoverAction, RecoverVerdict, TicketDraft } from '../agent/schemas.ts';
+import { agent, renderPrompt } from './agents/run.ts';
+import { MODELS } from './agents/models.ts';
+import { RECOVER } from './agents/schemas.ts';
+import type { RecoverAction, RecoverVerdict, TicketDraft } from './agents/schemas.ts';
 import { park } from './escalate.ts';
-import * as tui from '../tui/tui.ts';
+import * as tui from '../runtime/reporting.ts';
 
 // Whatever the coordinator couldn't enumerate — `kind` names the case, the
 // rest is evidence for the recover agent.
@@ -56,24 +55,19 @@ export const recoverKey = (a: Anomaly): string =>
 
 // Prior RESOLVED recoveries of the same key. Resolution is what makes a repeat
 // damning: recover said it fixed the campaign definition and the same anomaly
-// came back, which is what a spine bug looks like from inside the loop — a real
-// defect papered over one journal note at a time, each note reading like a
-// success. An unresolved recover parked instead, and nothing re-arms a park.
-//
-// Counted off the journal rather than a coordinator map so the budget survives
-// `loop resume`: a counter that resets on restart cannot see a loop that spans
-// one, and a gate-red → repair → gate-red cycle easily does.
+// came back. The count and summaries live in backlog state so the budget
+// survives resume without replaying audit events.
 //
 // Total, not consecutive. A kind that returns after an apparent success is the
-// signal, whether or not something else went green in between — which is also
-// what bounds the campaign-gate red loop, since every round of it resolves.
-export function priorRecoveries(key: string): JournalEntry[] {
-  return journalEntries().filter(e => e.kind === 'recovered' && e.data?.key === key);
+// signal, whether or not something else went green in between.
+export function priorRecoveries(key: string): string[] {
+  return backlog().recoveries?.[key]?.summaries ?? [];
 }
 
 export function backlogSummary() {
   const b = backlog();
   return {
+    contract: b.contract,
     // The fast tier carries its commands, not just its names: it is the one part
     // of the campaign definition every ticket runs, and an arm asked to correct a
     // baseline check that measures the environment has to be able to read what
@@ -82,6 +76,8 @@ export function backlogSummary() {
     fastChecks: b.fastChecks ?? [],
     gate: (b.gate ?? []).map(g => g.name),
     outOfScope: b.outOfScope,
+    recoveries: b.recoveries ?? {},
+    sweep: b.sweep,
     tickets: b.tickets.map(t => ({
       id: t.id, title: t.title, status: t.status,
       depends_on: t.depends_on, modules: t.modules, attempts: (t.attempts ?? []).length,
@@ -110,7 +106,7 @@ export async function recover(anomaly: Anomaly, target?: { ticketId?: string; su
     // the park reason rather than staying scattered down the journal.
     tui.log(`⏸ ${key}: ${prior.length} recoveries already resolved this — parking`);
     return park(
-      `recover has resolved ${key} ${prior.length}× and it came back — a recurring anomaly is a spine bug, not a fresh fault. Prior fixes: ${prior.map(e => e.body ?? '').join(' | ').slice(0, 1000)}`,
+      `recover has resolved ${key} ${prior.length}× and it came back — a recurring anomaly is a spine bug, not a fresh fault. Prior fixes: ${prior.join(' | ').slice(0, 1000)}`,
       target,
     );
   }
@@ -153,9 +149,8 @@ async function recoverHoldingMainline(anomaly: Anomaly, target?: { ticketId?: st
   // `key` on the data, not just the kind on the subject: the budget above counts
   // ticket-scoped kinds per ticket, and the subject is what the dashboard and
   // the post-mortem group by.
-  backlogWrite(['note', '--kind', 'recovered', '--subject', anomaly.kind,
-    '--body', `${res.evidence} — applied [${applied.join(', ') || '(env fix only)'}]`,
-    '--data', JSON.stringify({ key: recoverKey(anomaly) })]);
+  backlogWrite(['recover-resolution', '--key', recoverKey(anomaly), '--subject', anomaly.kind,
+    '--body', `${res.evidence} — applied [${applied.join(', ') || '(env fix only)'}]`]);
   tui.log(`✓ recovered ${anomaly.kind}: [${applied.join(', ') || 'env fix'}]`);
 }
 

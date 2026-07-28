@@ -3,10 +3,10 @@
 // measured. Every case below is a scratch backlog read through the real export.
 
 import { describe, expect, test } from 'bun:test';
-import { gateGreen } from './drive.ts';
+import { gateGreen } from './gate.ts';
 import type { GateState, Ticket } from './backlog.ts';
 import { buildTicket, withScratchCampaign } from './scratch-campaign.ts';
-import type { Check } from '../agent/schemas.ts';
+import type { Check } from './agents/schemas.ts';
 
 const GATE: Check[] = [{ name: 'e2e', cmd: 'bun test:e2e' }];
 
@@ -17,7 +17,7 @@ const onScratch = (gate: Check[] | undefined, tickets: Ticket[], gateState?: Gat
 };
 
 const ranGreen = (tickets: number, closed: number): GateState =>
-  ({ lastRun: { result: 'green', tickets, closed } });
+  ({ lastRun: { result: 'green', tickets, closed, evidence: 'gate green' } });
 
 // The shape a green gate was recorded against: three tickets, all closed.
 const DRAINED: Ticket[] = ['T001', 'T002', 'T003'].map(id => buildTicket({ id, status: 'closed' }));
@@ -28,7 +28,9 @@ describe('gateGreen', () => {
     expect(onScratch([], DRAINED)).toBe(true);
     // …and stays true even with a stale red run on the record — an unconfigured
     // gate has nothing to re-run.
-    expect(onScratch([], DRAINED, { lastRun: { result: 'red', tickets: 1, closed: 0 } })).toBe(true);
+    expect(onScratch([], DRAINED, {
+      lastRun: { result: 'red', tickets: 1, closed: 0, evidence: 'gate red' },
+    })).toBe(true);
   });
 
   test('a configured gate that has never run is not green', () => {
@@ -38,7 +40,9 @@ describe('gateGreen', () => {
   });
 
   test('a red run is not green, however current its counts', () => {
-    expect(onScratch(GATE, DRAINED, { lastRun: { result: 'red', tickets: 3, closed: 3 } })).toBe(false);
+    expect(onScratch(GATE, DRAINED, {
+      lastRun: { result: 'red', tickets: 3, closed: 3, evidence: 'gate red' },
+    })).toBe(false);
   });
 
   test('a green run against the current counts is green', () => {

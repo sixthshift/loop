@@ -3,16 +3,11 @@
 // measurement telemetry (verify timings) appends directly through
 // appendJournal below — a fact about a run, never backlog state.
 //
-// The log is record-only for backlog state: what happened, narrated for a
-// human, an agent's context window, and the post-mortem. No caller reconstructs
-// a ticket or gate fact by folding these entries — those live on backlog.json,
-// so a truncated, hand-edited, or seq-less journal can never change a verdict.
-// Three reads do still branch on the log, and all three are about the log
-// itself rather than about the work: the kickoff record that identifies a
-// resumable campaign, the sweep's "enough has happened since last time"
-// cadence, and recover's "how many times have I already resolved this one"
-// budget — a count of past events is exactly what a ledger of current state
-// cannot hold.
+// The log is audit-only: what happened, narrated for a human, reflective agents,
+// and the post-mortem. No caller reconstructs current ticket state, the locked
+// contract, recovery budgets, sweep cadence, or gate freshness by folding these
+// entries — those facts live on backlog.json. Audit consumers may lose context
+// if the log is damaged; the coordinator's next state transition does not.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,12 +23,24 @@ let journalCache: { key: string; entries: JournalEntry[] } = { key: '', entries:
 export function journalEntries(): JournalEntry[] {
   const file = path.join(RUN, 'journal.jsonl');
   if (!fs.existsSync(file)) return [];
-  const st = fs.statSync(file);
-  const key = `${st.size}:${st.mtimeMs}`;
-  if (journalCache.key !== key) {
-    journalCache = { key, entries: fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) };
+  try {
+    const st = fs.statSync(file);
+    const key = `${st.size}:${st.mtimeMs}`;
+    if (journalCache.key !== key) {
+      const entries: JournalEntry[] = [];
+      let damaged = 0;
+      for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
+        try { entries.push(JSON.parse(line)); }
+        catch { damaged++; }
+      }
+      if (damaged) console.error(`journal audit skipped ${damaged} malformed entr${damaged === 1 ? 'y' : 'ies'}`);
+      journalCache = { key, entries };
+    }
+    return journalCache.entries;
+  } catch (e: any) {
+    console.error(`journal audit unavailable: ${e.message}`);
+    return [];
   }
-  return journalCache.entries;
 }
 
 export function journalTail(n = 40): JournalEntry[] {
@@ -42,8 +49,20 @@ export function journalTail(n = 40): JournalEntry[] {
 
 // Append a measurement fact. Seq is the 1-based line count; the size+mtime
 // cache above invalidates itself on the next read, so no explicit bust.
-export function appendJournal(entry: Omit<JournalEntry, 'seq' | 'ts'>): void {
-  const file = path.join(RUN, 'journal.jsonl');
-  const seq = (fs.existsSync(file) ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0) + 1;
-  fs.appendFileSync(file, JSON.stringify({ seq, ts: new Date().toISOString(), ...entry }) + '\n');
+export function appendJournal(entry: Omit<JournalEntry, 'seq' | 'ts'>): boolean {
+  try {
+    const file = path.join(RUN, 'journal.jsonl');
+    const seq = (fs.existsSync(file)
+      ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length
+      : 0) + 1;
+    fs.appendFileSync(file, JSON.stringify({
+      seq,
+      ts: new Date().toISOString(),
+      ...entry,
+    }) + '\n');
+    return true;
+  } catch (e: any) {
+    console.error(`journal audit append failed: ${e.message}`);
+    return false;
+  }
 }

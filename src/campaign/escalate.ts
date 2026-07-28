@@ -11,8 +11,7 @@
 // internal crash) — continuing there risks an infinite loop or corrupt state,
 // so it throws and the process exits. It is the only remaining hard exit.
 
-import { backlog, backlogWrite, ticket } from './backlog.ts';
-import { campaignExists } from './index.ts';
+import { backlog, backlogWrite, campaignExists, ticket } from './backlog.ts';
 
 // The one non-ticket subject a park can name and have it stick: the campaign
 // gate keeps a latch on the backlog, so `park` routes it to `gate-park` rather
@@ -40,9 +39,8 @@ export function escalate(reason: string, detail?: unknown): never {
 
 // Park a decision for the human without stopping the campaign. Two subjects
 // carry a durable flag on the backlog — a ticket (its `parked` status) and the
-// campaign gate (its latch); everything else parks as a journal note alone,
-// surfaced in the drain report. Best-effort: the record is written first, so a
-// refused status write still leaves the reason on file.
+// campaign gate (its latch); everything else is audit context only. The durable
+// mutation lands before its audit mirror.
 export function park(reason: string, opts?: { ticketId?: string; subject?: string; detail?: unknown }): void {
   if (!campaignExists()) return;
   const subject = opts?.ticketId ?? opts?.subject ?? 'campaign';
@@ -51,16 +49,17 @@ export function park(reason: string, opts?: { ticketId?: string; subject?: strin
     return;
   }
   try {
-    backlogWrite(['note', '--kind', 'parked', '--subject', subject, '--body', reason]);
     if (opts?.ticketId) {
       const t = ticket(opts.ticketId);
       // Only park what's in play — an open or in-flight ticket.
       // (closed/decomposed/already-parked stay as they are.)
       if (t.status === 'in-flight' || t.status === 'open') {
-        backlogWrite(['set-status', opts.ticketId, 'parked', '--note', 'parked for human decision']);
+        backlogWrite(['set-status', opts.ticketId, 'parked', '--note', reason]);
       }
+    } else {
+      backlogWrite(['note', '--kind', 'parked', '--subject', subject, '--body', reason]);
     }
-  } catch { /* the parked note above is the record; a failed status write is not fatal */ }
+  } catch { /* a failed park is surfaced again by the unchanged frontier */ }
 }
 
 // What currently awaits the human: tickets held out of dispatch, plus the

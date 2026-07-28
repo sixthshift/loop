@@ -1,14 +1,15 @@
-// Bridge between the coordinator and its display. The files are the loop's
+// Runtime reporting shared by the coordinator and its display. The files are the loop's
 // memory, so the dashboard reads backlog.json and journal.jsonl itself; this
 // module holds only what files can't show — the live scripts (each with an
 // output ring), the status line, the campaign clock — and fans mutations out
 // to whichever display is attached. Live agents and their spend are the fleet's
 // (agent/fleet.ts); the dashboard reads that map directly.
 //
-// TTY → interactive Ink dashboard (dashboard.tsx) on the alternate screen.
-// Non-TTY (piped, CI, container logs) → plain timestamped lines.
+// TTY mounting belongs to tui/app.ts, the composition boundary that is allowed
+// to know about the campaign-aware dashboard. This module stays a leaf:
+// non-TTY output plus in-memory live facts and subscriptions.
 
-const tty = process.stdout.isTTY;
+export const interactive = Boolean(process.stdout.isTTY);
 
 // A script (verify, flake probe, campaign gate, fast check) run through shAsync
 // with a label. Same shape a reader wants as an agent — a live output tail and
@@ -34,10 +35,12 @@ export const store: {
   scripts: Map<string, ScriptView>;
   logs: { ts: number; line: string }[];
   startedAt: number | null;
+  requestedView: 'requirements' | null;
 } = {
   scripts: new Map(),
   logs: [],
   startedAt: null,
+  requestedView: null,
 };
 
 const listeners = new Set<() => void>();
@@ -47,40 +50,47 @@ export function subscribe(fn: () => void): () => void {
 }
 const emit = () => { for (const fn of listeners) fn(); };
 
-let app: { unmount(): void } | null = null;
-
-export function start(): void {
+export function beginReporting(): void {
   if (store.startedAt) return;
   store.startedAt = Date.now();
-  process.on('SIGTERM', () => { stop(); process.exit(130); });
-  if (!tty) return;
-  process.stdout.write('\x1b[?1049h'); // alt screen; ink manages the cursor
-  // Dynamic so the non-TTY path never loads ink at all. The stopped-already
-  // guard covers fast exits (usage errors, refused resume) that race the import.
-  import('./dashboard.tsx').then(m => { if (store.startedAt) app = m.mount(); }).catch(e => {
-    process.stdout.write('\x1b[?1049l');
-    console.error(`dashboard failed to mount, continuing headless: ${e.message}`);
-  });
 }
 
-export function stop(): void {
-  if (app) { app.unmount(); app = null; }
-  if (tty && store.startedAt) process.stdout.write('\x1b[?1049l\x1b[?25h');
+export function endReporting(): void {
   store.startedAt = null;
 }
 
 export function log(msg: string): void {
   store.logs.push({ ts: Date.now(), line: msg });
   if (store.logs.length > LOG_KEEP) store.logs.splice(0, store.logs.length - LOG_KEEP);
-  if (!tty) console.log(`${hhmm(Date.now())} ${msg}`);
+  if (!interactive) console.log(`${hhmm(Date.now())} ${msg}`);
   else emit();
+}
+
+// Kickoff's requirement enumeration is a load-bearing contract, not a journal
+// detail. TTY campaigns open its dedicated view; headless campaigns print the
+// same complete list into ordinary output.
+export function showRequirements(requirements: { id: string; clause: string }[]): void {
+  if (!interactive) {
+    console.log(`${hhmm(Date.now())} requirements (${requirements.length}):`);
+    for (const requirement of requirements)
+      console.log(`  ${requirement.id}: ${requirement.clause}`);
+    return;
+  }
+  store.requestedView = 'requirements';
+  emit();
+}
+
+export function takeRequestedView(): 'requirements' | null {
+  const requested = store.requestedView;
+  store.requestedView = null;
+  return requested;
 }
 
 // --- scripts: the same live-tail treatment for shAsync-run processes --------
 
 export function scriptStart(label: string, cmd: string, ticketId?: string): void {
   store.scripts.set(label, { cmd, startedAt: Date.now(), output: [], partial: '', ticketId });
-  if (!tty) console.log(`${hhmm(Date.now())} $ ${label} started: ${cmd.slice(0, 100)}`);
+  if (!interactive) console.log(`${hhmm(Date.now())} $ ${label} started: ${cmd.slice(0, 100)}`);
   else emit();
 }
 
@@ -103,12 +113,12 @@ export function scriptData(label: string, chunk: string): void {
   s.partial = lines.pop() ?? '';
   for (const l of lines) if (l.length) s.output.push({ ts: Date.now(), line: l });
   if (s.output.length > 500) s.output.splice(0, s.output.length - 500);
-  if (tty && !scriptTimer) scriptTimer = setTimeout(() => { scriptTimer = null; emit(); }, 150);
+  if (interactive && !scriptTimer) scriptTimer = setTimeout(() => { scriptTimer = null; emit(); }, 150);
 }
 
 export function scriptEnd(label: string, status: number | null): void {
   store.scripts.delete(label);
-  if (!tty) console.log(`${hhmm(Date.now())} $ ${label} exit ${status}`);
+  if (!interactive) console.log(`${hhmm(Date.now())} $ ${label} exit ${status}`);
   else emit();
 }
 

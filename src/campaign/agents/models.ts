@@ -1,4 +1,4 @@
-// Which model each agent role prefers. Each list is a preference chain: agent()
+// Which campaign role prefers each model. Each list is a preference chain: agent()
 // skips engines that aren't installed and falls back on transient failure, so
 // ordering is "try this, then that". Names are engine-prefixed —
 // `codex-gpt-5.6-sol`, `claude-opus`; a bare name means claude.

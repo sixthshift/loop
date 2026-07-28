@@ -1,14 +1,14 @@
-// backlog.json access — the campaign's ticket ledger. Reads are direct; every
-// mutation goes through backlog-write.mjs (the sole writer, which journals as it
-// writes), so this module reads the file and shells the writer but never edits
-// backlog.json in place.
+// backlog.json access — the campaign's authoritative persistent snapshot.
+// Reads are direct; every mutation goes through the sole writer below, which
+// validates the transition, atomically replaces the snapshot, then mirrors the
+// event into the audit journal.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { RUN } from './state.ts';
 import { appendJournal } from './journal.ts';
 import { moduleErrors } from './footprint.ts';
-import type { Check, Requirement, TicketDraft } from '../agent/schemas.ts';
+import type { Check, Requirement, TicketDraft } from './agents/schemas.ts';
 
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
@@ -32,6 +32,9 @@ export type Ticket = TicketDraft & {
   // session died; it survives the in-flight → open → in-flight round trip a
   // check amendment makes, and the next dispatch overwrites it.
   baseSha?: string;
+  // A parked ticket is a durable handoff to the human. Its reason belongs with
+  // that state; the journal mirrors it for audit but is not needed to resume.
+  parkReason?: string;
 };
 
 // The campaign gate's live state — what its last run decided, and whether it is
@@ -42,7 +45,7 @@ export type GateState = {
   // the gate never saw. Both are monotone — every `add` raises `tickets`, every
   // `close` raises `closed`, and closed is terminal — so equality is proof
   // nothing landed, not just proof of a coincidence.
-  lastRun?: { result: 'green' | 'red'; tickets: number; closed: number };
+  lastRun?: { result: 'green' | 'red'; tickets: number; closed: number; evidence: string };
   // Set when recover gave up on a red gate inside its jurisdiction; cleared by
   // a gate amendment, i.e. the human edited the gate and resumed.
   parked?: { reason: string };
@@ -50,6 +53,9 @@ export type GateState = {
 
 export type Backlog = {
   project: string;
+  // The locked contract a resume must continue. The journal records kickoff
+  // for the audit trail, but resume never needs to replay that record.
+  contract?: { specPath: string; sha256: string };
   tickets: Ticket[];
   fastChecks?: Check[];
   // The campaign's slow suite (e2e, anything needing a live server): run once,
@@ -63,6 +69,12 @@ export type Backlog = {
   // that isn't here.
   requirements?: Requirement[];
   caps?: { maxAttempts: number; thrash: number; infraCap?: number };
+  // Recovery budgets affect whether the next anomaly is retried or parked, so
+  // they are durable state rather than a count reconstructed from audit events.
+  recoveries?: Record<string, { count: number; summaries: string[] }>;
+  // Closed-ticket count at the last sweep. Cadence survives resume without
+  // asking the journal to reconstruct scheduler state.
+  sweep?: { closed: number };
 };
 
 export const requirementIds = (b: Backlog): Set<string> =>
@@ -72,6 +84,13 @@ export function backlog(): Backlog {
   return JSON.parse(fs.readFileSync(path.join(RUN, 'backlog.json'), 'utf8'));
 }
 
+// A campaign exists once its authoritative snapshot is on disk. Kept beside
+// the snapshot rather than in the top-level coordinator so low-level state and
+// display code never depend back on the application entry point.
+export function campaignExists(): boolean {
+  return fs.existsSync(path.join(RUN, 'backlog.json'));
+}
+
 export function ticket(id: string): Ticket {
   const t = backlog().tickets.find(x => x.id === id);
   if (!t) throw new Error(`no ticket ${id}`);
@@ -79,11 +98,10 @@ export function ticket(id: string): Ticket {
 }
 
 // --- the sole writer -------------------------------------------------------
-// Every mutation of backlog.json is a command; each success journals a stamped
-// entry, and nothing else writes the file. Native twin of the ailoop skill's
-// backlog-write.mjs — same validation, same transition table, same journal
-// shape. It runs in-process now, so a refusal throws (callers decide bug vs
-// recover) where the script would have exited non-zero.
+// Every mutation of backlog.json is a command; each success mirrors a stamped
+// audit entry, and nothing else writes the snapshot. It runs in-process, so a
+// refusal throws and the caller decides whether that is a bug or a recoverable
+// anomaly.
 //
 // Load-bearing: this is synchronous end to end, and must stay that way. The
 // drive settles several tickets concurrently, and it is only the absence of an
@@ -147,9 +165,25 @@ export function backlogWrite(args: string[], input?: unknown): string {
     if (!fs.existsSync(BACKLOG)) refuse(`${BACKLOG} not found — run init first`);
     return JSON.parse(fs.readFileSync(BACKLOG, 'utf8'));
   };
-  const save = (b: Backlog) => fs.writeFileSync(BACKLOG, JSON.stringify(b, null, 2) + '\n');
-  const journal = (kind: string, subject: string, body: string, data?: unknown) =>
-    appendJournal({ kind, subject, body, ...(data ? { data } : {}) });
+  const save = (b: Backlog) => {
+    const tmp = `${BACKLOG}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(b, null, 2) + '\n', { flag: 'wx' });
+      fs.renameSync(tmp, BACKLOG);
+    } finally {
+      try { fs.unlinkSync(tmp); } catch { /* renamed or never created */ }
+    }
+  };
+  // Audit failure must not roll back or misreport a durable state transition.
+  // The snapshot is saved first in every mutating command; journal append is
+  // best-effort and visibly disclosed if the audit sink is unavailable.
+  const journal = (kind: string, subject: string, body: string, data?: unknown) => {
+    try {
+      appendJournal({ kind, subject, body, ...(data ? { data } : {}) });
+    } catch (e: any) {
+      console.error(`journal append failed after ${kind} state persisted: ${e.message}`);
+    }
+  };
   const parseData = (): unknown => {
     if (opts.data === undefined) return undefined;
     try { return JSON.parse(opts.data as string); } catch { return refuse('--data must be valid JSON'); }
@@ -176,8 +210,22 @@ export function backlogWrite(args: string[], input?: unknown): string {
   switch (cmd) {
     case 'init': {
       if (fs.existsSync(BACKLOG)) refuse(`${BACKLOG} already exists — a campaign is in flight`);
+      if ((opts['spec-path'] === undefined) !== (opts['spec-sha'] === undefined))
+        refuse('init takes --spec-path and --spec-sha together');
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
-      save({ project: (opts.project as string) || 'unnamed', caps: { maxAttempts: 3, thrash: 2 }, fastChecks: [], gate: [], outOfScope: [], tickets: [] });
+      save({
+        project: (opts.project as string) || 'unnamed',
+        ...(opts['spec-path'] && opts['spec-sha']
+          ? { contract: { specPath: opts['spec-path'] as string, sha256: opts['spec-sha'] as string } }
+          : {}),
+        caps: { maxAttempts: 3, thrash: 2 },
+        fastChecks: [],
+        gate: [],
+        outOfScope: [],
+        recoveries: {},
+        sweep: { closed: 0 },
+        tickets: [],
+      });
       journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'}`);
       return `initialized ${BACKLOG}`;
     }
@@ -204,9 +252,9 @@ export function backlogWrite(args: string[], input?: unknown): string {
       });
       if (errs.length) refuse(errs.join('\n'));
       for (const k of KEYS) if (c0[k] !== undefined) (b as any)[k] = c0[k];
+      save(b);
       journal(opts.amend ? 'amend-config' : 'seed', 'campaign',
         `${opts.amend ? 'amended' : 'seeded'} ${Object.keys(c0).join(', ')}${opts.note ? ` — ${opts.note}` : ''}`);
-      save(b);
       return `${opts.amend ? 'amended' : 'seeded'} ${Object.keys(c0).join(', ')}`;
     }
     case 'update': {
@@ -228,8 +276,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       // gamed-sharpen path keeps a serial gamer's attempts on the record.
       const reset = opts['reset-attempts'] === true;
       if (reset) t.attempts = [];
-      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
       save(b);
+      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
       return `${t.id} updated`;
     }
     case 'add': {
@@ -241,9 +289,9 @@ export function backlogWrite(args: string[], input?: unknown): string {
       for (const t of incoming) {
         b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...t, status: 'open' });
         ids.add(t.id);
-        journal('add', t.id, `${t.title} (origin: ${t.origin})`);
       }
       save(b);
+      for (const t of incoming) journal('add', t.id, `${t.title} (origin: ${t.origin})`);
       return `added ${incoming.length} open ticket(s)`;
     }
     case 'gate': {
@@ -271,8 +319,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       // (the red gate's own recovery, or the human) passes the flag.
       const unparked = opts['release-latch'] === true && b.gateState?.parked !== undefined;
       if (unparked) delete b.gateState!.parked;
-      journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]${unparked ? '; park latch released' : ''}`);
       save(b);
+      journal('gate-amendment', 'campaign-gate', `${opts.note} — gate [${touched.join(', ')}]${unparked ? '; park latch released' : ''}`);
       return `campaign gate amended [${touched.join(', ')}]`;
     }
     case 'fast-checks': {
@@ -297,8 +345,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
         if (existing) { existing.cmd = c.cmd; touched.push(`~${c.name}`); }
         else { b.fastChecks.push({ name: c.name, cmd: c.cmd }); touched.push(`+${c.name}`); }
       }
-      journal('fast-check-amendment', 'campaign-fast-checks', `${opts.note} — fast tier [${touched.join(', ')}]`);
       save(b);
+      journal('fast-check-amendment', 'campaign-fast-checks', `${opts.note} — fast tier [${touched.join(', ')}]`);
       return `fast tier amended [${touched.join(', ')}]`;
     }
     case 'gate-run': {
@@ -313,9 +361,10 @@ export function backlogWrite(args: string[], input?: unknown): string {
         result,
         tickets: b.tickets.length,
         closed: b.tickets.filter(t => t.status === 'closed').length,
+        evidence: opts.note as string,
       };
-      journal(result === 'green' ? 'campaign-gate-close' : 'gate-red', 'campaign-gate', opts.note as string, parseData());
       save(b);
+      journal(result === 'green' ? 'campaign-gate-close' : 'gate-red', 'campaign-gate', opts.note as string, parseData());
       return `campaign gate ${result}`;
     }
     case 'gate-park': {
@@ -324,8 +373,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const b = load();
       if (!opts.reason) refuse('gate-park requires --reason');
       (b.gateState ??= {}).parked = { reason: opts.reason as string };
-      journal('parked', 'campaign-gate', opts.reason as string);
       save(b);
+      journal('parked', 'campaign-gate', opts.reason as string);
       return 'campaign gate parked';
     }
     case 'set-status': {
@@ -336,12 +385,19 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (to === 'decomposed') refuse('use the decompose command (children are mandatory)');
       if (opts['base-sha'] !== undefined && to !== 'in-flight') refuse('--base-sha records a dispatch — only legal on → in-flight');
       transition(t, to!);
+      if (to === 'parked') t.parkReason = (opts.note as string) || 'parked for human decision';
+      else if (to === 'open') delete t.parkReason;
       // Only a dispatch carries a base — the re-stamps that put a ticket back
       // in-flight mid-review (typo amendment, closing) leave the original in
       // place, since the worktree they refer to was never re-cut.
       if (opts['base-sha'] !== undefined) t.baseSha = opts['base-sha'] as string;
-      journal('status', t.id, `→ ${to}${opts.note ? ` — ${opts.note}` : ''}`, parseData());
       save(b);
+      journal(
+        to === 'parked' ? 'parked' : 'status',
+        t.id,
+        to === 'parked' ? t.parkReason! : `→ ${to}${opts.note ? ` — ${opts.note}` : ''}`,
+        parseData(),
+      );
       return `${t.id} → ${to}`;
     }
     case 'attempt': {
@@ -359,8 +415,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       };
       (t.attempts ??= []).push(entry as any);
       if (t.status === 'in-flight') transition(t, 'open'); // back in the queue for re-dispatch
-      journal('attempt', t.id, `attempt ${entry.n} failed [${entry.failed.join(', ')}]: ${entry.hypothesis}`, parseData());
       save(b);
+      journal('attempt', t.id, `attempt ${entry.n} failed [${entry.failed.join(', ')}]: ${entry.hypothesis}`, parseData());
       return `${t.id} attempt ${entry.n} logged`;
     }
     case 'close': {
@@ -370,8 +426,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (!fs.existsSync(opts.evidence as string)) refuse(`evidence file not found: ${opts.evidence}`);
       transition(t, 'closed');
       t.evidence = opts.evidence as string;
-      journal('close', t.id, (opts.note as string) || `closed with evidence ${opts.evidence}`, parseData());
       save(b);
+      journal('close', t.id, (opts.note as string) || `closed with evidence ${opts.evidence}`, parseData());
       return `${t.id} closed`;
     }
     case 'decompose': {
@@ -397,9 +453,38 @@ export function backlogWrite(args: string[], input?: unknown): string {
           rewired++;
         }
       }
-      journal('decompose', t.id, `→ [${childIds.join(', ')}]; ${rewired} dependent(s) rewired onto children (narrow the edges if too broad)`);
       save(b);
+      journal('decompose', t.id, `→ [${childIds.join(', ')}]; ${rewired} dependent(s) rewired onto children (narrow the edges if too broad)`);
       return `${t.id} decomposed into ${childIds.join(', ')}; ${rewired} dependents rewired`;
+    }
+    case 'recover-resolution': {
+      const b = load();
+      if (!opts.key || !opts.subject || !opts.body)
+        refuse('recover-resolution requires --key --subject --body');
+      const recoveries = (b.recoveries ??= {});
+      const prior = recoveries[opts.key as string] ?? { count: 0, summaries: [] };
+      recoveries[opts.key as string] = {
+        count: prior.count + 1,
+        summaries: [...prior.summaries, opts.body as string],
+      };
+      save(b);
+      journal('recovered', opts.subject as string, opts.body as string,
+        { key: opts.key, count: prior.count + 1 });
+      return `recovery ${opts.key} → ${prior.count + 1}`;
+    }
+    case 'sweep-run': {
+      const b = load();
+      if (!opts.body || opts.closed === undefined) refuse('sweep-run requires --closed --body');
+      const closed = Number(opts.closed);
+      const current = b.tickets.filter(t => t.status === 'closed').length;
+      if (!Number.isInteger(closed) || closed < 0 || closed > current)
+        refuse(`--closed must be an integer between 0 and the current closed count (${current})`);
+      if (closed < (b.sweep?.closed ?? 0))
+        refuse(`--closed cannot move the sweep baseline backwards from ${b.sweep?.closed}`);
+      b.sweep = { closed };
+      save(b);
+      journal('sweep', 'campaign', opts.body as string, { closed });
+      return `sweep recorded at ${closed} closed`;
     }
     case 'note': {
       if (!fs.existsSync(JOURNAL) && !fs.existsSync(BACKLOG)) refuse('no campaign here');
@@ -408,7 +493,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status attempt close decompose note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status attempt close decompose recover-resolution sweep-run note`);
   }
 }
 

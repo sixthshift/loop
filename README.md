@@ -10,7 +10,7 @@ The coordinator seat — the control flow — is deterministic TypeScript. Every
 recover, coverage, harvest. The coordinator never grades work it dispatched.
 
 > **Status: pre-first-campaign.** The mechanical spine and the agent layer are
-> unit- and smoke-tested (152 tests); a full spec-to-green run has not happened
+> unit- and smoke-tested; a full spec-to-green run has not happened
 > yet. Workers run with permissions bypassed — see [Known limits](#known-limits).
 
 ## Requirements
@@ -112,8 +112,9 @@ out-of-scope boundaries, and an enumeration of the spec's normative clauses as
 `requirements` — `R1`, `R2`, … Then decompose turns the spec into open tickets —
 each with declared `modules`, `depends_on`, `resources`, prose context,
 acceptance, its own `acceptanceChecks`, and the requirement ids it `satisfies`.
-The spec's sha256 is journaled: a resume against an edited spec refuses rather
-than drive an old contract to green.
+The spec path and sha256 are persistent backlog state and mirrored into the
+audit journal: a resume against an edited spec refuses rather than drive an old
+contract to green.
 
 The enumeration is what makes spec coverage *arithmetic* rather than a verdict
 delivered at the end. The frontier joins tickets to requirement ids on every
@@ -127,9 +128,10 @@ nothing can be joined to is worse than no claim, because it reads as coverage.
 
 The list is made once, by one agent, before any code exists — so it is
 load-bearing, and a clause missed there is invisible to every count downstream.
-Two things hedge that: kickoff prints and journals the enumeration at the one
-moment a human is present, and the terminal coverage pass still re-reads the
-spec against the list and reports clauses missing from it as enumeration gaps.
+Two things hedge that: kickoff opens the complete enumeration in the dashboard
+(`R` returns to it later; non-TTY runs print the same list) and mirrors it into
+the audit journal, and the terminal coverage pass still re-reads the spec
+against the list and reports clauses missing from it as enumeration gaps.
 
 **2 · Drive.** One event loop. Each pass reads the frontier — a pure function
 over `backlog.json` — and walks a priority ladder: structural problems, merit
@@ -225,9 +227,10 @@ written next to the spec, branches are reaped, and campaign state is deleted.
   coordinator counts recover's *resolutions* per anomaly — per ticket for
   ticket-scoped kinds, per campaign for the rest — and past two it parks with
   the prior fixes attached instead of calling a fresh agent that will write a
-  third confident success note. The count comes off the journal, so it survives a
-  resume; that is also what bounds the gate-red → repair → gate-red loop, since
-  every round of it resolves.
+  third confident success note. The count and prior summaries live in
+  `backlog.json`, so they survive a resume without replaying audit events; that
+  is also what bounds the gate-red → repair → gate-red loop, since every round
+  of it resolves.
 - **Opportunistic noticing → the sweep**, above. A scheduled substitute for
   ambient attention.
 
@@ -253,11 +256,11 @@ output silence is a false hang signal — a long e2e run is silent by design).
 Below the process rows sits the coordinator's running commentary — the last 200
 messages, wrapped, newest at the bottom.
 
-Reading is free-roam: `tab` to the filterable journal, `t` for tickets, `g` for
-the dependency DAG as a rail graph, `enter` on any process to tail its live
-output — an agent's transcript with its raw token stream, or a script's
-stdout/stderr as it runs. Per-process rings are windows; the journal is the
-record.
+Reading is free-roam: `tab` to the filterable journal, `R` for the locked
+requirement enumeration and its claiming tickets, `t` for tickets, `g` for the
+dependency DAG as a rail graph, `enter` on any process to tail its live output —
+an agent's transcript with its raw token stream, or a script's stdout/stderr as
+it runs. Per-process rings are windows; the journal is the audit record.
 
 Prose **wraps rather than truncating**, everywhere it is the thing you came to
 read: log lines, journal bodies (a park reason is a paragraph), ticket titles and
@@ -274,8 +277,9 @@ Acting is deliberately narrow — `p` pause dispatch, `+`/`-` worker cap, `r` qu
 a sweep, `x` kill a worker, `q` quit with state intact, `?` keys. Every mutation
 is a flag the drive loop honors at its next decision point, or a process kill
 that settles through the ordinary failed-attempt path. **The dashboard never
-writes campaign state**: kill it, `loop resume`, and the picture rebuilds from
-the journal.
+writes campaign state**: kill it, `loop resume`, and the current picture
+rebuilds from `backlog.json` plus Git's surviving branches/worktrees; the
+journal returns as its separate audit view.
 
 Off a TTY (piped, CI, container logs) the same events fall back to plain
 timestamped lines and Ink is never loaded.
@@ -284,7 +288,7 @@ timestamped lines and Ink is never loaded.
 
 A model name carries its engine as a prefix — `claude-opus`,
 `codex-gpt-5.6-terra`; a bare name means claude. Each role in
-[`src/campaign/models.ts`](src/campaign/models.ts) has a preference chain: unavailable
+[`src/campaign/agents/models.ts`](src/campaign/agents/models.ts) has a preference chain: unavailable
 engines are skipped, transient failures fall through to the next candidate, and
 every chain carries the other family as a fallback so a provider outage degrades
 instead of stalling.
@@ -309,12 +313,15 @@ In the target repo, gitignored automatically at kickoff:
 
 ```
 .ailoop/campaign/          deleted on successful completion
-  backlog.json             the ticket ledger — one writer, validated transitions
-  journal.jsonl            append-only record; every resume rebuilds from it
+  backlog.json             AUTHORITATIVE snapshot — contract, tickets, gates,
+                           recovery budgets, sweep cadence; validated transitions
+  journal.jsonl            append-only audit record; never replayed into state
   evidence/                per-ticket check logs and diff patches
-  coordinator.pid          single-coordinator lock
 .ailoop/learnings/         SURVIVES the campaign — priors for the next one
 <spec>.postmortem.html     self-contained archive of the journal
+
+<git-common-dir>/ailoop/
+  coordinator.pid          repository lock, acquired before kickoff or resume
 ```
 
 Worker worktrees live **outside** the repository — `../.loop-worktrees/<repo>/<ticket>`,
@@ -329,32 +336,38 @@ byte copy, whichever the filesystem allows. Nothing is installed: no network, no
 build hooks. On a filesystem without clone or hardlink support that is real disk
 per in-flight ticket, and the dispatch note records which rung ran.
 
-Every `backlog.json` mutation goes through one writer that validates status
-transitions and journals as it writes — so the journal explains every state
-change, and resume never guesses.
+Every `backlog.json` mutation goes through one synchronous writer that validates
+the transition and atomically replaces the snapshot before appending its audit
+event. The lock is acquired by exclusive creation before the command reads or
+creates campaign state. Resume reads the backlog directly and reconciles its
+in-flight tickets against Git; it never reconstructs current state from prose.
 
 ## Development
 
 ```sh
-bun test src        # 152 tests
+bun test src
 bun run typecheck   # tsc --noEmit, strict
 ```
 
 | Path | |
 |---|---|
 | `src/index.ts` | CLI shell — verb wiring only |
-| `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `jurisdiction` (recover's enforced boundary), `gate` + `fastcheck` (check-amendment authority), `kickoff`, `retrospective`, `worktree` + `provision`, `journal`, `models` |
-| `src/agent/` | spawning agents: `agent` (spawn, timeout, fallback, consensus), `engine` + `engines/`, `schemas`, `fleet` |
-| `src/agent/prompts/` | one markdown prompt per role — the judgment layer, editable without touching control flow |
-| `src/tui/` | dashboard (Ink), rail graph, `layout` (wrapping + row budgets), control flags, liveness |
+| `src/campaign/drive.ts` | the priority ladder and worker/settlement event channels — scheduling only |
+| `src/campaign/ticket-execution.ts` | one ticket's dispatch → verify → review → mainline landing lifecycle |
+| `src/campaign/gate-run.ts`, `sweep.ts`, `resume.ts` | terminal gate execution, durable sweep cadence, stale-worker reconciliation |
+| `src/campaign/backlog.ts`, `frontier.ts`, `journal.ts` | authoritative snapshot writer, pure derived scheduler facts, audit record |
+| `src/campaign/recover.ts`, `jurisdiction.ts`, `gate.ts`, `fastcheck.ts` | anomaly recovery and the enforced authority boundaries around its mutations |
+| `src/campaign/agents/` | campaign roles: prompts, schemas, model policy, and audit/reporting integration |
+| `src/agent/` | campaign-independent process runtime: spawn, timeout, fallback, consensus, engines, live fleet |
+| `src/runtime/reporting.ts`, `src/tui/` | leaf live-reporting store; display composition, Ink dashboard, rail graph, controls, liveness |
 | `src/update.ts` | `loop update` — verified self-replacement |
 | `build.ts` | the release build: four cross-compiled binaries + `sha256sums.txt` |
 | `next-version.ts` | the version a push earns, read off its commits |
 
 Prompts are embedded as text imports rather than read at runtime, because a
-compiled binary has no `src/agent/prompts/` to read from. Adding a prompt is
-therefore a new import line in `agent.ts`, not just a file dropped in the
-directory.
+compiled binary has no `src/campaign/agents/prompts/` to read from. Adding a
+campaign role therefore adds an explicit entry in `campaign/agents/run.ts`;
+the generic agent runtime never imports campaign state, prompts, or UI code.
 
 ### Releasing
 

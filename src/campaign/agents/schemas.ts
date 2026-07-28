@@ -1,4 +1,4 @@
-// JSON Schemas for every agent verdict. Passed to `claude -p --json-schema`,
+// JSON Schemas for every campaign-agent verdict. Passed to `claude -p --json-schema`,
 // so the CLI validates before the coordinator ever sees the reply — the
 // boundary to a model's output is defended here, once. Each schema's TS type
 // lives beside it in this file: the schema is the runtime guard, the type is
@@ -153,7 +153,7 @@ export const TICKET = {
 };
 
 // Contract fields a recover/sweep patch may touch — mirrors
-// backlog-write.mjs's MUTABLE list.
+// backlog.ts's sole-writer MUTABLE list.
 const TICKET_PATCH = {
   type: 'object',
   properties: {
