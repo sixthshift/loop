@@ -176,6 +176,16 @@ and every other recover never saw the gate, so for them a reused name is
 refused. Either way it is journaled under its own kind, with the command it
 displaced.
 
+The **fast tier** is amendable too (`fastcheck.ts`), and on a different rule: not
+authority-by-anomaly but measurement. A fastCheck must be green on the mainline as
+it stands — kickoff refuses to start over a red baseline — so the coordinator runs
+each proposed command at the repo root and admits only what exits 0, whichever
+anomaly proposed it. That exists because a campaign-wide check which measures the
+environment rather than the product reds *every* ticket identically, and without
+this actuator no arm could reach it: the loop's only move was to page a human, per
+ticket, forever. There is no removal — dropping baseline coverage is a human's
+decision.
+
 **4 · Retrospective.** A coverage agent grades the requirement-to-proof matrix —
 the coordinator already counted which clauses are claimed and closed, so the
 pass spends its read on whether each check observed the boundary its requirement
@@ -317,7 +327,7 @@ bun run typecheck   # tsc --noEmit, strict
 | Path | |
 |---|---|
 | `src/index.ts` | CLI shell — verb wiring only |
-| `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `jurisdiction` (recover's enforced boundary), `gate` (amendment authority), `kickoff`, `retrospective`, `worktree`, `journal`, `models` |
+| `src/campaign/` | the deterministic seat: `drive`, `frontier`, `backlog`, `verify`, `recover`, `jurisdiction` (recover's enforced boundary), `gate` + `fastcheck` (check-amendment authority), `kickoff`, `retrospective`, `worktree` + `provision`, `journal`, `models` |
 | `src/agent/` | spawning agents: `agent` (spawn, timeout, fallback, consensus), `engine` + `engines/`, `schemas`, `fleet` |
 | `src/agent/prompts/` | one markdown prompt per role — the judgment layer, editable without touching control flow |
 | `src/tui/` | dashboard (Ink), rail graph, control flags, liveness |

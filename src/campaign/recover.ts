@@ -6,8 +6,8 @@
 // Merged from what were three agents — triage (read-only router), resolver
 // (verified campaign-definition fixes), repair (environment fixes) — into a
 // single seat with full tools and ONE hard boundary: it fixes the campaign's
-// DEFINITION (gates, scope, tickets, deps) and the ENVIRONMENT (installs, stale
-// ports, wedged git) — never the product code. A product defect becomes a
+// DEFINITION (the fast tier, gates, scope, tickets, deps) and the ENVIRONMENT
+// (installs, stale ports, wedged git) — never the product code. A product defect becomes a
 // repair TICKET that goes through worker → verify → review, so every change to
 // the work stays verified and reviewed; a coordinator-seat agent silently
 // editing source would bypass the whole gate. It runs the check to prove its
@@ -26,6 +26,7 @@
 import { backlog, backlogWrite, nextTicketIds } from './backlog.ts';
 import { amendGate, GATE_RED } from './gate.ts';
 import type { GateAuthority } from './gate.ts';
+import { amendFastChecks } from './fastcheck.ts';
 import { breachedModules, revertOutOfBounds, snapshotTree } from './jurisdiction.ts';
 import type { Breach } from './jurisdiction.ts';
 import { journalEntries, journalTail } from './journal.ts';
@@ -73,6 +74,12 @@ export function priorRecoveries(key: string): JournalEntry[] {
 export function backlogSummary() {
   const b = backlog();
   return {
+    // The fast tier carries its commands, not just its names: it is the one part
+    // of the campaign definition every ticket runs, and an arm asked to correct a
+    // baseline check that measures the environment has to be able to read what
+    // that check currently runs. The gate stays name-only — nothing here may
+    // rewrite a gate command without having held its own red run.
+    fastChecks: b.fastChecks ?? [],
     gate: (b.gate ?? []).map(g => g.name),
     outOfScope: b.outOfScope,
     tickets: b.tickets.map(t => ({
@@ -230,6 +237,15 @@ export async function execAction(a: RecoverAction, anomaly: Anomaly): Promise<st
     case 'note':
       backlogWrite(['note', '--kind', a.kind ?? 'recover-note', '--subject', a.subject ?? 'campaign', '--body', a.body ?? '']);
       return 'note';
+    case 'fast-checks': {
+      if (!a.fastChecks?.length) throw new Error('fast-checks requires a non-empty fastChecks array');
+      // No authority argument to pass: fastcheck.ts admits a command by running
+      // it at the repo root, so which anomaly reached here is not the question.
+      return amendFastChecks(a.fastChecks, {
+        by: `recover(${anomaly.kind})`,
+        note: a.note || `recover(${anomaly.kind})`,
+      });
+    }
     case 'gate': {
       if (!a.gates?.length) throw new Error('gate requires a non-empty gates array');
       return amendGate(a.gates, {

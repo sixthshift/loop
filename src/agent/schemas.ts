@@ -65,12 +65,15 @@ export type ReviewVerdict = {
 };
 
 export type RecoverAction = {
-  command: 'update' | 'set-status' | 'add' | 'note' | 'gate';
+  command: 'update' | 'set-status' | 'add' | 'note' | 'gate' | 'fast-checks';
   ticketId?: string;
   patch?: TicketPatch;
   to?: string;
   tickets?: TicketDraft[];
   gates?: Check[];
+  // Fast-tier amendment. Unlike `gates`, admission is decided by running each
+  // command at the repo root, not by which anomaly is being recovered.
+  fastChecks?: Check[];
   kind?: string;
   subject?: string;
   body?: string;
@@ -228,12 +231,13 @@ export const REVIEW = {
 const ACTION = {
   type: 'object',
   properties: {
-    command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'gate'] },
+    command: { type: 'string', enum: ['update', 'set-status', 'add', 'note', 'gate', 'fast-checks'] },
     ticketId: { type: 'string' },
     patch: TICKET_PATCH,
     to: { type: 'string' },
     tickets: { type: 'array', items: TICKET },
     gates: { type: 'array', items: CHECK },
+    fastChecks: { type: 'array', items: CHECK },
     kind: { type: 'string' },
     subject: { type: 'string' },
     body: { type: 'string' },

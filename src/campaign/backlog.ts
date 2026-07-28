@@ -275,6 +275,32 @@ export function backlogWrite(args: string[], input?: unknown): string {
       save(b);
       return `campaign gate amended [${touched.join(', ')}]`;
     }
+    case 'fast-checks': {
+      // Amend the fast tier — the per-ticket baseline every worker is handed and
+      // every verify runs. Seeded at kickoff and, until now, unamendable for the
+      // campaign's life: a fast check that turns out to measure the environment
+      // rather than the product then reds every ticket identically, and no arm
+      // could reach it. Upsert by name, like the gate.
+      //
+      // There is no removal: dropping a baseline check REDUCES what the campaign
+      // proves, and that is a human's call. An amendment can only correct a
+      // command in place.
+      const b = load();
+      if (!opts.note) refuse('fast-checks requires --note (the rationale is the record)');
+      const checks = readInput(pos[0]);
+      const errs = checks.flatMap((c: any) => (!c.name || !c.cmd) ? [`fastCheck entry missing name or cmd: ${JSON.stringify(c)}`] : []);
+      if (errs.length) refuse(errs.join('\n'));
+      b.fastChecks ??= [];
+      const touched: string[] = [];
+      for (const c of checks) {
+        const existing = b.fastChecks.find(x => x.name === c.name);
+        if (existing) { existing.cmd = c.cmd; touched.push(`~${c.name}`); }
+        else { b.fastChecks.push({ name: c.name, cmd: c.cmd }); touched.push(`+${c.name}`); }
+      }
+      journal('fast-check-amendment', 'campaign-fast-checks', `${opts.note} — fast tier [${touched.join(', ')}]`);
+      save(b);
+      return `fast tier amended [${touched.join(', ')}]`;
+    }
     case 'gate-run': {
       // The gate's verdict, stamped against the backlog it measured. Journals
       // under the same kinds the log always carried, so the post-mortem and the
@@ -382,7 +408,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update gate gate-run gate-park set-status attempt close decompose note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status attempt close decompose note`);
   }
 }
 

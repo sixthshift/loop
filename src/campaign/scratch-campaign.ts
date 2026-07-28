@@ -38,10 +38,31 @@ export function buildEntry(over: Partial<JournalEntry>): JournalEntry {
 // filter(Boolean) drops them) to force the size, and the key, to differ.
 let journalPad = 0;
 
-export function withScratchCampaign(
-  seed: { backlog?: Partial<Backlog>; journal?: JournalEntry[] },
-  body: () => void,
-): void {
+type Seed = { backlog?: Partial<Backlog>; journal?: JournalEntry[] };
+
+export function withScratchCampaign(seed: Seed, body: () => void): void {
+  const entered = enter(seed);
+  try {
+    body();
+  } finally {
+    leave(entered);
+  }
+}
+
+// The same fixture for a body that awaits. Separate rather than one function
+// taking either kind: a sync try/finally around an async body tears the fixture
+// down while the body is still running in it. Tests within a file run one at a
+// time, so the shared cwd this moves is not contended.
+export async function withScratchCampaignAsync(seed: Seed, body: () => Promise<void>): Promise<void> {
+  const entered = enter(seed);
+  try {
+    await body();
+  } finally {
+    leave(entered);
+  }
+}
+
+function enter(seed: Seed): { dir: string; cwd: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-campaign-'));
   const run = path.join(dir, '.ailoop', 'campaign');
   fs.mkdirSync(run, { recursive: true });
@@ -57,10 +78,10 @@ export function withScratchCampaign(
 
   const cwd = process.cwd();
   process.chdir(dir);
-  try {
-    body();
-  } finally {
-    process.chdir(cwd);
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+  return { dir, cwd };
+}
+
+function leave({ dir, cwd }: { dir: string; cwd: string }): void {
+  process.chdir(cwd);
+  fs.rmSync(dir, { recursive: true, force: true });
 }
