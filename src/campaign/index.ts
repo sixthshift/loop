@@ -103,7 +103,18 @@ async function establishCampaign(spec: string | null): Promise<CampaignContext> 
   // Resume path: never re-run kickoff; never drive an old spec to green. The
   // contract is persistent backlog state; the kickoff journal entry only
   // explains how it was established.
-  const contract = backlog().contract;
+  const state = backlog();
+  // The other seat's campaign is not ours to continue. The ailoop skill drives
+  // the same mechanics through `loop <verb>` but holds no coordinator lock, so
+  // taking over here would mean two coordinators on one backlog with nothing
+  // between them — and the skill's live worktrees answer to a session we cannot
+  // see. The stamp is written once, at init.
+  if (state.coordinator === 'skill') {
+    display.stop();
+    console.error('this campaign is driven by the ailoop skill (coordinator: skill) — resume it from that session, or close it out before starting a CLI campaign here.');
+    process.exit(2);
+  }
+  const contract = state.contract;
   if (!contract) {
     display.stop();
     console.error('campaign backlog has no locked contract — refusing to infer behavioral state from the audit journal.');

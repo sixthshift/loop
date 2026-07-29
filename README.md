@@ -74,11 +74,36 @@ Run from the root of the project being built:
 loop campaign <spec.md>   # start a campaign (or resume one, spec unchanged)
 loop resume               # resume without re-supplying the spec path
 loop status               # print the backlog tree and exit
-loop update               # replace this binary with the latest release
+loop skills install       # install the aispec / ailoop skills (see The skills)
+loop update               # replace this binary with the latest release, skills included
 ```
 
 `loop` is the family name — the loop-engineering toolkit; `campaign` is its first
 verb, so future artifacts of the discipline get verbs rather than naming debates.
+
+Beneath those sits the **mechanics surface** — every measurement and bookkeeping
+step of a campaign, as a verb, for the other coordinator seat (see [The other
+seat](#the-other-seat)). Each prints JSON on stdout and narrates on stderr:
+
+```sh
+loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
+loop frontier             # derived scheduler facts: ready, dispatchable, walls, coverage
+loop verify --ticket … --dir … --base …    # the measurement; --cmd … for a flake probe
+loop worktree add|attach|remove|merge|delete-branch <id>
+loop jurisdiction snapshot|revert         # recover's enforced product-code boundary
+loop prompt <role> [--vars -]             # the role prompt this program would use
+loop schema <role> [--engine codex]       # that role's output contract
+loop models [<role>]      # the model chain, resolved to engine + CLI model + availability
+loop postmortem --out …   # render the journal as a self-contained archive
+loop learn --campaign …   # merge a harvest into .ailoop/learnings/
+```
+
+These never take the coordinator lock, because the seat they serve is a
+conversation rather than a process. What keeps the two seats off one campaign is
+`backlog.coordinator`, stamped once at `init`: a mechanics verb refuses a
+`cli` campaign, and `loop campaign`/`resume` refuse a `skill` one. Read-only
+verbs (`frontier`, `postmortem`, `status`) answer to either, since comparing two
+finished campaigns is the point.
 
 **Environment:** `AILOOP_WORKERS` sets the initial parallel-worker cap (default
 3; adjustable live from the dashboard).
@@ -102,6 +127,46 @@ campaign flips it to `status: done`.
 
 Specs are meant to be authored with the `aispec` skill, which drives a spec to a
 locked state; `loop` drives a locked spec to green.
+
+## The skills
+
+Two Claude Code skills ship in this repository, under [`skills/`](skills):
+
+| | |
+|---|---|
+| **`aispec`** | interrogates a human into a locked spec — the front of the pipeline |
+| **`ailoop`** | the model-driven coordinator seat (see [The other seat](#the-other-seat)) |
+
+```sh
+loop skills install     # → ~/.claude/skills, and ~/.agents/skills for aispec
+loop skills uninstall   # removes only what loop installed
+```
+
+They live here rather than in a dotfiles tree because they are **clients of this
+program's contract**, not personal preferences. `ailoop` drives a campaign
+entirely through the mechanics verbs; `aispec` writes specs against kickoff's
+refuse-to-start gate. Rename a verb or tighten a gate rule and both go stale — so
+they version and release with the thing that broke them, and `loop update`
+refreshes them in the same step. CLI/prose skew used to be silent; now it can't
+happen.
+
+Two delivery modes, and the difference is load-bearing. From a **binary** there is
+no `skills/` directory to point at, so the files are embedded as text imports (the
+same mechanism and the same reason as the role prompts) and written out, stamped
+with a `.loop-skill-version` marker. From a **source checkout** they are symlinked
+instead — editing prose has to stay a file edit that is live in the next session,
+because a skill needing a rebuild is no longer the cheap-to-iterate half of this
+project, which is most of why the model-driven seat exists.
+
+Installing writes into `$HOME`, so every ambiguous case refuses rather than
+surprises: a `~/.claude/skills` that is itself a symlink is refused outright (that
+is the dotfiles layout — writing through it would commit files into that
+repository), and a skill directory loop didn't install needs `--force`. If your
+skills directory is a single symlink today, link its entries individually so the
+directory itself is real, then install.
+
+`ailoop` is Claude-only: every judgment role is a spawned subagent, which Codex
+has no equivalent for. `aispec` goes to both.
 
 ## How a campaign runs
 
@@ -360,6 +425,8 @@ bun run typecheck   # tsc --noEmit, strict
 | `src/campaign/agents/` | campaign roles: prompts, schemas, model policy, and audit/reporting integration |
 | `src/agent/` | campaign-independent process runtime: spawn, timeout, fallback, consensus, engines, live fleet |
 | `src/runtime/reporting.ts`, `src/tui/` | leaf live-reporting store; display composition, Ink dashboard, rail graph, controls, liveness |
+| `src/mechanics.ts` | the mechanics verbs — the same steps, for the other coordinator seat |
+| `skills/`, `src/skills.ts` | the `aispec`/`ailoop` skills and `loop skills install` |
 | `src/update.ts` | `loop update` — verified self-replacement |
 | `build.ts` | the release build: four cross-compiled binaries + `sha256sums.txt` |
 | `next-version.ts` | the version a push earns, read off its commits |
@@ -405,22 +472,40 @@ flow is code, every judgment is a fresh context. What that buys: no compaction
 risk, no idle coordinator tokens while workers run, deterministic resume, and
 campaigns that outlive a session.
 
-The skill remains the better vehicle while the process itself is still being
-redesigned — editing prose is cheaper than editing code.
+That is an argument, not a finding. Whether a spec is better driven by code in
+the seat or by a model in it is still open — so both exist, and the mechanics
+surface is what makes the question answerable.
 
-### Deliberate divergence from the skill
+### The other seat
 
-This coordinator has no *phase* concept. Dependencies sequence the backlog, and
-the slow suite is one campaign-level gate that runs once on the merged tree when
-every ticket has drained; the skill keeps per-phase gating. The `backlog.json`
-shapes have diverged, so **a campaign in flight belongs to the coordinator that
-started it** — the two cannot resume each other. `.ailoop/learnings/` is still
-shared verbatim: schema-free prose and keyed facets cross freely, so a campaign
-feeds its priors to whichever coordinator runs next.
+[`ailoop`](skills/ailoop), the Claude Code skill this began as, is now the same
+architecture with a model in the coordinator's chair: it reads the frontier,
+dispatches, judges the review's verdict, and drives to the same campaign gate. It
+does none of that with
+its own machinery. The backlog writer, the frontier arithmetic, verification and
+its scope check, worktree provisioning, recover's jurisdiction boundary, the role
+prompts, their output schemas and the model chains are all **this program's**,
+reached through the mechanics verbs.
 
-The pre-dispatch ticket check and the separate gaming pre-screen were both
-removed. Open tickets dispatch straight to a worker, and the post-build review
-carries the whole adversarial load.
+That sharing is the experiment's whole validity. A skill carrying its own copies
+would differ from this coordinator in dozens of mechanical ways — a file list
+where we declare `modules`, an unprovisioned worktree where we copy the
+dependency trees in — and each of those moves the false-red rate, which moves
+attempt counts, cost and wall-clock. The delta would read as a fact about
+judgment while being a fact about plumbing. With one set of mechanics, the seat
+is the only thing left to differ.
+
+What genuinely differs, then: **who decides, and what that costs.** Code in the
+seat gives deterministic resume, no compaction risk, no idle coordinator tokens,
+and campaigns that outlive a session. A model in the seat can notice things no
+ladder enumerates — the sweep's job, but continuous — and is far cheaper to
+redesign, since editing prose beats editing code.
+
+A campaign in flight still belongs to whoever opened it (`backlog.coordinator`,
+above): the skill's seat can't hold a pidfile across invocations, and its live
+worktrees answer to a session this program can't see. `.ailoop/learnings/` is
+shared without reservation — a campaign feeds its priors to whichever seat runs
+next, which is also how the two accumulate comparable history.
 
 ## Known limits
 

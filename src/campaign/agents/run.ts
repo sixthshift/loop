@@ -28,11 +28,20 @@ export async function agent<T = string>(opts: AgentOptions): Promise<AgentResult
   return runAgent<T>({ ...opts, report: reportCampaignAgent });
 }
 
+// The template as authored, placeholders intact. The other coordinator seat
+// reads these through `loop prompt <role>` (mechanics.ts): the prompts ARE the
+// judgment layer, so sharing them is what keeps a seat comparison about the seat
+// rather than about who wrote a better rubric.
+export function rawPrompt(name: string): string {
+  const raw = PROMPTS[name];
+  if (raw === undefined) throw new Error(`unknown campaign prompt: ${name} — roles: ${Object.keys(PROMPTS).sort().join(', ')}`);
+  return raw;
+}
+
 // {{key}} substitution; objects render as pretty JSON. A missing key is a
 // programming error, not a prompt silently shipped with a hole in it.
 export function renderPrompt(name: string, vars: Record<string, unknown> = {}): string {
-  const raw = PROMPTS[name];
-  if (raw === undefined) throw new Error(`unknown campaign prompt: ${name}`);
+  const raw = rawPrompt(name);
   return raw.replace(/\{\{(\w+)\}\}/g, (_, key) => {
     if (!(key in vars)) throw new Error(`prompt ${name}: missing var ${key}`);
     const value = vars[key];

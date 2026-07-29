@@ -4,15 +4,18 @@
 // This file is only the CLI shell — verb wiring and arg parsing; the
 // coordinator itself lives in campaign/.
 //
-// Shares the .ailoop/campaign/ state layout with the ailoop skill, but every
-// mechanical step is native TS now (src/campaign/), not the copied-in scripts.
-// The loop no longer provisions those scripts into the campaign dir, so a
-// campaign this coordinator starts is not one the skill can resume, and vice
-// versa — each coordinator drives its own campaigns end to end.
+// Two coordinators drive this architecture: the drive loop below, and the
+// `ailoop` skill's model in the same seat. They share the .ailoop/campaign/
+// layout AND the mechanics — the skill reaches every measurement and bookkeeping
+// step through the verbs in mechanics.ts, so the seat is the only difference
+// between the two. A campaign in flight still belongs to whoever opened it
+// (backlog.coordinator), because neither seat can hold the other's lock.
 
 import { program } from 'commander';
 import { runCampaign } from './campaign/index.ts';
 import { renderProgress } from './campaign/progress.ts';
+import { registerMechanics } from './mechanics.ts';
+import { installSkills, uninstallSkills } from './skills.ts';
 import { runUpdate } from './update.ts';
 // package.json is the one place the version lives — the release tag and
 // `loop --version` both read it, so they can't drift. The import is bundled
@@ -22,7 +25,10 @@ import { version } from '../package.json' with { type: 'json' };
 program
   .name('loop')
   .version(version)
-  .description('the loop-engineering toolkit — drive a locked build spec to green');
+  .description('the loop-engineering toolkit — drive a locked build spec to green')
+  // The mechanics verbs pass their own flags straight through to the campaign
+  // modules, which needs commander to stop claiming options after a verb name.
+  .enablePositionalOptions();
 
 program
   .command('campaign')
@@ -40,9 +46,33 @@ program
   .description('render the backlog tree')
   .action(() => { console.log(renderProgress()); });
 
+const skills = program
+  .command('skills')
+  .description('install the ailoop / aispec skills where the agent CLIs look for them');
+
+skills
+  .command('install')
+  .description('write (binary) or symlink (source checkout) the skills into ~/.claude/skills and ~/.agents/skills')
+  .option('--force', 'replace a skill directory loop did not install')
+  .action((opts: { force?: boolean }) => installSkills({ force: opts.force === true }));
+
+skills
+  .command('uninstall')
+  .description('remove only the skills loop installed')
+  .action(() => uninstallSkills());
+
 program
   .command('update')
-  .description('replace this binary with the latest release')
-  .action(() => runUpdate());
+  .description('replace this binary with the latest release, and refresh the skills it owns')
+  .action(async () => {
+    await runUpdate();
+    // The reason the skills live here: prose and CLI move in one step. A binary
+    // that upgraded its verbs while leaving stale instructions behind is the exact
+    // skew this arrangement exists to make impossible.
+    installSkills({ force: false });
+  });
+
+// The same mechanics this program drives with, as verbs for the other seat.
+registerMechanics(program);
 
 await program.parseAsync();

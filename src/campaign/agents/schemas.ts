@@ -337,3 +337,13 @@ export const HARVEST = {
   required: ['checks', 'flakes', 'sizingMd', 'gamingMd', 'landminesMd', 'report'],
   additionalProperties: false,
 };
+
+// The output contract per role, keyed exactly as the prompt registry in run.ts:
+// a role is its prompt plus its schema, and the two halves belong together. The
+// other coordinator seat reads both (`loop prompt`, `loop schema`), so its agents
+// answer in the same shape ours do — otherwise a seat comparison quietly becomes
+// a comparison of how loosely each side parses a verdict.
+export const SCHEMAS: Record<string, object> = {
+  kickoff: KICKOFF, decompose: DECOMPOSE, worker: WORKER, review: REVIEW,
+  recover: RECOVER, sweep: SWEEP, coverage: COVERAGE, harvest: HARVEST,
+};

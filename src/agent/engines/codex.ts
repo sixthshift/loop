@@ -27,7 +27,10 @@ let schemaSeq = 0;
 // all keys required, no extras — and re-expresses each originally-optional key
 // as nullable, preserving "may be absent" as "may be null" (the interior reads
 // these through `?.`/`??`, so null and absent are equivalent to it).
-function strictify(node: any): any {
+// Exported for `loop schema --engine codex` (mechanics.ts): the other coordinator
+// seat drives this same CLI, so it needs the same adaptation — and re-deriving it
+// from prose is how a seat ends up shipping a schema codex 400s on.
+export function strictify(node: any): any {
   if (Array.isArray(node)) return node.map(strictify);
   if (!node || typeof node !== 'object') return node;
   const out: any = { ...node };

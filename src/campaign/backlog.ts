@@ -51,8 +51,18 @@ export type GateState = {
   parked?: { reason: string };
 };
 
+// Which coordinator seat started this campaign — this program's drive loop, or
+// the ailoop skill's model driving the same mechanics through `loop mechanics`
+// verbs. The two share the state layout and the writer but not the seat, and a
+// campaign in flight belongs to whoever opened it: the skill holds no
+// coordinator lock (a conversation cannot hold a pidfile across invocations), so
+// this stamp is the only thing standing between two seats and one backlog.
+// Absent means `cli` — this program was the sole writer before the stamp existed.
+export type Seat = 'cli' | 'skill';
+
 export type Backlog = {
   project: string;
+  coordinator?: Seat;
   // The locked contract a resume must continue. The journal records kickoff
   // for the audit trail, but resume never needs to replay that record.
   contract?: { specPath: string; sha256: string };
@@ -160,7 +170,10 @@ export function backlogWrite(args: string[], input?: unknown): string {
 
   const BACKLOG = path.join(RUN, 'backlog.json');
   const JOURNAL = path.join(RUN, 'journal.jsonl');
-  const refuse = (msg: string): never => { throw new Error(`backlog-write ${cmd} REFUSED: ${msg}`); };
+  // Annotated rather than inferred so the compiler treats a refusal as
+  // terminating control flow, and a guard above a narrowed assignment reads as
+  // one.
+  const refuse: (msg: string) => never = msg => { throw new Error(`backlog-write ${cmd} REFUSED: ${msg}`); };
   const load = (): Backlog => {
     if (!fs.existsSync(BACKLOG)) refuse(`${BACKLOG} not found — run init first`);
     return JSON.parse(fs.readFileSync(BACKLOG, 'utf8'));
@@ -212,9 +225,12 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (fs.existsSync(BACKLOG)) refuse(`${BACKLOG} already exists — a campaign is in flight`);
       if ((opts['spec-path'] === undefined) !== (opts['spec-sha'] === undefined))
         refuse('init takes --spec-path and --spec-sha together');
+      const seat = (opts.coordinator as string | undefined) ?? 'cli';
+      if (seat !== 'cli' && seat !== 'skill') refuse(`--coordinator must be cli or skill, got ${JSON.stringify(seat)}`);
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
       save({
         project: (opts.project as string) || 'unnamed',
+        coordinator: seat,
         ...(opts['spec-path'] && opts['spec-sha']
           ? { contract: { specPath: opts['spec-path'] as string, sha256: opts['spec-sha'] as string } }
           : {}),
@@ -226,7 +242,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
         sweep: { closed: 0 },
         tickets: [],
       });
-      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'}`);
+      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (coordinator: ${seat})`);
       return `initialized ${BACKLOG}`;
     }
     case 'seed': {

@@ -78,6 +78,27 @@
 // IS the artifact and the campaign has a later coverage backstop — decompose,
 // coverage, harvest, sweep. NEVER worker: its product is a diff in a worktree,
 // unmergeable from JSON, and it runs per-ticket so the N+1× cost bites hardest.
+import { engineFor, available } from '../../agent/engine.ts';
+
+// A chain with every rung resolved: which CLI runs it, the model name that CLI
+// wants (engine prefix stripped), and whether that binary is on the box. The
+// other coordinator seat reads this through `loop models` — prefix parsing and
+// the availability probe are mechanics, and a seat re-deriving them by hand would
+// pick a different rung than this program does on the same chain.
+export function resolvedChain(role: string): unknown[] {
+  const chain = (MODELS as Record<string, (string | string[])[]>)[role];
+  if (!chain) throw new Error(`unknown role: ${role} — roles: ${Object.keys(MODELS).sort().join(', ')}`);
+  const resolve = (model: string) => {
+    const { name, cliModel } = engineFor(model);
+    return { model, engine: name, cliModel, available: available(model) };
+  };
+  // A nested rung is a consensus group: its members draft in parallel and one
+  // reconciles. Preserved as a group so a reader can't mistake it for a fallback.
+  return chain.map(rung => Array.isArray(rung)
+    ? { consensusGroup: rung.map(resolve) }
+    : resolve(rung));
+}
+
 export const MODELS = {
   worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
   kickoff: ['codex-gpt-5.6-sol', 'claude-opus'],

@@ -43,6 +43,14 @@ export const store: {
   requestedView: null,
 };
 
+// Where non-interactive narration lands. A campaign run's narration IS that
+// run's output, so stdout is right for it. A mechanics verb's stdout is a result
+// payload the calling coordinator parses (see mechanics.ts), and narration
+// interleaved into it would corrupt the parse — so that path moves commentary to
+// stderr. Not a verbosity knob: the two callers have different stdout contracts.
+let narrate: (line: string) => void = console.log;
+export function narrateToStderr(): void { narrate = console.error; }
+
 const listeners = new Set<() => void>();
 export function subscribe(fn: () => void): () => void {
   listeners.add(fn);
@@ -62,7 +70,7 @@ export function endReporting(): void {
 export function log(msg: string): void {
   store.logs.push({ ts: Date.now(), line: msg });
   if (store.logs.length > LOG_KEEP) store.logs.splice(0, store.logs.length - LOG_KEEP);
-  if (!interactive) console.log(`${hhmm(Date.now())} ${msg}`);
+  if (!interactive) narrate(`${hhmm(Date.now())} ${msg}`);
   else emit();
 }
 
@@ -71,9 +79,9 @@ export function log(msg: string): void {
 // same complete list into ordinary output.
 export function showRequirements(requirements: { id: string; clause: string }[]): void {
   if (!interactive) {
-    console.log(`${hhmm(Date.now())} requirements (${requirements.length}):`);
+    narrate(`${hhmm(Date.now())} requirements (${requirements.length}):`);
     for (const requirement of requirements)
-      console.log(`  ${requirement.id}: ${requirement.clause}`);
+      narrate(`  ${requirement.id}: ${requirement.clause}`);
     return;
   }
   store.requestedView = 'requirements';
@@ -90,7 +98,7 @@ export function takeRequestedView(): 'requirements' | null {
 
 export function scriptStart(label: string, cmd: string, ticketId?: string): void {
   store.scripts.set(label, { cmd, startedAt: Date.now(), output: [], partial: '', ticketId });
-  if (!interactive) console.log(`${hhmm(Date.now())} $ ${label} started: ${cmd.slice(0, 100)}`);
+  if (!interactive) narrate(`${hhmm(Date.now())} $ ${label} started: ${cmd.slice(0, 100)}`);
   else emit();
 }
 
@@ -118,7 +126,7 @@ export function scriptData(label: string, chunk: string): void {
 
 export function scriptEnd(label: string, status: number | null): void {
   store.scripts.delete(label);
-  if (!interactive) console.log(`${hhmm(Date.now())} $ ${label} exit ${status}`);
+  if (!interactive) narrate(`${hhmm(Date.now())} $ ${label} exit ${status}`);
   else emit();
 }
 
