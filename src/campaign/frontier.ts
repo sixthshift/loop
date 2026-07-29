@@ -9,10 +9,9 @@
 // enumerated, which is the only way the loop can notice work nobody wrote a
 // ticket for while there is still time to write one.
 //
-// The ailoop skill ships its own terminal-runnable copy (frontier.mjs) for its
-// agent-driven path. The two are independent by design and no longer mirror
-// each other: this TS loop drives a single campaign-level gate (no phases),
-// while the skill retains per-phase gating. Deliberate divergence, not drift.
+// The ailoop skill's model-driven seat reads exactly this, through
+// `loop frontier` (mechanics.ts) — one arithmetic, so a seat comparison never
+// turns into a comparison of two schedulers.
 
 import { backlog } from './backlog.ts';
 import type { Backlog, Ticket } from './backlog.ts';

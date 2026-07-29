@@ -5,8 +5,9 @@
 // embedded in the page (<script id="journal">), so the HTML is also the
 // campaign's durable event archive — deleting campaign/ loses nothing.
 //
-// Run at retrospective, BEFORE .ailoop/campaign/ is deleted. Native twin of the
-// ailoop skill's postmortem.mjs; identical output.
+// Run at retrospective, BEFORE .ailoop/campaign/ is deleted. Reachable as
+// `loop postmortem` (mechanics.ts) and open to either coordinator seat, since
+// two campaigns are compared through the archives they leave behind.
 //
 // Worker cost is an ESTIMATE: the coordinator journals the tokens the Agent
 // tool reported at close; those are priced at the model's output rate.

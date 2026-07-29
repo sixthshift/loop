@@ -45,10 +45,11 @@ export function sh(cmd: string, cwd = '.'): ShResult {
 
 // For measurements that run minutes (verify, gates): keeps the event loop —
 // and therefore the live display — breathing while a test suite grinds.
-// The hour cap is a hang backstop, not a budget — verify.mjs already caps
-// each check at 30m. The child is a process group and the kill targets the
-// whole group: a leaked grandchild (a test suite's dev server) holding the
-// stdio pipes would otherwise keep `close` from ever firing.
+// The hour cap is a hang backstop, not a budget, and it is the ONLY bound on a
+// check — nothing above it caps an individual command, so a suite that wedges
+// burns an hour before the group is killed. The child is a process group and the
+// kill targets the whole group: a leaked grandchild (a test suite's dev server)
+// holding the stdio pipes would otherwise keep `close` from ever firing.
 // `label` opts a run into the live display: its output streams to the TUI as a
 // script the operator can inspect in real time (same seam agent.ts uses for
 // agents). Unlabeled runs stay silent — internal git/probe calls don't belong

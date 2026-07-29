@@ -7,9 +7,9 @@
 // timing, returns a verdict. Flake mode: run one command N times and classify
 // real-red vs flaky.
 //
-// Native twin of the ailoop skill's verify.mjs — same rules, no shared code.
-// Checks run through shAsync so the live display keeps breathing while a suite
-// grinds, and each streams to the dashboard under its own label.
+// The only measurement either coordinator seat has: the skill reaches it through
+// `loop verify` (mechanics.ts). Checks run through shAsync so the live display
+// keeps breathing while a suite grinds, each streaming under its own label.
 
 import fs from 'node:fs';
 import path from 'node:path';
