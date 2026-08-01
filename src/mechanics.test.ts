@@ -1,11 +1,12 @@
-// The producer stamp is the whole separation between the two coordinator seats.
-// Neither can hold the other's lock — the skill's seat is a conversation, not a
-// process — so if this guard is wrong, two coordinators drive one backlog with
-// nothing between them and the diverged tickets corrupt each other silently.
+// The producer stamp, which now guards one direction rather than two. It used to
+// separate two live coordinator seats; the `cli` seat — this program's own drive
+// loop — is gone, so what the stamp protects is a campaign that seat left in
+// flight on someone's disk. Its worktrees answered to a process that no longer
+// exists and its tickets were measured against arms these verbs don't have, so
+// the verbs refuse it and say why instead of half-adopting it.
 //
 // Exercised through the real CLI in a child process, because the guard lives at
-// the argv boundary: the same modules called in-process are loop's own drive and
-// must stay unguarded.
+// the argv boundary.
 
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
@@ -19,10 +20,29 @@ const loop = (dir: string, ...args: string[]) =>
   spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 describe('the coordinator seat stamp', () => {
-  test('a mechanics verb refuses a campaign the CLI seat started', () => {
+  test('the seat a new campaign gets is the only one that still exists', () => {
     withRepository(dir => {
       expect(loop(dir, 'backlog', 'init', '--project', 'p').status).toBe(0);
-      expect(seatOf(dir)).toBe('cli'); // the default: this program is the writer
+      expect(seatOf(dir)).toBe('skill');
+    });
+  });
+
+  // The campaign clock is stamped here rather than started by whatever renders it:
+  // a skill-driven campaign spans many verb invocations and any number of
+  // sessions, so a clock owned by the dashboard would measure the dashboard.
+  test('init stamps the campaign clock into the snapshot', () => {
+    withRepository(dir => {
+      loop(dir, 'backlog', 'init', '--project', 'p');
+      const startedAt = backlogOf(dir).startedAt;
+      expect(startedAt).toBeString();
+      expect(Date.parse(startedAt)).toBeGreaterThan(Date.now() - 60_000);
+    });
+  });
+
+  test('a mechanics verb refuses a campaign the removed CLI seat left behind', () => {
+    withRepository(dir => {
+      expect(loop(dir, 'backlog', 'init', '--project', 'p', '--coordinator', 'cli').status).toBe(0);
+      expect(seatOf(dir)).toBe('cli');
 
       const refused = loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b');
       expect(refused.status).toBe(1);
@@ -34,20 +54,9 @@ describe('the coordinator seat stamp', () => {
     });
   });
 
-  test('the CLI seat refuses to resume a campaign the skill started', () => {
+  test('a skill campaign accepts the mechanics verbs, and a read keeps stdout clean', () => {
     withRepository(dir => {
-      expect(loop(dir, 'backlog', 'init', '--project', 'p', '--coordinator', 'skill').status).toBe(0);
-      expect(seatOf(dir)).toBe('skill');
-
-      const refused = loop(dir, 'resume');
-      expect(refused.status).toBe(2); // paused, state intact — never a crash
-      expect(refused.stderr).toContain('coordinator: skill');
-    });
-  });
-
-  test('a skill campaign accepts the mechanics verbs, and reads stay open to both seats', () => {
-    withRepository(dir => {
-      loop(dir, 'backlog', 'init', '--project', 'p', '--coordinator', 'skill');
+      loop(dir, 'backlog', 'init', '--project', 'p');
       expect(loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b').status).toBe(0);
 
       // stdout is a result payload: a caller parses it, so narration must not
@@ -67,8 +76,10 @@ describe('the coordinator seat stamp', () => {
   });
 });
 
-const seatOf = (dir: string): string =>
-  JSON.parse(fs.readFileSync(path.join(dir, '.ailoop/campaign/backlog.json'), 'utf8')).coordinator;
+const backlogOf = (dir: string): any =>
+  JSON.parse(fs.readFileSync(path.join(dir, '.ailoop/campaign/backlog.json'), 'utf8'));
+
+const seatOf = (dir: string): string => backlogOf(dir).coordinator;
 
 function withRepository(body: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-seat-'));

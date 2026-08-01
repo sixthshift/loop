@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { sh } from './state.ts';
-import * as tui from '../runtime/reporting.ts';
+import { narrate } from '../runtime/narrate.ts';
 
 export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
 
@@ -55,7 +55,7 @@ export function worktreesRoot(): string {
   // failing later underneath a half-created worktree.
   const root = (sibling && mkdir(sibling)) || mkdir(stateRoot(repo), { required: true })!;
   resolved = { repo, root };
-  tui.log(`worktrees: ${root}`);
+  narrate(`worktrees: ${root}`);
   return root;
 }
 

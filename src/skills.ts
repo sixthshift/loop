@@ -14,7 +14,7 @@
 //
 //   • From a compiled binary there is no `skills/` directory to point at, so the
 //     files are embedded as text imports (the same reason and the same mechanism
-//     as the role prompts in campaign/agents/run.ts) and written out.
+//     as the role prompts in campaign/agents/prompt.ts) and written out.
 //   • From a source checkout they are symlinked instead. Editing prose has to stay
 //     a file edit that is live in the next session — a skill whose text needs a
 //     rebuild is no longer the cheap-to-iterate half of this project, which is

@@ -6,13 +6,22 @@
 // campaign's durable event archive — deleting campaign/ loses nothing.
 //
 // Run at retrospective, BEFORE .ailoop/campaign/ is deleted. Reachable as
-// `loop postmortem` (mechanics.ts) and open to either coordinator seat, since
-// two campaigns are compared through the archives they leave behind.
+// `loop postmortem` (mechanics.ts); campaigns are compared through the archives
+// they leave behind.
 //
-// Worker cost is an ESTIMATE: the coordinator journals the tokens the Agent
-// tool reported at close; those are priced at the model's output rate.
-// Coordinator-session overhead is not visible from inside the run and is
-// excluded — the page says so.
+// KNOWN LIMIT, and it grew when the coordinator became a model in a conversation:
+// worker cost is only as complete as what a `close` was handed. This program used
+// to run the agents itself and read each stream's token count directly, so every
+// closed ticket had one. Now the coordinator spawns its own subagents and passes
+// along whatever its harness told it — which may be nothing.
+//
+// So the page distinguishes three states rather than two, because "no cost bar"
+// and "a cost bar covering half the tickets" are very different claims and only
+// one of them is safe to read as a total: every ticket priced, some priced (the
+// total is labelled partial and says how many), none priced (the section says the
+// coordinator reported no telemetry, instead of rendering empty bars that look
+// like free work). Coordinator-session overhead is invisible from inside the run
+// and excluded in all three.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -100,7 +109,15 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   };
 
   const totalCost = data.tickets.reduce((s, t) => s + (t.cost || 0), 0);
-  const anyCost = data.tickets.some(t => t.cost != null);
+  // Priced against CLOSED tickets, not all of them: an open or parked ticket was
+  // never expected to report telemetry, and counting it as missing would label
+  // every mid-campaign archive partial.
+  const closedTickets = data.tickets.filter(t => t.closedAt);
+  const pricedCount = closedTickets.filter(t => t.cost != null).length;
+  const costCoverage = pricedCount === 0 ? 'none'
+    : pricedCount === closedTickets.length ? 'full'
+    : 'partial';
+  const unpriced = closedTickets.length - pricedCount;
 
   const html = `<title>ailoop post-mortem — ${data.project}</title>
 <style>
@@ -183,11 +200,23 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     </div>
     <div class="gantt-scroll"><div id="gantt"></div></div>
   </div>
-  <div class="card">
+  ${costCoverage === 'none' ? `<div class="card">
+    <h2>Cost per ticket</h2>
+    <p class="desc">Not available for this campaign. Worker cost is priced from token
+    counts the coordinator passes to <code>backlog close</code>, and none were
+    recorded — the coordinator spawns its workers through its own harness, which
+    does not always report their usage back. Ticket durations are on the timeline
+    above; they are wall time, not spend.</p>
+  </div>` : `<div class="card">
     <h2>Cost per ticket (worker spend, estimated)</h2>
-    <p class="desc">From journaled worker tokens priced at the model's output rate. Tickets without journaled tokens show duration only.</p>
+    <p class="desc">From journaled worker tokens priced at the model's output rate.${
+      costCoverage === 'partial'
+        ? ` <strong>Partial:</strong> ${pricedCount} of ${closedTickets.length} closed tickets reported tokens, so the
+            total below covers those ${pricedCount} only and the other ${unpriced} are absent
+            rather than free.`
+        : ''} Tickets without journaled tokens show duration only.</p>
     <div class="bars" id="costbars"></div>
-  </div>
+  </div>`}
   <div class="card">
     <details>
       <summary>Table view — every ticket with timings, attempts, tokens, and cost</summary>
@@ -206,11 +235,18 @@ const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(
 
 const closed = D.tickets.filter(t => t.closedAt).length;
 const attempts = D.tickets.reduce((s, t) => s + t.attempts, 0);
-const totalCost = ${JSON.stringify(anyCost ? totalCost : null)};
+const totalCost = ${JSON.stringify(costCoverage === 'none' ? null : totalCost)};
+const costNote = ${JSON.stringify(
+  costCoverage === 'full'
+    ? 'excludes coordinator overhead'
+    : `${pricedCount} of ${closedTickets.length} closed tickets · excludes coordinator overhead`,
+)};
 const tiles = [
   ['Wall time', Math.round(D.wallMinutes) + ' min', fmtT(D.span.first) + ' → ' + fmtT(D.span.last)],
   ['Tickets closed', closed + ' / ' + D.tickets.length, attempts + ' failed attempt' + (attempts === 1 ? '' : 's')],
-  totalCost != null ? ['Worker cost (est.)', money(totalCost), 'excludes coordinator overhead'] : null,
+  // A partial total is labelled where it is shown, not only in the section below:
+  // a stat tile is the thing people screenshot.
+  totalCost != null ? ['Worker cost (est.)' + ${JSON.stringify(costCoverage === 'partial' ? ', partial' : '')}, money(totalCost), costNote] : null,
   ['Verify runs', D.tickets.reduce((s, t) => s + t.verifies.length, 0), mins(D.tickets.reduce((s, t) => s + t.verifies.reduce((a, v) => a + v.durationMs, 0), 0)) + ' scripted, zero model cost'],
 ].filter(Boolean);
 document.getElementById('tiles').innerHTML = tiles.map(([l, v, n]) =>
@@ -314,13 +350,19 @@ const spanTotal = t => t.spans.reduce((s, sp) => s + (new Date(sp.end) - new Dat
 const metric = t => t.cost ?? spanTotal(t) / 60000 / 1000; // cost, else minutes shrunk to sort after any cost
 const sorted = D.tickets.slice().sort((a, b) => metric(b) - metric(a));
 const maxM = Math.max(...sorted.map(metric), 1e-9);
-document.getElementById('costbars').innerHTML = sorted.map(t =>
+// The cost section is omitted entirely when nothing was priced, so this block is
+// conditional too — an unguarded getElementById on a missing node throws and takes
+// the rest of the page's script (table, tooltips) down with it.
+const costbars = document.getElementById('costbars');
+if (costbars) {
+costbars.innerHTML = sorted.map(t =>
   '<div class="row"><div class="id">' + t.id + '</div>' +
   '<div class="track"><div class="fill hov" style="width:' + (metric(t) / maxM * 100) + '%; background: var(--c-build)"' +
   ' data-tip="' + esc('<div class=t-head>' + t.id + (t.cost != null ? ' · ' + money(t.cost) + ' est.' : '') + '</div><div>' + esc(t.title) + '</div><div class=t-sub>' +
     (t.tokens ? Math.round(t.tokens / 1000) + 'k worker tokens · ' : '') + mins(spanTotal(t)) + ' in flight</div>') + '"></div></div>' +
   '<div class="val">' + (t.cost != null ? money(t.cost) + ' · ' : '') + mins(spanTotal(t)) + '</div></div>').join('');
-wireTips(document.getElementById('costbars'));
+wireTips(costbars);
+}
 
 document.getElementById('tablewrap').innerHTML = '<table><thead><tr>' +
   '<th>Ticket</th><th>Title</th><th>Deps</th><th>Model</th>' +

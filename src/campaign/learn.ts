@@ -17,7 +17,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { LEARNINGS } from './state.ts';
+import { LEARNINGS } from './paths.ts';
 
 type HarvestItem = { retire?: boolean } & Record<string, string | boolean | undefined>;
 export type Harvest = { checks?: HarvestItem[]; flakes?: HarvestItem[] };

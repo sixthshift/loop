@@ -16,6 +16,7 @@
 import { backlog } from './backlog.ts';
 import type { Backlog, Ticket } from './backlog.ts';
 import type { Frontier } from './state.ts';
+import { gateGreen } from './gate.ts';
 import { modulesCollide, normalizeModule } from './footprint.ts';
 
 const isLive = (t: Ticket) => !['closed', 'decomposed'].includes(t.status);
@@ -48,7 +49,7 @@ export function frontier(): Frontier {
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
   return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts,
-    coverage: coverage(b) };
+    gateGreen: gateGreen(), coverage: coverage(b) };
 }
 
 // --- coverage: the spec-side reading of progress ----------------------------

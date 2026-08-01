@@ -97,3 +97,14 @@ export function windowAround(heights: number[], sel: number, budget: number): [n
   }
   return [start, end];
 }
+
+// Clock and duration formatting. Here rather than beside the narration it used to
+// share a file with, because these are display decisions — how wide, how coarse —
+// and this file is where the display's pure decisions live.
+export const hhmm = (ts: number) => new Date(ts).toTimeString().slice(0, 8);
+
+export const dur = (ms: number) => {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}m` : m ? `${m}m${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+};

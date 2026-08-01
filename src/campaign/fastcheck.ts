@@ -52,9 +52,12 @@ export function classifyFastCheckEdit(proposed: Check[]): FastCheckEdit {
 }
 
 // Apply an amendment, admitting only what runs green in the primary checkout.
-// Callers hold the mainline (recover does): these commands run at the repo root
-// while other tickets are settling, which is the contention mainline.ts exists
-// for.
+//
+// These commands run at the repo root, so the caller must not have other tickets
+// landing while they do — a candidate measured against a tree that is being merged
+// into proves nothing about the baseline. Nothing enforces that here: the
+// coordinator serializes it (SKILL.md invariant 3), because a lock held across
+// separate verb invocations is not available to a seat that is a conversation.
 export async function amendFastChecks(
   proposed: Check[],
   opts: { by: string; note: string },

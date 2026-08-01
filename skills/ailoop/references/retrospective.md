@@ -64,8 +64,8 @@ surviving. An entry confirmed across many campaigns is no longer a learning but
 policy: propose the SKILL.md edit to the human instead of re-injecting it
 forever.
 
-`.ailoop/learnings/` is shared with the CLI seat verbatim, which is how the two
-accumulate comparable history — never fork its shape.
+`.ailoop/learnings/` carries across campaigns verbatim, which is the only reason a
+later one can compare against an earlier one — never fork its shape.
 
 ## 3. The post-mortem, before anything is deleted
 

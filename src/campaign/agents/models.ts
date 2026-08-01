@@ -1,6 +1,7 @@
-// Which campaign role prefers each model. Each list is a preference chain: agent()
-// skips engines that aren't installed and falls back on transient failure, so
-// ordering is "try this, then that". Names are engine-prefixed —
+// Which campaign role prefers each model. Each list is a preference chain: the
+// coordinator takes the first rung whose engine is installed and falls to the
+// next on a transient failure, so ordering is "try this, then that". Names are
+// engine-prefixed —
 // `codex-gpt-5.6-sol`, `claude-opus`; a bare name means claude.
 //
 // Two axes decide each chain:
@@ -63,12 +64,12 @@
 //                 closed ticket (unmapped = not done).
 //   harvest     — retrospective: distils the campaign journal into reusable
 //                 learnings (landmines, observed cheat shapes).
-// The worker chain is special: it doubles as an escalation ladder. dispatch
-// starts the Nth (merit) attempt at the Nth rung, so a ticket that keeps
-// failing on its own terms climbs terra → sol → opus — light coding model, then
-// heavy codex (sol ≈ opus), then claude. Within one attempt agent() still walks
-// the remaining rungs on an engine failure, so a fallback is just taking the
-// next rung early. Infra deaths don't advance the ladder (see drive.workerChain).
+// The worker chain is special: it doubles as an escalation ladder. The Nth
+// (merit) attempt starts at the Nth rung, so a ticket that keeps failing on its
+// own terms climbs terra → sol → opus — light coding model, then heavy codex
+// (sol ≈ opus), then claude. A rung whose engine is unavailable or which fails
+// on the channel rather than the task is skipped, so a fallback is just taking
+// the next rung early. Infra deaths don't advance the ladder.
 // Consensus groups: a nested entry (a list inside the list) is not a fallback
 // step but a group that DRAFTS in parallel, then has one member reconcile the
 // drafts into a single output — diversity without a vote, keeping the best of
@@ -78,13 +79,13 @@
 // IS the artifact and the campaign has a later coverage backstop — decompose,
 // coverage, harvest, sweep. NEVER worker: its product is a diff in a worktree,
 // unmergeable from JSON, and it runs per-ticket so the N+1× cost bites hardest.
-import { engineFor, available } from '../../agent/engine.ts';
+import { engineFor, available } from './engines.ts';
 
 // A chain with every rung resolved: which CLI runs it, the model name that CLI
 // wants (engine prefix stripped), and whether that binary is on the box. The
-// other coordinator seat reads this through `loop models` — prefix parsing and
-// the availability probe are mechanics, and a seat re-deriving them by hand would
-// pick a different rung than this program does on the same chain.
+// coordinator reads this through `loop models` — prefix parsing and the
+// availability probe are mechanics, and a coordinator re-deriving them by hand
+// picks the wrong rung and then attributes a missing binary to the agent.
 export function resolvedChain(role: string): unknown[] {
   const chain = (MODELS as Record<string, (string | string[])[]>)[role];
   if (!chain) throw new Error(`unknown role: ${role} — roles: ${Object.keys(MODELS).sort().join(', ')}`);

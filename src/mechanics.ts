@@ -1,34 +1,41 @@
 // The mechanics surface — every measurement and bookkeeping step of a campaign,
-// reachable as a verb by a coordinator that is not this program.
+// as a verb.
 //
-// loop carries two coordinators for one architecture: this program's
-// deterministic drive loop, and the `ailoop` skill's model sitting in the same
-// seat. Which seat drives a spec better is the open question both exist to
-// answer, and that answer is only legible if the seat is the ONLY difference
-// between them. A skill with its own backlog writer and its own scope check
-// measures its mechanics against ours — a file list against `modules`, an
-// unprovisioned worktree against a provisioned one — and then reports the delta
-// as a fact about judgment. So the mechanics are shared, and this file is the
-// door the other seat comes through.
+// This is the whole program now, and it used not to be: loop began as a
+// coordinator, a deterministic drive loop with an enumerated arm per fault, and
+// these verbs were the door a second coordinator — the `ailoop` skill — came
+// through. The two ran the same mechanics so a comparison between them would be
+// about the seat rather than about who wrote a better backlog writer. That
+// comparison is over. The skill drives; the drive loop is gone; what remains is
+// the substrate underneath the seat, which is what these verbs always were.
 //
-// Two properties follow from that other seat being a conversation rather than a
+// So the design rule is no longer "share the mechanics" but the thing that rule
+// was protecting: **a coordinator that is a conversation cannot be trusted to
+// remember, count, or measure.** Every one of these verbs exists because the
+// alternative is a model doing arithmetic by eye and reporting the result as
+// fact. The writer refuses illegal transitions, the frontier derives readiness,
+// verify runs the checks and scope-checks the diff, jurisdiction reverts what
+// recover shouldn't have touched. None of it asks the coordinator to be careful.
+//
+// Two properties follow from the seat being a conversation rather than a
 // process, and neither is a preference:
 //
 //   • No coordinator lock. A model in the seat cannot hold `coordinator.pid`
-//     across separate verb invocations, so these verbs never take it. What keeps
-//     the two seats off one campaign is the producer stamp instead: whoever ran
-//     `init` owns the campaign until it closes, and each side refuses the
-//     other's (see assertSkillSeat, and establishCampaign in campaign/index.ts).
-//   • stdout carries a result, never narration. The caller parses stdout, so the
-//     live commentary steps aside to stderr before any verb body runs.
-//
-// Verbs that only read (frontier, postmortem) are open to either seat: they are
-// how a finished campaign gets compared with its twin.
+//     across separate verb invocations, so these verbs never take it. Nothing
+//     stops two coordinators from opening one campaign except the producer stamp
+//     (see assertSkillSeat) and the fact that a human is watching.
+//   • stdout carries a result, never narration. The caller parses stdout, so
+//     commentary goes to stderr — see runtime/narrate.ts, where that is now
+//     structural rather than a mode.
 
 import fs from 'node:fs';
 import type { Command } from 'commander';
-import { backlog, backlogWrite, campaignExists } from './campaign/backlog.ts';
+import { backlog, backlogWrite, campaignExists, renumber } from './campaign/backlog.ts';
 import { frontier } from './campaign/frontier.ts';
+import type { Check, TicketDraft } from './campaign/agents/schemas.ts';
+import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
+import { amendFastChecks } from './campaign/fastcheck.ts';
+import { recoveryBudget } from './campaign/recovery-budget.ts';
 import { verify, flakeProbe } from './campaign/verify.ts';
 import { provision } from './campaign/provision.ts';
 import { snapshotTree, revertOutOfBounds } from './campaign/jurisdiction.ts';
@@ -37,24 +44,24 @@ import { writePostmortem } from './campaign/postmortem.ts';
 import { mergeLearnings } from './campaign/learn.ts';
 import type { Harvest } from './campaign/learn.ts';
 import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch } from './campaign/worktree.ts';
-import { rawPrompt, renderPrompt } from './campaign/agents/run.ts';
+import { rawPrompt, renderPrompt } from './campaign/agents/prompt.ts';
 import { SCHEMAS } from './campaign/agents/schemas.ts';
 import { MODELS, resolvedChain } from './campaign/agents/models.ts';
-import { strictify } from './agent/engines/codex.ts';
-import { narrateToStderr } from './runtime/reporting.ts';
+import { strictify } from './campaign/agents/engines.ts';
 
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
 const emit = (value: unknown): void => { console.log(JSON.stringify(value, null, 2)); };
 
-// A mechanics verb is the skill's hand. This program's own drive calls these
-// modules in-process, never through argv, so an argv mutation aimed at a
-// cli-stamped campaign is one seat reaching into the other's work — with a
-// diverged ticket schema and no lock between them. Refuse before the write.
+// A campaign stamped `cli` was opened by the drive loop that no longer ships.
+// Its live worktrees answered to a process that is gone and its in-flight
+// tickets were measured against arms these verbs don't have, so continuing it is
+// not a thing this binary can honestly do. Say that, rather than mutate it into
+// a state half-owned by two coordinators — one of which no longer exists.
 function assertSkillSeat(): void {
   if (!campaignExists()) return; // `init` legitimately runs before one exists
   if ((backlog().coordinator ?? 'cli') === 'cli')
-    fail('this campaign was started by `loop campaign` (coordinator: cli) — the two seats never share a campaign in flight. Finish it with `loop resume`, or start a skill campaign in a repository without one.');
+    fail('this campaign was opened by `loop campaign` (coordinator: cli), the deterministic drive loop, which was removed. Nothing here can continue it: archive `.ailoop/campaign/` with `loop postmortem --out <file>` and start fresh, or install the last release that still had that seat (v0.5.0).');
 }
 
 // Commands that take a JSON payload read it from stdin, so a coordinator can
@@ -74,15 +81,10 @@ const readJsonFile = (file: string): unknown => {
 };
 
 export function registerMechanics(program: Command): void {
-  const registered: Command[] = [];
-  const mechanic = (name: string): Command => {
-    const cmd = program.command(name);
-    registered.push(cmd);
-    return cmd;
-  };
+  const mechanic = (name: string): Command => program.command(name);
 
   mechanic('backlog')
-    .description('the sole writer: init seed add update fast-checks gate gate-run gate-park set-status attempt close decompose recover-resolution sweep-run note')
+    .description('the sole writer: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note')
     .argument('<args...>', 'the writer command and its flags; JSON payloads arrive on stdin')
     // passThroughOptions keeps commander's hands off the writer's own flags — the
     // writer parses them itself, and its vocabulary must not need mirroring here
@@ -97,8 +99,28 @@ export function registerMechanics(program: Command): void {
     });
 
   mechanic('frontier')
-    .description('the derived scheduler facts: problems, ready, dispatchable, walls, coverage')
+    .description('the derived scheduler facts: problems, ready, dispatchable, walls, gate freshness, coverage')
     .action(() => { emit(frontier()); });
+
+  mechanic('recovery-budget')
+    .description('may a recover be spent on this anomaly — the scoped key, what it has spent, and the prior fixes a park would cite')
+    .requiredOption('--kind <kind>', 'the anomaly kind, e.g. attempt-wall, stalled, campaign-gate-red')
+    .option('--ticket <id>', 'for a ticket-scoped kind: the ticket, which is part of the key')
+    .action((opts: { kind: string; ticket?: string }) => {
+      try { emit(recoveryBudget({ kind: opts.kind, ...(opts.ticket ? { ticketId: opts.ticket } : {}) })); }
+      catch (e: any) { fail(e.message); }
+    });
+
+  mechanic('renumber')
+    .description('allocate real ticket ids to proposed drafts, rewiring their internal depends_on edges (drafts on stdin)')
+    .action(async () => {
+      const drafts = await stdinJson();
+      if (drafts === undefined) fail('renumber needs the proposed tickets as JSON on stdin');
+      if (!Array.isArray(drafts)) fail('renumber takes an array of ticket drafts');
+      assertSkillSeat();
+      try { emit(renumber(drafts as TicketDraft[])); }
+      catch (e: any) { fail(e.message); }
+    });
 
   mechanic('verify')
     .description('measure a worker branch (--ticket --dir --base), or probe one command for flake (--cmd --dir)')
@@ -115,6 +137,44 @@ export function registerMechanics(program: Command): void {
       }
       if (!opts.ticket || !opts.base) fail('verify requires --ticket and --base (or --cmd for a flake probe)');
       try { emit(await verify({ id: opts.ticket!, dir: opts.dir!, base: opts.base! })); }
+      catch (e: any) { fail(e.message); }
+    });
+
+  // The two check tiers get amendment verbs of their own, rather than leaving the
+  // coordinator to reach the writer's `gate` / `fast-checks` commands directly,
+  // because each tier's amendment rule is enforcement the writer does not carry.
+  // `backlog gate` will happily replace a live command for anyone who asks; the
+  // rule that only a red gate's own recovery may do so lives here. And the fast
+  // tier's rule is a measurement — every candidate must exit 0 on the mainline —
+  // which is not something a coordinator can honestly attest to having done.
+  mechanic('gate-amend')
+    .description("amend the campaign gate under the authority its anomaly grants (checks on stdin)")
+    .requiredOption('--by <who>', 'the arm proposing the amendment, for the audit record')
+    .requiredOption('--note <why>', 'the rationale — the record is worthless without it')
+    .requiredOption('--anomaly <kind>', `the anomaly being answered; only \`${GATE_RED}\` may replace a live command`)
+    .action(async (opts: { by: string; note: string; anomaly: string }) => {
+      const checks = await stdinJson();
+      if (!Array.isArray(checks)) fail('gate-amend takes an array of {name, cmd} on stdin');
+      assertSkillSeat();
+      try {
+        emit({
+          authority: gateAuthority(opts.anomaly),
+          result: amendGate(checks as Check[], {
+            by: opts.by, note: opts.note, replacements: gateAuthority(opts.anomaly),
+          }),
+        });
+      } catch (e: any) { fail(e.message); }
+    });
+
+  mechanic('fastcheck-amend')
+    .description('amend the fast tier, admitting only candidates that exit 0 on the mainline (checks on stdin)')
+    .requiredOption('--by <who>', 'the arm proposing the amendment, for the audit record')
+    .requiredOption('--note <why>', 'the rationale — the record is worthless without it')
+    .action(async (opts: { by: string; note: string }) => {
+      const checks = await stdinJson();
+      if (!Array.isArray(checks)) fail('fastcheck-amend takes an array of {name, cmd} on stdin');
+      assertSkillSeat();
+      try { emit({ result: await amendFastChecks(checks as Check[], { by: opts.by, note: opts.note }) }); }
       catch (e: any) { fail(e.message); }
     });
 
@@ -235,8 +295,4 @@ export function registerMechanics(program: Command): void {
       try { emit(resolvedChain(role)); } catch (e: any) { fail(e.message); }
     });
 
-  // One hook rather than a line in every action: these verbs own stdout, and
-  // `loop campaign` — which does not — must keep narrating to it.
-  const names = new Set(registered.map(cmd => cmd.name()));
-  program.hook('preSubcommand', (_parent, sub) => { if (names.has(sub.name())) narrateToStderr(); });
 }

@@ -55,8 +55,9 @@ loop backlog init --project <slug> --coordinator skill \
 loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"requirements":[…]}'
 ```
 
-`--coordinator skill` is not optional: it is what keeps `loop campaign` from
-resuming your campaign out from under your live worktrees.
+`--coordinator skill` is the default and the only reachable seat; pass it
+explicitly anyway, so the stamp in `backlog.json` is a statement rather than a
+default nobody chose.
 
 Add `.ailoop/campaign/` to `.gitignore` (learnings/ stays tracked; worktrees live
 outside the repo, so there is nothing there for git to ignore).

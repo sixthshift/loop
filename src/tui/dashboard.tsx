@@ -1,32 +1,34 @@
-// The interactive face of a running campaign. The main screen is the live work
-// — every agent and script running right now, each drillable into its realtime
-// output; the journal lives one `tab` away. Acting is deliberately narrow:
-// every mutation goes through control.ts flags the drive loop honors at its next
-// decision point, or a child-process kill that settles as an ordinary failed
-// attempt. The dashboard never writes campaign state: kill it, `loop resume`,
-// and the picture rebuilds from backlog.json plus surviving process artifacts.
+// The face of a campaign someone else is driving.
+//
+// This is a reader, and every design decision below follows from that. The
+// coordinator is a model in a conversation: it cannot be attached to, subscribed
+// to, or asked. So the dashboard polls the files (snapshot.ts), shows what they
+// support, and shows nothing where they support nothing — the alternative being a
+// pane that infers activity from silence, which is the one thing a watcher must
+// never do.
+//
+// It writes no campaign state, and has no controls that would: no pause, no
+// worker cap, no kill. Those existed when the drive loop was in-process and could
+// honor a flag at its next decision point. Reaching the coordinator now would
+// mean writing a request file and hoping it reads it, and a control that might be
+// obeyed is worse than no control at all.
 
 import React, { useEffect, useState } from 'react';
 import { render, Box, Text, useInput, useStdout } from 'ink';
-import { store, subscribe, log, hhmm, dur, takeRequestedView } from '../runtime/reporting.ts';
-import type { ScriptView } from '../runtime/reporting.ts';
-import { fleet, subscribe as subscribeFleet, kill, killAll } from '../agent/fleet.ts';
-import type { LiveAgent } from '../agent/fleet.ts';
-import { backlog, campaignExists } from '../campaign/backlog.ts';
 import { coverage } from '../campaign/frontier.ts';
-import { journalTail } from '../campaign/journal.ts';
 import type { Backlog, Ticket } from '../campaign/backlog.ts';
 import type { JournalEntry } from '../campaign/journal.ts';
-import { control } from '../runtime/control.ts';
-import { liveness } from './liveness.ts';
-import type { Liveness as LivenessSample } from './liveness.ts';
+import type { LiveRun } from '../campaign/live.ts';
+import { readSnapshot, activeRows, staleness } from './snapshot.ts';
+import type { Snapshot, ActiveRow, Staleness } from './snapshot.ts';
 import { railGraph } from './railgraph.ts';
 import type { RailGraph, RailLine } from './railgraph.ts';
-import { wrapText, windowAround } from './layout.ts';
+import { wrapText, windowAround, hhmm, dur } from './layout.ts';
 
-// Rows the active view keeps for the coordinator's narration. Fixed, because the
-// panels above it grow with the campaign and the footer must stay on screen.
-const LOG_ROWS = 6;
+// How often the files are re-read. Fast enough that a phase change feels
+// immediate, slow enough that a campaign directory being rewritten under us is
+// re-read rather than fought over.
+const POLL_MS = 500;
 
 // Where a ticket row's title starts: '  ' + glyph + ' ' + id + '  ' + status(11) + ' '.
 // One constant because two things must agree — the width a title is wrapped to and
@@ -38,11 +40,6 @@ export function mount() {
   return render(<Dashboard />, { exitOnCtrlC: false });
 }
 
-// A live process the operator can inspect — a claude agent or an shAsync script.
-type Proc =
-  | { kind: 'agent'; label: string; a: LiveAgent }
-  | { kind: 'script'; label: string; s: ScriptView };
-
 type View =
   | { name: 'active' }
   | { name: 'journal' }
@@ -50,10 +47,9 @@ type View =
   | { name: 'requirements' }
   | { name: 'tickets' }
   | { name: 'graph' }
-  | { name: 'ticket'; id: string; from: 'tickets' | 'graph' }
-  | { name: 'inspect'; kind: 'agent' | 'script'; label: string };
-type Confirm = { text: string; onYes: () => void } | null;
-type Frame = { rows: number; cols: number; confirm: Confirm };
+  | { name: 'ticket'; id: string; from: 'tickets' | 'graph' | 'active' }
+  | { name: 'inspect'; label: string };
+type Frame = { rows: number; cols: number };
 
 const KIND_ICON: Record<string, string> = {
   close: '✓', attempt: '✗', status: '⇢', add: '+', decompose: '⑂',
@@ -75,66 +71,39 @@ const FILTERS: { name: string; test: (j: JournalEntry) => boolean }[] = [
   { name: 'problems', test: j => ['attempt', 'recovered', 'recover-refused', 'parked', 'gate-red', 'integration-red', 'escalation', 'flake-probe'].includes(j.kind) },
 ];
 
-function procList(): Proc[] {
-  return [
-    ...[...fleet.agents.entries()].map(([label, a]): Proc => ({ kind: 'agent', label, a })),
-    ...[...store.scripts.entries()].map(([label, s]): Proc => ({ kind: 'script', label, s })),
-  ];
-}
-
 function Dashboard() {
-  useTick();
+  const snap = usePolledSnapshot();
   const [view, setView] = useState<View>({ name: 'active' });
-  const [procSel, setProcSel] = useState(0);
+  const [activeSel, setActiveSel] = useState(0);
   const [ticketSel, setTicketSel] = useState(0);
   const [requirementSel, setRequirementSel] = useState(0);
   const [graphSel, setGraphSel] = useState(0);
   const [journalOff, setJournalOff] = useState(0); // 0 = follow the tail
   const [filterIdx, setFilterIdx] = useState(0);
-  const [confirm, setConfirm] = useState<Confirm>(null);
   const { stdout } = useStdout();
   const rows = stdout.rows || 30;   // || not ??: a bare pty reports 0
   const cols = Math.max(60, stdout.columns || 100);
 
-  const b = safe(() => (campaignExists() ? backlog() : null));
-  const procs = procList();
+  const b = snap.backlog;
+  const active = activeRows(snap);
   const tickets = ticketList(b);
   const graph = railGraph(tickets);
 
-  useEffect(() => {
-    if (takeRequestedView() !== 'requirements') return;
-    setRequirementSel(0);
-    setView({ name: 'requirements' });
-  }, [b?.requirements?.length]);
-
+  // Nothing to tear down and nothing to kill: quitting a reader ends the reader.
   function quit() {
-    killAll(); // stale in-flight reconciliation re-judges surviving branches on resume
     process.stdout.write('\x1b[?1049l\x1b[?25h');
-    console.log('stopped by operator — campaign state intact; `loop resume` to continue.');
-    process.exit(130);
-  }
-
-  // Only workers are killable; verdict agents and scripts settle on their own.
-  function tryKill(label: string) {
-    if (!fleet.agents.has(label)) return log('only workers can be killed — scripts and verdicts settle on their own');
-    if (!label.startsWith('worker:')) return log('only workers can be killed — verdicts settle on their own');
-    setConfirm({
-      text: `kill ${label}? the attempt is journaled and the ticket redispatches fresh`,
-      onYes: () => { kill(label); setView(v => (v.name === 'inspect' ? { name: 'active' } : v)); },
-    });
+    process.exit(0);
   }
 
   useInput((input, key) => {
     if (key.ctrl && input === 'c') return quit();
 
-    if (confirm) {
-      if (input === 'y') { const { onYes } = confirm; setConfirm(null); onYes(); }
-      else if (input === 'n' || key.escape) setConfirm(null);
+    if (view.name === 'help') { if (key.escape || input === 'q' || input === '?') setView({ name: 'active' }); return; }
+    if (view.name === 'ticket') {
+      if (key.escape || input === 'q')
+        setView(view.from === 'graph' ? { name: 'graph' } : view.from === 'active' ? { name: 'active' } : { name: 'tickets' });
       return;
     }
-
-    if (view.name === 'help') { if (key.escape || input === 'q' || input === '?') setView({ name: 'active' }); return; }
-    if (view.name === 'ticket') { if (key.escape || input === 'q') setView(view.from === 'graph' ? { name: 'graph' } : { name: 'tickets' }); return; }
 
     if (view.name === 'requirements') {
       const count = b?.requirements?.length ?? 0;
@@ -166,7 +135,6 @@ function Dashboard() {
 
     if (view.name === 'inspect') {
       if (key.escape || input === 'q') return setView({ name: 'active' });
-      if (input === 'x') tryKill(view.label);
       return;
     }
 
@@ -188,53 +156,48 @@ function Dashboard() {
     if (input === 'R') { setRequirementSel(0); return setView({ name: 'requirements' }); }
     if (input === 't') { setTicketSel(0); return setView({ name: 'tickets' }); }
     if (input === 'g') { setGraphSel(0); return setView({ name: 'graph' }); }
-    if (input === 'p') {
-      control.paused = !control.paused;
-      return log(control.paused ? '⏸ dispatch paused — in-flight workers will still settle' : '▶ dispatch resumed');
-    }
-    if (input === '+' || input === '=') { control.workerCap = Math.min(12, control.workerCap + 1); return log(`worker cap → ${control.workerCap}`); }
-    if (input === '-') { control.workerCap = Math.max(1, control.workerCap - 1); return log(`worker cap → ${control.workerCap}`); }
-    if (input === 'r') { control.forceSweep = true; return log('sweep requested — runs at the next loop turn'); }
-    if (input === 'q') return setConfirm({
-      text: 'quit? in-flight workers are killed; campaign state stays intact (`loop resume`)',
-      onYes: quit,
-    });
+    if (input === 'q') return quit();
 
-    if (key.upArrow || input === 'k') setProcSel(s => Math.max(0, s - 1));
-    if (key.downArrow || input === 'j') setProcSel(s => Math.min(Math.max(0, procs.length - 1), s + 1));
-    if (key.return && procs.length) {
-      const p = procs[clamp(procSel, procs.length)]!;
-      setView({ name: 'inspect', kind: p.kind, label: p.label });
-    }
-    if (input === 'x' && procs.length) {
-      const p = procs[clamp(procSel, procs.length)]!;
-      if (p.kind === 'script') return log('scripts finish on their own — only workers can be killed');
-      tryKill(p.label);
+    if (key.upArrow || input === 'k') setActiveSel(s => Math.max(0, s - 1));
+    if (key.downArrow || input === 'j') setActiveSel(s => Math.min(Math.max(0, active.length - 1), s + 1));
+    // The two grains drill into different things: a ticket into its contract and
+    // history, a run into what it is printing.
+    if (key.return && active.length) {
+      const row = active[clamp(activeSel, active.length)]!;
+      setView(row.kind === 'ticket'
+        ? { name: 'ticket', id: row.ticket.id, from: 'active' }
+        : { name: 'inspect', label: row.run.label });
     }
   });
 
-  const frame: Frame = { rows, cols, confirm };
+  const frame: Frame = { rows, cols };
   if (view.name === 'help') return <HelpView {...frame} />;
   if (view.name === 'requirements')
     return <RequirementsView {...frame} b={b} sel={clamp(requirementSel, b?.requirements?.length ?? 0)} />;
   if (view.name === 'tickets') return <TicketsView {...frame} tickets={tickets} sel={clamp(ticketSel, tickets.length)} />;
   if (view.name === 'graph') return <GraphView {...frame} graph={graph} sel={clamp(graphSel, graph.order.length)} />;
   if (view.name === 'ticket') return <TicketDetailView {...frame} ticket={tickets.find(t => t.id === view.id)} all={tickets} />;
-  if (view.name === 'journal') return <JournalView {...frame} journalOff={journalOff} filterIdx={filterIdx} />;
-  if (view.name === 'inspect') return <InspectView {...frame} kind={view.kind} label={view.label} />;
-  return <ActiveView {...frame} b={b} procs={procs} procSel={clamp(procSel, procs.length)} />;
+  if (view.name === 'journal') return <JournalView {...frame} snap={snap} journalOff={journalOff} filterIdx={filterIdx} />;
+  if (view.name === 'inspect')
+    return <RunTailView {...frame} run={snap.runs.find(r => r.label === view.label)} label={view.label} />;
+  return <ActiveView {...frame} snap={snap} active={active} activeSel={clamp(activeSel, active.length)} />;
 }
 
-// --- active view: live agents + scripts -------------------------------------
+// --- active view: in-flight tickets, and the checks running inside them ------
 
-function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
-  b: Backlog | null | undefined; procs: Proc[]; procSel: number;
+// The pane is ticket-oriented, and that is the pivot rather than a layout choice.
+// It used to list processes, because the coordinator owned them and could be asked
+// what was running. A reader cannot have that list: most of a ticket's life is an
+// agent inside the coordinator's own session, invisible from here. What IS
+// knowable is where each in-flight ticket has got to and how long it has been
+// there — the same question, asked at the grain the files can answer.
+function ActiveView({ rows, cols, snap, active, activeSel }: Frame & {
+  snap: Snapshot; active: ActiveRow[]; activeSel: number;
 }) {
-  const pids = procs.map(p => (p.kind === 'agent' ? p.a.pid : p.s.pid)).filter((x): x is number => Boolean(x));
-  const live = liveness(pids);
+  const b = snap.backlog;
   return (
     <Box flexDirection="column" width={cols}>
-      <Header cols={cols} b={b} />
+      <Header cols={cols} snap={snap} />
       <Rule cols={cols} />
       {b && <>
         <GatePanel b={b} cols={cols} />
@@ -242,73 +205,93 @@ function ActiveView({ rows, cols, confirm, b, procs, procSel }: Frame & {
         <CountsLine b={b} cols={cols} />
         <Rule cols={cols} />
       </>}
-      <Text bold>▸ active{procs.length ? '' : '  (nothing running)'}<Text dimColor>   active · journal (tab)</Text></Text>
-      {procs.map((p, i) => <ProcRow key={p.label} p={p} selected={i === procSel} live={live} cols={cols} />)}
+      <Text bold>
+        {`▸ in flight${active.length ? '' : '  (nothing in flight)'}`}
+        <Text dimColor>   active · journal (tab)</Text>
+      </Text>
+      {active.map((row, i) => (
+        <ActiveRowLine key={row.key} row={row} selected={i === activeSel} cols={cols} caps={b?.caps} />
+      ))}
       <Rule cols={cols} />
-      <LogPane cols={cols} budget={LOG_ROWS} />
-      <Footer cols={cols} confirm={confirm}
-        hint="tab journal · R requirements · t tickets · g graph · p pause · +/- cap · r sweep · x kill · q quit · ? help" />
+      <Footer cols={cols}
+        hint="tab journal · R requirements · t tickets · g graph · ↵ detail · q quit · ? help" />
     </Box>
   );
 }
 
-// The coordinator's narration, newest last, wrapped so a long message is readable
-// where it appears. A fixed budget at the bottom for the same reason the live
-// regions have one: the panels above it grow with the campaign, and a pane that
-// grows with its content would push the footer off the screen. Older lines scroll
-// out of view rather than out of memory — reporting.ts keeps the last 200.
-function LogPane({ cols, budget }: { cols: number; budget: number }) {
-  const rows = store.logs
-    .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
-    .slice(-budget);
-  if (!rows.length) return null;
-  return <>{rows.map((r, i) => (
-    // Dim everything but the newest message: the running commentary reads as
-    // history, with what the loop is doing right now at the bottom in colour.
-    <Text key={i} color={i === rows.length - 1 ? 'cyan' : undefined} dimColor={i !== rows.length - 1}>{r.line}</Text>
-  ))}</>;
-}
+function ActiveRowLine({ row, selected, cols, caps }: {
+  row: ActiveRow; selected: boolean; cols: number; caps: Backlog['caps'];
+}) {
+  if (row.kind === 'run') return <RunLine run={row.run} selected={selected} cols={cols} />;
 
-function ProcRow({ p, selected, live, cols }: { p: Proc; selected: boolean; live: Map<number, LivenessSample>; cols: number }) {
-  if (p.kind === 'agent') {
-    const a = p.a;
-    const last = a.transcript.at(-1);
-    return (
-      <Text inverse={selected}>
-        {`  ⚙ ${p.label.padEnd(22)} ${a.model.padEnd(7)} ${dur(Date.now() - a.startedAt).padEnd(7)} `}
-        <Liveness lv={a.pid ? live.get(a.pid) : undefined} />
-        {a.live?.text
-          /* mid-generation: show the newest model output, not a stale event */
-          ? <Text color="cyan">{` ✍ ${liveTail(a.live.text, Math.max(10, cols - 62))}`}</Text>
-          : <>
-              {last ? ` ${trunc(last.line, Math.max(10, cols - 70))} ` : ' '}
-              {last ? <Text dimColor>{`(${dur(Date.now() - last.ts)} ago)`}</Text> : null}
-            </>}
-      </Text>
-    );
-  }
-  const s = p.s;
-  const last = s.output.at(-1);
-  const line = s.partial || last?.line || '';
+  const t = row.ticket;
+  // Merit attempts only: an infra death didn't spend the ticket's budget, and a
+  // row reading 3/3 because the engine died three times would send the operator
+  // to look at a ticket that never failed on its own terms.
+  const merit = (t.attempts ?? []).filter(a => !a.infra).length;
+  const max = caps?.maxAttempts ?? 3;
+  const phase = t.phase;
+  const held = phase ? Date.now() - Date.parse(phase.at) : null;
   return (
     <Text inverse={selected}>
-      {`  $ ${p.label.padEnd(22)} ${''.padEnd(7)} ${dur(Date.now() - s.startedAt).padEnd(7)} `}
-      <Liveness lv={s.pid ? live.get(s.pid) : undefined} />
-      {line ? ` ${trunc(line, Math.max(10, cols - 62))} ` : ' '}
-      {last && !s.partial ? <Text dimColor>{`(${dur(Date.now() - last.ts)} ago)`}</Text> : null}
+      {`  ⚙ ${t.id.padEnd(6)} `}
+      {phase
+        ? <Text color={PHASE_COLOR[phase.name]}>{phase.name.padEnd(13)}</Text>
+        : <Text dimColor>{'—'.padEnd(13)}</Text>}
+      {held === null ? '        ' : `${dur(held).padEnd(8)}`}
+      <Text dimColor>{`${merit}/${max} `}</Text>
+      {t.dispatch ? <Text dimColor>{`${t.dispatch.model} `}</Text> : null}
+      {trunc(t.title, Math.max(10, cols - 48))}
     </Text>
   );
 }
 
-function Header({ cols, b }: { cols: number; b: Backlog | null | undefined }) {
-  const title = ` loop campaign — ${b?.project ?? '(kickoff)'}`;
-  const right = `${control.paused ? 'PAUSED · ' : ''}cap ${control.workerCap} · elapsed ${dur(Date.now() - (store.startedAt ?? Date.now()))} `;
+// A check the operator can actually watch, because a verb published it. Indented
+// under its ticket: this is the one place in the pane where the tail is real
+// output rather than a state field.
+function RunLine({ run, selected, cols }: { run: LiveRun; selected: boolean; cols: number }) {
+  const last = run.tail.at(-1);
+  const line = run.partial || last?.line || '';
   return (
-    <Text bold>
-      {title}{' '.repeat(Math.max(1, cols - title.length - right.length))}
-      {control.paused ? <Text color="yellow">{right}</Text> : right}
+    <Text inverse={selected}>
+      {`      $ ${trunc(run.label, 24).padEnd(24)} ${dur(Date.now() - run.startedAt).padEnd(7)} `}
+      {line ? <Text color="cyan">{trunc(line, Math.max(10, cols - 48))}</Text> : <Text dimColor>(starting)</Text>}
     </Text>
   );
+}
+
+const PHASE_COLOR: Record<string, string> = {
+  dispatched: 'cyan', verifying: 'blue', 'under-review': 'magenta',
+  probing: 'yellow', merging: 'green',
+};
+
+function Header({ cols, snap }: { cols: number; snap: Snapshot }) {
+  const b = snap.backlog;
+  const title = ` loop watch — ${b?.project ?? '(no campaign)'}`;
+  const started = b?.startedAt ? Date.parse(b.startedAt) : null;
+  const elapsed = started ? `elapsed ${dur(snap.readAt - started)} · ` : '';
+  const stale = staleness(snap);
+  return (
+    <Text bold>
+      {title}{' '.repeat(Math.max(1, cols - title.length - elapsed.length - 18))}
+      <Text dimColor>{elapsed}</Text>
+      <StalenessCell stale={stale} />
+    </Text>
+  );
+}
+
+// NOT liveness. The old cell sampled process-subtree CPU and could say "this is
+// working" — it had a pid. Here there is usually no process to sample: the
+// coordinator's own agents run in a session this program cannot see, so all the
+// files support is "how long since anything was written". A quiet campaign and a
+// dead one look identical, and the wording has to admit that rather than dress a
+// timestamp up as a heartbeat.
+function StalenessCell({ stale }: { stale: Staleness }) {
+  if (stale.grade === 'unknown') return <Text dimColor>{'no journal yet '}</Text>;
+  if (stale.grade === 'active' && stale.quietForMs === 0) return <Text color="green">{'▶ check running '}</Text>;
+  const quiet = `quiet ${dur(stale.quietForMs ?? 0)} `;
+  if (stale.grade === 'active') return <Text dimColor>{quiet}</Text>;
+  return <Text color={stale.grade === 'stale' ? 'red' : 'yellow'}>{quiet}</Text>;
 }
 
 function GatePanel({ b }: { b: Backlog; cols: number }) {
@@ -348,12 +331,19 @@ function GatePanel({ b }: { b: Backlog; cols: number }) {
   );
 }
 
+// Spend used to live on this line, tallied from the token counts the in-process
+// agent runner read off each stream. Nothing reports those to the coordinator now,
+// so what the files carry is whatever a `close` was handed — see postmortem.ts,
+// which prices what it has and says so. Rather than render a running total that
+// silently means "the subset of workers whose tokens someone passed along", the
+// line shows what it can count exactly and leaves cost to the post-mortem.
 function CountsLine({ b, cols }: { b: Backlog; cols: number }) {
   const counts = b.tickets.reduce<Record<string, number>>((m, t) => ((m[t.status] = (m[t.status] || 0) + 1), m), {});
   const attempts = b.tickets.reduce((n, t) => n + (t.attempts?.length ?? 0), 0);
+  const merit = b.tickets.reduce((n, t) => n + (t.attempts ?? []).filter(a => !a.infra).length, 0);
   const line = ' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked']
     .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')
-    + `   attempts ${attempts}   spend $${fleet.spend.costUsd.toFixed(2)} / ${Math.round(fleet.spend.tokens / 1000)}k tok / ${fleet.spend.calls} agents`;
+    + `   attempts ${attempts} (${merit} merit)`;
   // Wrapped here rather than left to Ink, whose continuation starts at column 0 and
   // reads as a stray line rather than as the rest of this one.
   return <>{wrapText(line, cols, 1).map((l, i) => <Text key={i}>{l}</Text>)}</>;
@@ -365,9 +355,11 @@ function CountsLine({ b, cols }: { b: Backlog; cols: number }) {
 // that occupies six rows must cost six rows of the frame or the pane overflows.
 // The whole point of the pane is that the reason a campaign stopped is legible
 // here, which was exactly what cutting at the right edge took away.
-function JournalView({ rows, cols, confirm, journalOff, filterIdx }: Frame & { journalOff: number; filterIdx: number }) {
+function JournalView({ rows, cols, snap, journalOff, filterIdx }: Frame & {
+  snap: Snapshot; journalOff: number; filterIdx: number;
+}) {
   const filter = FILTERS[filterIdx]!;
-  const entries = journalTail(500).filter(filter.test);
+  const entries = snap.journal.filter(filter.test);
   const feedRows = Math.max(3, rows - 3);
   const lines = entries.flatMap(j =>
     wrapText(`  ${hhmm(Date.parse(j.ts))} ${KIND_ICON[j.kind] ?? '·'} ${String(j.subject ?? '').padEnd(8)} ${j.body ?? ''}`, cols - 1, 12)
@@ -382,7 +374,7 @@ function JournalView({ rows, cols, confirm, journalOff, filterIdx }: Frame & { j
       </Text>
       <Rule cols={cols} />
       {visible.map((l, i) => <JournalLine key={i} j={l.j} line={l.line} />)}
-      <Footer cols={cols} confirm={confirm} hint="tab active · j/k scroll · f filter · ↵ tail · esc back" />
+      <Footer cols={cols} hint="tab active · j/k scroll · f filter · ↵ tail · esc back" />
     </Box>
   );
 }
@@ -394,7 +386,7 @@ function JournalLine({ j, line }: { j: JournalEntry; line: string }) {
 
 // --- requirement contract ---------------------------------------------------
 
-function RequirementsView({ rows, cols, confirm, b, sel }: Frame & {
+function RequirementsView({ rows, cols, b, sel }: Frame & {
   b: Backlog | null | undefined;
   sel: number;
 }) {
@@ -440,7 +432,7 @@ function RequirementsView({ rows, cols, confirm, b, sel }: Frame & {
           </Box>
         );
       })}
-      <Footer cols={cols} confirm={confirm} hint="j/k move · R/esc back" />
+      <Footer cols={cols} hint="j/k move · R/esc back" />
     </Box>
   );
 }
@@ -459,7 +451,7 @@ function displayStatus(t: Ticket, byId: Map<string, Ticket>): string {
   return (t.depends_on ?? []).every(d => byId.get(d)?.status === 'closed') ? 'open' : 'waiting';
 }
 
-function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: Ticket[]; sel: number }) {
+function TicketsView({ rows, cols, tickets, sel }: Frame & { tickets: Ticket[]; sel: number }) {
   const listRows = Math.max(3, rows - 3);
   const byId = new Map(tickets.map(t => [t.id, t]));
   // A wrapped title makes a ticket taller than one row, so the window is computed
@@ -497,12 +489,12 @@ function TicketsView({ rows, cols, confirm, tickets, sel }: Frame & { tickets: T
           </Box>
         );
       })}
-      <Footer cols={cols} confirm={confirm} hint="j/k move · ↵ detail · g graph · esc back" />
+      <Footer cols={cols} hint="j/k move · ↵ detail · g graph · esc back" />
     </Box>
   );
 }
 
-function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { ticket: Ticket | undefined; all: Ticket[] }) {
+function TicketDetailView({ rows, cols, ticket: t, all }: Frame & { ticket: Ticket | undefined; all: Ticket[] }) {
   if (!t) return <Text>ticket vanished — esc to go back</Text>;
   const byId = new Map(all.map(x => [x.id, x]));
   const shown = displayStatus(t, byId);
@@ -544,7 +536,7 @@ function TicketDetailView({ rows, cols, confirm, ticket: t, all }: Frame & { tic
       <Rule cols={cols} />
       {visible.map((r, i) => <Text key={i} color={r.color} dimColor={r.dim} bold={r.bold}>{r.text}</Text>)}
       {hidden > 0 ? <Text dimColor>{` … ${hidden} more row(s) than this terminal has`}</Text> : null}
-      <Footer cols={cols} confirm={confirm} hint="esc back" />
+      <Footer cols={cols} hint="esc back" />
     </Box>
   );
 }
@@ -614,8 +606,8 @@ function railRuns(l: RailLine, li: number, g: RailGraph, arms: Map<string, numbe
   return runs;
 }
 
-function GraphView({ rows: termRows, cols, confirm, graph, sel }: Frame & { graph: RailGraph; sel: number }) {
-  if (!graph.order.length) return <EmptyGraph cols={cols} confirm={confirm} />;
+function GraphView({ rows: termRows, cols, graph, sel }: Frame & { graph: RailGraph; sel: number }) {
+  if (!graph.order.length) return <EmptyGraph cols={cols} />;
   const selId = graph.order[sel]!;
   const selLine = graph.nodeLineIndex.get(selId)!;
   const arms = graph.litArms(selId);
@@ -643,7 +635,7 @@ function GraphView({ rows: termRows, cols, confirm, graph, sel }: Frame & { grap
           </Text>
         );
       })}
-      <Footer cols={cols} confirm={confirm} hint="j/k select · ↵ detail · t list · esc back" />
+      <Footer cols={cols} hint="j/k select · ↵ detail · t list · esc back" />
     </Box>
   );
 }
@@ -653,138 +645,88 @@ function GraphLabel({ l, room, role }: { l: Extract<RailLine, { kind: 'node' }>;
   return <Text bold={role === 'sel'} dimColor={role === 'other'}>{text}</Text>;
 }
 
-function EmptyGraph({ cols, confirm }: { cols: number; confirm: Confirm }) {
+function EmptyGraph({ cols }: { cols: number }) {
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold> dependency graph</Text>
       <Rule cols={cols} />
       <Text dimColor> no tickets yet — esc to go back</Text>
-      <Footer cols={cols} confirm={confirm} hint="esc back" />
+      <Footer cols={cols} hint="esc back" />
     </Box>
   );
 }
 
-// --- inspect: an agent's transcript or a script's output, live --------------
+// --- inspect: a running check's output ---------------------------------------
 
-function InspectView({ rows, cols, confirm, kind, label }: Frame & { kind: 'agent' | 'script'; label: string }) {
-  return kind === 'agent'
-    ? <AgentTailView rows={rows} cols={cols} confirm={confirm} label={label} />
-    : <ScriptTailView rows={rows} cols={cols} confirm={confirm} label={label} />;
-}
-
-function AgentTailView({ rows, cols, confirm, label }: Frame & { label: string }) {
-  const a = fleet.agents.get(label);
-  if (!a) {
-    return (
-      <Box flexDirection="column" width={cols}>
-        <Text bold>{` ${label}`}</Text>
-        <Rule cols={cols} />
-        <Text dimColor> agent finished — its verdict is in the journal. esc to go back.</Text>
-        <Footer cols={cols} confirm={confirm} hint="esc back" />
-      </Box>
-    );
-  }
-  // The live region gets a fixed budget at the bottom; history yields to it.
-  const liveRows = a.live?.text ? 6 : 0;
-  // Wrapped, then windowed by row: an event whose text runs past the terminal is
-  // the event you most want to read, and this is where you came to read it.
-  const lines = a.transcript
-    .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
-    .slice(-(Math.max(3, rows - 4 - liveRows)));
-  const lv = a.pid ? liveness([a.pid]).get(a.pid) : undefined;
-  const last = a.transcript.at(-1);
-  return (
-    <Box flexDirection="column" width={cols}>
-      <Text bold>
-        {` ⚙ ${label} · ${a.model} · ${dur(Date.now() - a.startedAt)} · `}
-        <Liveness lv={lv} />
-        {last ? ` · last event ${dur(Date.now() - last.ts)} ago` : ''}
-      </Text>
-      <Rule cols={cols} />
-      {lines.length ? lines.map((l, i) => (
-        <Text key={i}>{l.line}</Text>
-      )) : <Text dimColor> (no events yet — the session is starting)</Text>}
-      {a.live?.text ? <>
-        <Rule cols={cols} />
-        <Text dimColor>{a.live.thinking ? ' ✎ thinking…' : ' ✍ writing…'}</Text>
-        <Box height={4} overflow="hidden">
-          <Text dimColor={a.live.thinking} italic={a.live.thinking}>
-            {` ${liveTail(a.live.text, (cols - 4) * 4, true)}`}<Text color="cyan">▌</Text>
-          </Text>
-        </Box>
-      </> : null}
-      <Footer cols={cols} confirm={confirm}
-        hint={label.startsWith('worker:') ? 'x kill · esc back' : 'esc back'} />
-    </Box>
-  );
-}
-
-function ScriptTailView({ rows, cols, confirm, label }: Frame & { label: string }) {
-  const s = store.scripts.get(label);
-  if (!s) {
+// Only checks get a tail view now. An agent's transcript used to live here too,
+// streamed off the CLI this program spawned; the coordinator spawns its own, so
+// there is nothing to stream. The journal carries the verdict, which is the part
+// that was ever load-bearing.
+function RunTailView({ rows, cols, run, label }: Frame & { run: LiveRun | undefined; label: string }) {
+  if (!run) {
     return (
       <Box flexDirection="column" width={cols}>
         <Text bold>{` $ ${label}`}</Text>
         <Rule cols={cols} />
-        <Text dimColor> script finished — its verdict rides the journal. esc to go back.</Text>
-        <Footer cols={cols} confirm={confirm} hint="esc back" />
+        <Text dimColor> the check finished — its result is in the journal. esc to go back.</Text>
+        <Footer cols={cols} hint="esc back" />
       </Box>
     );
   }
   // The in-progress line (a progress bar, a prompt) gets a fixed live region;
   // completed output history yields to it.
-  const liveRows = s.partial ? 2 : 0;
-  const lines = s.output
+  const liveRows = run.partial ? 2 : 0;
+  const lines = run.tail
     .flatMap(l => wrapText(`${hhmm(l.ts)} ${l.line}`, cols - 1, 9).map(line => ({ ts: l.ts, line })))
     .slice(-(Math.max(3, rows - 5 - liveRows)));
-  const lv = s.pid ? liveness([s.pid]).get(s.pid) : undefined;
-  const last = s.output.at(-1);
+  const last = run.tail.at(-1);
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold>
-        {` $ ${label} · ${dur(Date.now() - s.startedAt)} · `}
-        <Liveness lv={lv} />
-        {last ? ` · last line ${dur(Date.now() - last.ts)} ago` : ''}
+        {` $ ${label} · ${dur(Date.now() - run.startedAt)}`}
+        {run.ticketId ? <Text dimColor>{` · ${run.ticketId}`}</Text> : null}
+        {last ? <Text dimColor>{` · last line ${dur(Date.now() - last.ts)} ago`}</Text> : null}
       </Text>
-      {wrapText(`   ${s.cmd}`, cols - 1, 5).map((line, i) => <Text key={i} dimColor>{line}</Text>)}
+      {wrapText(`   ${run.cmd}`, cols - 1, 5).map((line, i) => <Text key={i} dimColor>{line}</Text>)}
       <Rule cols={cols} />
       {lines.length ? lines.map((l, i) => (
         <Text key={i}>{l.line}</Text>
       )) : <Text dimColor> (no output yet — the process is starting)</Text>}
-      {s.partial ? <>
+      {run.partial ? <>
         <Rule cols={cols} />
         {/* The in-progress line keeps its fixed budget: a progress bar rewriting
             itself must not resize the pane on every write. */}
-        <Text color="cyan">{` ${trunc(s.partial, cols - 3)}`}<Text color="cyan">▌</Text></Text>
+        <Text color="cyan">{` ${trunc(run.partial, cols - 3)}`}<Text color="cyan">▌</Text></Text>
       </> : null}
-      <Footer cols={cols} confirm={confirm} hint="esc back" />
+      <Footer cols={cols} hint="esc back" />
     </Box>
   );
 }
 
 // --- help --------------------------------------------------------------------
 
-function HelpView({ cols, confirm }: Frame) {
+function HelpView({ cols }: Frame) {
   const keys: [string, string][] = [
     ['tab', 'switch between the active work and the journal'],
     ['j/k ↑/↓', 'move selection / scroll the journal'],
-    ['↵', 'inspect the selected agent or script live; open ticket detail'],
+    ['↵', 'ticket detail, or the selected check’s live output'],
     ['t', 'ticket browser'],
     ['R', 'requirements — the locked clauses and their claiming tickets'],
     ['g', 'dependency graph — rails; j/k lights the selected ticket’s edges'],
     ['f', `journal filter (${FILTERS.map(f => f.name).join(' → ')})`],
-    ['p', 'pause/resume dispatch (in-flight workers still settle)'],
-    ['+/-', 'raise/lower the worker cap'],
-    ['r', 'run the sweep at the next loop turn'],
-    ['x', 'kill the selected worker (journaled as a failed attempt)'],
-    ['q', 'quit — workers killed, state intact, `loop resume` continues'],
+    ['q', 'quit — this is a reader; the campaign is unaffected'],
   ];
   return (
     <Box flexDirection="column" width={cols}>
       <Text bold> keys</Text>
       <Rule cols={cols} />
       {keys.map(([k, desc]) => <Text key={k}>{`  ${k.padEnd(9)} ${desc}`}</Text>)}
-      <Footer cols={cols} confirm={confirm} hint="esc back" />
+      <Rule cols={cols} />
+      {/* Said here because the absence of these keys is the surprise, for anyone
+          who used the version that had them. */}
+      <Text dimColor>{'  no pause, cap, or kill: the coordinator runs in a session this'}</Text>
+      <Text dimColor>{'  process cannot reach, so every control here would be a suggestion.'}</Text>
+      <Footer cols={cols} hint="esc back" />
     </Box>
   );
 }
@@ -795,19 +737,8 @@ function Rule({ cols }: { cols: number }) {
   return <Text dimColor>{'─'.repeat(cols)}</Text>;
 }
 
-function Footer({ cols, confirm, hint }: { cols: number; confirm: Confirm; hint: string }) {
-  if (confirm) return <Text color="yellow" bold>{trunc(` ${confirm.text}  (y/n)`, cols - 1)}</Text>;
+function Footer({ cols, hint }: { cols: number; hint: string }) {
   return <Text dimColor>{trunc(` ${hint}`, cols - 1)}</Text>;
-}
-
-// Measured CPU liveness, not transcript-silence guessing: ▶ means the
-// process subtree burned CPU within the last 30s (a silent e2e run still
-// reads active); "no cpu" ages toward red so a real wedge is loud. Blank when
-// there's nothing honest to show (no /proc, pid unknown).
-function Liveness({ lv }: { lv: LivenessSample | undefined }) {
-  if (!lv) return <Text> </Text>;
-  if (lv.idleForMs < 30_000) return <Text color="green">▶</Text>;
-  return <Text color={lv.idleForMs > 10 * 60_000 ? 'red' : 'yellow'}>{`∅ no cpu ${dur(lv.idleForMs)}`}</Text>;
 }
 
 function Bar({ done, total, width }: { done: number; total: number; width: number }) {
@@ -815,24 +746,18 @@ function Bar({ done, total, width }: { done: number; total: number; width: numbe
   return <Text color="green">{'█'.repeat(filled)}<Text dimColor>{'░'.repeat(width - filled)}</Text></Text>;
 }
 
-function useTick() {
-  const [, setN] = useState(0);
+// The whole update mechanism: re-read the files, re-render. There is nothing to
+// subscribe to — the writer is another process — so the interval is both the
+// clock (durations tick) and the data source.
+function usePolledSnapshot(): Snapshot {
+  const [snap, setSnap] = useState<Snapshot>(readSnapshot);
   useEffect(() => {
-    const bump = () => setN(n => n + 1);
-    const t = setInterval(bump, 1000);
-    const unsub = subscribe(bump);
-    const unsubFleet = subscribeFleet(bump);
-    return () => { clearInterval(t); unsub(); unsubFleet(); };
+    const t = setInterval(() => setSnap(readSnapshot()), POLL_MS);
+    return () => clearInterval(t);
   }, []);
+  return snap;
 }
 
-const safe = <T,>(fn: () => T): T | undefined => { try { return fn(); } catch { return undefined; } };
-// Newest end of a stream, ellipsized from the front — the opposite cut to
-// trunc(). keepBreaks preserves paragraph shape in the tail pane.
-const liveTail = (s: string, n: number, keepBreaks = false): string => {
-  s = keepBreaks ? String(s).replace(/\n{3,}/g, '\n\n') : String(s).replace(/\s+/g, ' ');
-  return s.length > n ? '…' + s.slice(-(n - 1)) : s;
-};
 const clamp = (i: number, len: number) => Math.max(0, Math.min(i, len - 1));
 const trunc = (s: unknown, n: number): string => {
   const t = String(s).replace(/\s+/g, ' ');

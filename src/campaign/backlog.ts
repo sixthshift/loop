@@ -5,7 +5,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { RUN } from './state.ts';
+import { RUN } from './paths.ts';
 import { appendJournal } from './journal.ts';
 import { moduleErrors } from './footprint.ts';
 import type { Check, Requirement, TicketDraft } from './agents/schemas.ts';
@@ -15,7 +15,8 @@ import type { Check, Requirement, TicketDraft } from './agents/schemas.ts';
 // `open` is the single pre-dispatch state: a proposed, still-editable ticket
 // that becomes dispatchable once its deps close. (There is no separate vetting
 // step — the ticket review carries the whole adversarial load, post-build.)
-// `parked` is set only when a decision is deferred to the human (see escalate).
+// `parked` is set only when a decision is deferred to the human; the campaign keeps
+// driving everything else and drains when nothing autonomous is left.
 export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'decomposed';
 // `infra` marks an attempt that failed for a reason outside the ticket's own
 // merits — the worker session died, was killed, or the mainline moved under a
@@ -23,6 +24,19 @@ export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'decompo
 // ticket's own; infra failures are the machine's. The wall logic counts only
 // the merit ones, so a flaky engine can't exhaust a ticket's real budget.
 export type Attempt = { failed: string[] | string; hypothesis?: string; fix?: string; infra?: boolean };
+
+// Where an in-flight ticket has got to. This is the only field here that no
+// mechanic reads — nothing branches on it, and a wrong value reds no check. It
+// exists for the operator, and specifically for invariant 1: a ticket is never
+// `in-flight` without a live worker, which is the coordinator's one failure with
+// no symptom, because a stranded in-flight ticket silently holds its modules
+// against every other ticket forever. A phase, with the time it was stamped, is
+// what makes that visible — `verifying for 40m` is a diagnosis; `in-flight` on
+// its own is not. The writer clears it on the way out of in-flight rather than
+// letting a settled ticket keep a phase it is no longer in.
+export const PHASES = ['dispatched', 'verifying', 'under-review', 'probing', 'merging'] as const;
+export type TicketPhase = (typeof PHASES)[number];
+
 export type Ticket = TicketDraft & {
   status: TicketStatus;
   attempts?: Attempt[];
@@ -32,6 +46,13 @@ export type Ticket = TicketDraft & {
   // session died; it survives the in-flight → open → in-flight round trip a
   // check amendment makes, and the next dispatch overwrites it.
   baseSha?: string;
+  phase?: { name: TicketPhase; at: string };
+  // Which rung of the worker chain this dispatch spent, stamped beside baseSha
+  // because it is the same fact about the same dispatch. The attempt log records
+  // what a finished attempt cost; this records what the LIVE one is spending, and
+  // only the live reading answers "is this ticket on opus already?" while there
+  // is still a decision to make about it.
+  dispatch?: { model: string; rung: number; at: string };
   // A parked ticket is a durable handoff to the human. Its reason belongs with
   // that state; the journal mirrors it for audit but is not needed to resume.
   parkReason?: string;
@@ -51,18 +72,23 @@ export type GateState = {
   parked?: { reason: string };
 };
 
-// Which coordinator seat started this campaign — this program's drive loop, or
-// the ailoop skill's model driving the same mechanics through `loop mechanics`
-// verbs. The two share the state layout and the writer but not the seat, and a
-// campaign in flight belongs to whoever opened it: the skill holds no
-// coordinator lock (a conversation cannot hold a pidfile across invocations), so
-// this stamp is the only thing standing between two seats and one backlog.
-// Absent means `cli` — this program was the sole writer before the stamp existed.
+// Which coordinator seat opened this campaign. Only `skill` is reachable now —
+// `cli` was this program's own deterministic drive loop, removed once the model
+// in the seat won the argument. The value is kept, and still refused by the
+// mechanics verbs, because a campaign left in flight by that loop is real state
+// on someone's disk: it deserves an explanation rather than a coordinator half
+// its size quietly picking it up. Absent means `cli`, from before the stamp.
 export type Seat = 'cli' | 'skill';
 
 export type Backlog = {
   project: string;
   coordinator?: Seat;
+  // When `init` ran. The campaign clock has to live here rather than in the
+  // process that renders it: a skill-driven campaign spans many separate verb
+  // invocations and any number of sessions, so a clock started by the display
+  // would measure how long the display had been open and call it the campaign's
+  // age. Same reason it survives a resume.
+  startedAt?: string;
   // The locked contract a resume must continue. The journal records kickoff
   // for the audit trail, but resume never needs to replay that record.
   contract?: { specPath: string; sha256: string };
@@ -113,12 +139,12 @@ export function ticket(id: string): Ticket {
 // refusal throws and the caller decides whether that is a bug or a recoverable
 // anomaly.
 //
-// Load-bearing: this is synchronous end to end, and must stay that way. The
-// drive settles several tickets concurrently, and it is only the absence of an
-// await between the read and the write that keeps two of them from interleaving
-// a lost update — no mutex guards this file. An await introduced anywhere in
-// backlogWrite silently makes concurrent settles corrupting; see mainline.ts,
-// which locks the one thing that genuinely does span an await.
+// Load-bearing: this is synchronous end to end, and must stay that way. Each
+// invocation is its own short-lived process, so the read-mutate-write is atomic by
+// virtue of finishing before anything else runs, and the rename at the end is what
+// makes a concurrent READER safe. An await introduced anywhere in backlogWrite
+// would reintroduce the interleaving this shape rules out — and nothing here holds
+// a lock, because the coordinator that calls it cannot hold one either.
 
 const STATUSES = ['open', 'in-flight', 'closed', 'parked', 'decomposed'];
 const LEGAL: Record<string, string[]> = { // from → allowed to
@@ -217,6 +243,12 @@ export function backlogWrite(args: string[], input?: unknown): string {
   const transition = (t: Ticket, to: string) => {
     if (!STATUSES.includes(to)) refuse(`unknown status ${to}`);
     if (!(LEGAL[t.status] || []).includes(to)) refuse(`illegal transition ${t.id}: ${t.status} → ${to}`);
+    // A phase describes an in-flight ticket and nothing else, so it is dropped
+    // here rather than in each command that lands one: `merging` left on a closed
+    // ticket, or on one that walled back to open, reads as work still running.
+    // Every route out of in-flight passes through this function; a per-command
+    // clear would eventually miss one.
+    if (t.status === 'in-flight' && to !== 'in-flight') delete t.phase;
     t.status = to as TicketStatus;
   };
 
@@ -225,12 +257,13 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (fs.existsSync(BACKLOG)) refuse(`${BACKLOG} already exists — a campaign is in flight`);
       if ((opts['spec-path'] === undefined) !== (opts['spec-sha'] === undefined))
         refuse('init takes --spec-path and --spec-sha together');
-      const seat = (opts.coordinator as string | undefined) ?? 'cli';
+      const seat = (opts.coordinator as string | undefined) ?? 'skill';
       if (seat !== 'cli' && seat !== 'skill') refuse(`--coordinator must be cli or skill, got ${JSON.stringify(seat)}`);
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
       save({
         project: (opts.project as string) || 'unnamed',
         coordinator: seat,
+        startedAt: new Date().toISOString(),
         ...(opts['spec-path'] && opts['spec-sha']
           ? { contract: { specPath: opts['spec-path'] as string, sha256: opts['spec-sha'] as string } }
           : {}),
@@ -399,7 +432,8 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const to = pos[1];
       if (to === 'closed') refuse('use the close command (evidence is mandatory)');
       if (to === 'decomposed') refuse('use the decompose command (children are mandatory)');
-      if (opts['base-sha'] !== undefined && to !== 'in-flight') refuse('--base-sha records a dispatch — only legal on → in-flight');
+      const dispatchFlags = ['base-sha', 'model', 'rung'].filter(f => opts[f] !== undefined);
+      if (dispatchFlags.length && to !== 'in-flight') refuse(`--${dispatchFlags[0]} records a dispatch — only legal on → in-flight`);
       transition(t, to!);
       if (to === 'parked') t.parkReason = (opts.note as string) || 'parked for human decision';
       else if (to === 'open') delete t.parkReason;
@@ -407,6 +441,17 @@ export function backlogWrite(args: string[], input?: unknown): string {
       // in-flight mid-review (typo amendment, closing) leave the original in
       // place, since the worktree they refer to was never re-cut.
       if (opts['base-sha'] !== undefined) t.baseSha = opts['base-sha'] as string;
+      if (opts.model !== undefined) {
+        const rung = opts.rung === undefined ? 1 : Number(opts.rung);
+        if (!Number.isInteger(rung) || rung < 1) refuse('--rung must be a positive integer (the 1-based position on the worker chain)');
+        t.dispatch = { model: opts.model as string, rung, at: new Date().toISOString() };
+      } else if (opts.rung !== undefined) refuse('--rung names a position on the chain, so it needs the --model it resolved to');
+      // A dispatch is the one transition that also implies a phase, so it stamps
+      // one rather than making the caller spend a second write on the obvious.
+      // The re-stamps have no dispatch, and no obvious phase either — whatever
+      // they are about to do, they say so themselves.
+      if (to === 'in-flight' && opts['base-sha'] !== undefined)
+        t.phase = { name: 'dispatched', at: new Date().toISOString() };
       save(b);
       journal(
         to === 'parked' ? 'parked' : 'status',
@@ -415,6 +460,25 @@ export function backlogWrite(args: string[], input?: unknown): string {
         parseData(),
       );
       return `${t.id} → ${to}`;
+    }
+    case 'phase': {
+      // Its own command because a phase moves WITHOUT a status change — verifying
+      // → under-review → merging are all in-flight — and `update` is refused on an
+      // in-flight ticket by design. It writes nothing any mechanic reads, so it
+      // journals at a lower grade than a transition: the phase line is how the
+      // operator sees where a live ticket is, and the timestamp is how they see
+      // that it stopped moving.
+      const b = load();
+      const t = findTicket(b, pos[0]);
+      const name = pos[1];
+      if (!name || !(PHASES as readonly string[]).includes(name))
+        refuse(`phase must be one of: ${PHASES.join(', ')}`);
+      if (t.status !== 'in-flight')
+        refuse(`${t.id} is ${t.status} — only an in-flight ticket has a phase (the writer clears it when the ticket settles)`);
+      t.phase = { name: name as TicketPhase, at: new Date().toISOString() };
+      save(b);
+      journal('phase', t.id, `${name}${opts.note ? ` — ${opts.note}` : ''}`, parseData());
+      return `${t.id} → ${name}`;
     }
     case 'attempt': {
       const b = load();
@@ -509,8 +573,28 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status attempt close decompose recover-resolution sweep-run note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`);
   }
+}
+
+// Agents propose ticket ids blind — to each other, and to whatever landed in the
+// backlog while they were reading. So they are told to use temporary ids and make
+// their internal edges valid against those, and the allocation is done here.
+// `recover.md` and `sweep.md` both promise an agent that "the coordinator
+// renumbers them", and a coordinator doing it by eye is how a draft's edge onto
+// its sibling silently becomes an edge onto an unrelated live ticket that happens
+// to hold that number now.
+//
+// Served as `loop renumber` (mechanics.ts), stdin to stdout, so the allocation
+// composes with the writer instead of being described to a model in prose.
+export function renumber(tickets: TicketDraft[]): TicketDraft[] {
+  const ids = nextTicketIds(tickets.length);
+  const remap = new Map(tickets.map((t, i) => [t.id, ids[i]!]));
+  return tickets.map((t, i) => ({
+    ...t,
+    id: ids[i]!,
+    depends_on: (t.depends_on ?? []).map(d => remap.get(d) ?? d),
+  }));
 }
 
 export function nextTicketIds(n: number): string[] {

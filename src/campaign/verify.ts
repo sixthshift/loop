@@ -13,7 +13,8 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { RUN, shAsync } from './state.ts';
+import { shAsync } from './state.ts';
+import { RUN } from './paths.ts';
 import { backlog, ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
 import { isInside, isManifest, normalizeModule } from './footprint.ts';

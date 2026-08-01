@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { RUN } from './state.ts';
+import { RUN } from './paths.ts';
 
 export type JournalEntry = { ts: string; seq?: number; kind: string; subject?: string; body?: string; data?: any };
 

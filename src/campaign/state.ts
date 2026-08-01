@@ -1,5 +1,7 @@
-// Campaign-level runtime infrastructure: the .ailoop paths, shell execution,
-// the repository-scoped coordinator lock, learnings, and spec hashing.
+// Campaign-level runtime infrastructure: shell execution, the repository-scoped
+// coordinator lock, learnings, and spec hashing. The paths themselves are in
+// paths.ts — a leaf, because this module depends on live.ts and live.ts needs a
+// path, which is a cycle if the constants live here.
 // Durable campaign decisions live in backlog.json; journal.jsonl is the audit
 // trail around them.
 
@@ -7,7 +9,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
-import * as tui from '../runtime/reporting.ts';
+import { LEARNINGS } from './paths.ts';
+import { liveStart, livePid, liveData, liveEnd } from './live.ts';
 
 export type ShResult = { status: number | null; stdout: string; stderr: string };
 
@@ -23,6 +26,14 @@ export type Frontier = {
   stuck: { ticket: string; window: number }[];
   inFlight: string[];
   complete: boolean;
+  // `complete` says ticket work has drained; this says the slow suite's verdict
+  // still describes the tree as it stands. Two facts, deliberately separate — a
+  // campaign can be complete with a stale gate, which is exactly the state that
+  // must not be reported as done. Green only covers the snapshot it measured, so
+  // this is a comparison of the run's ticket and closed counts against the
+  // current ones, and it is here rather than in the coordinator's head because a
+  // remembered green is the easiest thing in the loop to carry past new work.
+  gateGreen: boolean;
   counts: Record<string, number>;
   // Spec coverage as arithmetic rather than a terminal judgement: which
   // enumerated requirements no ticket claims, and which are delivered by
@@ -37,8 +48,6 @@ export type Frontier = {
 // (by spec sha) on every resume.
 export type CampaignContext = { specPath: string; spec: string };
 
-export const RUN = '.ailoop/campaign';
-export const LEARNINGS = '.ailoop/learnings';
 export function sh(cmd: string, cwd = '.'): ShResult {
   return spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
@@ -50,22 +59,22 @@ export function sh(cmd: string, cwd = '.'): ShResult {
 // burns an hour before the group is killed. The child is a process group and the
 // kill targets the whole group: a leaked grandchild (a test suite's dev server)
 // holding the stdio pipes would otherwise keep `close` from ever firing.
-// `label` opts a run into the live display: its output streams to the TUI as a
-// script the operator can inspect in real time (same seam agent.ts uses for
-// agents). Unlabeled runs stay silent — internal git/probe calls don't belong
-// on the dashboard.
+// `label` opts a run into the live window (live.ts): the run publishes itself to
+// `.ailoop/campaign/live/` so a dashboard in another process can watch it, since
+// the coordinator driving this verb never sees the stream. Unlabeled runs stay
+// silent — internal git and probe calls are not what anyone is watching for.
 export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId?: string } = {}): Promise<ShResult> {
   const { label, ticketId } = opts;
   const timeoutMs = 60 * 60 * 1000;
   return new Promise(resolve => {
     const child = spawn('bash', ['-lc', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
-    if (label) { tui.scriptStart(label, cmd, ticketId); tui.scriptPid(label, child.pid); }
+    if (label) { liveStart(label, cmd, ticketId); livePid(label, child.pid); }
     let stdout = '', stderr = '', settled = false;
     const finish = (status: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (label) tui.scriptEnd(label, status);
+      if (label) liveEnd(label);
       resolve({ status, stdout, stderr });
     };
     const timer = setTimeout(() => {
@@ -73,8 +82,8 @@ export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId
       stderr += `\nshAsync: killed after ${Math.round(timeoutMs / 60000)}m (hang backstop)`;
       finish(124);
     }, timeoutMs);
-    child.stdout.on('data', d => { stdout += d; if (label) tui.scriptData(label, String(d)); });
-    child.stderr.on('data', d => { stderr += d; if (label) tui.scriptData(label, String(d)); });
+    child.stdout.on('data', d => { stdout += d; if (label) liveData(label, String(d)); });
+    child.stderr.on('data', d => { stderr += d; if (label) liveData(label, String(d)); });
     child.on('close', status => finish(status));
     child.on('error', e => { stderr += String(e); finish(127); });
   });

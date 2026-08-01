@@ -34,11 +34,11 @@ The relationship between the two skills is exact:
 
 ## The contract — what the spec must supply
 
-There are two coordinators and **one contract**: the `loop` CLI
-(`loop campaign <spec.md>`) and the `ailoop` skill share the same kickoff role,
-the same schema and the same refusal, so a spec that satisfies one satisfies
-both. Kickoff reads the locked spec **exactly once** into a campaign config and
-extracts these; a spec missing any of them bounces:
+The coordinator is the `ailoop` skill, and the gate you are writing against is
+the `kickoff` role it runs — `loop prompt kickoff`, with the schema at
+`loop schema kickoff`, which is where the refusal below actually lives. Kickoff
+reads the locked spec **exactly once** into a campaign config and extracts these;
+a spec missing any of them bounces:
 
 1. **Requirements — a flat, numbered list of every normative in-scope clause.**
    Kickoff enumerates them as `R1`, `R2`, … and this happens *once*: tickets
@@ -221,10 +221,10 @@ This checklist aims at kickoff; it does not replace it. Kickoff is the
 authoritative gate and runs before any build spend — a spec that bounces there
 is the system working, not a failure of the lock.
 
-Then stamp `status: locked` and hand off to a coordinator. Two drive the same
-contract, so name both and let the human pick: `loop campaign <spec>` puts
-deterministic code in the seat, `/ailoop` puts a model there. Neither can resume
-the other's campaign, so the choice is made once per campaign.
+Then stamp `status: locked` and hand off: `/ailoop` with the spec path drives it
+to green. Suggest the human open `loop watch` in a second pane — the campaign runs
+for hours inside a session whose scrollback is not a status display, and that verb
+is the one honest view of where it has got to.
 
 ## Interrogation craft — the actual skill
 

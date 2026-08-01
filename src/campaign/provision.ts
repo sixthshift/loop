@@ -14,14 +14,13 @@
 // Every shell call here is async, and that is load-bearing rather than stylistic:
 // where the filesystem can neither clone nor hardlink, the copy moves hundreds of
 // megabytes and takes seconds. Run synchronously it would hold the coordinator's
-// event loop — and therefore the live display — once per dispatch, freezing the
-// dashboard for the wave. The caller keeps this off its critical path (see
-// drive.ts's dispatch).
+// event loop once per dispatch, stalling every other check the same verb is
+// running. The caller keeps this off its critical path.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { shAsync } from './state.ts';
-import * as tui from '../runtime/reporting.ts';
+import { narrate } from '../runtime/narrate.ts';
 
 // Directory names a toolchain resolves relative to the working directory. Fixed
 // names rather than detection: the list is short and additive, and being wrong on
@@ -58,7 +57,7 @@ export async function provision(id: string, dir: string): Promise<string> {
   const roots = await depRoots();
   if (!roots.length) return 'nothing to provision (no ignored dependency tree in the checkout)';
 
-  tui.log(`provisioning ${id}: [${roots.join(', ')}]…`);
+  narrate(`provisioning ${id}: [${roots.join(', ')}]…`);
   const done: string[] = [];
   for (const rel of roots) {
     const dst = path.join(dir, rel);
@@ -66,7 +65,7 @@ export async function provision(id: string, dir: string): Promise<string> {
     done.push(`${rel} (${await copyTree(path.resolve(rel), dst)})`);
   }
   const summary = `provisioned ${done.join(', ')} in ${Math.round((Date.now() - startedAt) / 1000)}s`;
-  tui.log(`${id}: ${summary}`);
+  narrate(`${id}: ${summary}`);
   return summary;
 }
 

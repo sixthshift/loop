@@ -13,9 +13,8 @@ ends only when nothing autonomous is left.
 
 The prompt is `loop prompt recover` — do not write your own. It carries the
 authority-and-trust rules, the four root-cause classes, the safety envelope and
-the action contracts, and it is the same text the CLI seat hands its recover
-agent. Your job is the four things around it: the anomaly key, the budget, the
-jurisdiction dance, and applying what comes back.
+the action contracts. Your job is the four things around it: the anomaly key, the
+budget, the jurisdiction dance, and applying what comes back.
 
 ## The anomaly kinds
 
@@ -55,11 +54,11 @@ Read the count off `backlog.json`'s `recoveries[<key>]` — `{count, summaries}`
 durable state, so it survives a resume and a compaction. Never from memory: a
 gate-red → repair → gate-red cycle easily spans one.
 
-*Documented divergence from the CLI seat:* it counts a **merit wall's** recovery
-budget in memory, so a resume grants each walled ticket two fresh attempts, while
-the durable count binds you across resumes. Yours is the stricter reading. Left as
-is deliberately — the count that survives a restart is the honest one, and a
-budget you can reset by restarting is not a budget.
+Ask `loop recovery-budget --kind <kind> [--ticket <id>]` rather than deriving the
+key: whether a kind budgets per ticket or per campaign is the verb's to know, and
+the loose guess — one key for what should have been two — is the failure that never
+announces itself, because a budget that never trips looks exactly like a budget
+with room left.
 
 Resolution is what makes a repeat damning. Recover said it fixed the campaign
 definition and the same anomaly came back — that is exactly what a defect in this
@@ -144,6 +143,6 @@ Three rules on the actions you accept:
 
 Every recover call is journaled, so the recover log is this seat's own escaped-bug
 record. A `kind` that keeps coming back is a missing arm in SKILL.md, not a run of
-bad luck — propose the edit to the human. The CLI seat promotes the same pattern
-into `drive.ts`; the two logs are comparable precisely because the anomaly
-vocabulary is shared.
+bad luck — propose the edit to the human. Keep the anomaly vocabulary stable when
+you do: it is the join key across every campaign's log, and a renamed kind silently
+resets the history that would have shown the pattern.

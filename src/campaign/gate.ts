@@ -35,6 +35,18 @@ export const GATE_RED = 'campaign-gate-red';
 // What a caller may do with a command that is already deciding correctness.
 export type GateAuthority = 'apply' | 'refuse';
 
+// Replacing a live gate command is granted by the anomaly, not claimed by the
+// caller — which is why this derives the authority from the kind rather than
+// taking it as an argument. Exactly one invocation may replace: a recover
+// answering that gate's own red run, the one caller that held the failure and
+// could re-run its correction green. Every other arm reaches a gate amendment
+// without having run the gate, so for them a reused name is refused and
+// journaled. Asking the caller to self-report its authority would make the rule
+// advisory, and the rule is the only thing standing between an escaped bug and a
+// gate quietly edited into agreeing with it.
+export const gateAuthority = (anomalyKind: string): GateAuthority =>
+  anomalyKind === GATE_RED ? 'apply' : 'refuse';
+
 export type GateEdit = {
   added: Check[];
   // `was` is the command in force when the amendment was proposed — the record

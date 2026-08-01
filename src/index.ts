@@ -1,19 +1,21 @@
 #!/usr/bin/env bun
-// loop — the loop-engineering toolkit. `campaign` is its first verb: the
-// script-coordinator (src/campaign/) that drives a locked build spec to green.
-// This file is only the CLI shell — verb wiring and arg parsing; the
-// coordinator itself lives in campaign/.
+// loop — the substrate an autonomous build coordinator stands on.
 //
-// Two coordinators drive this architecture: the drive loop below, and the
-// `ailoop` skill's model in the same seat. They share the .ailoop/campaign/
-// layout AND the mechanics — the skill reaches every measurement and bookkeeping
-// step through the verbs in mechanics.ts, so the seat is the only difference
-// between the two. A campaign in flight still belongs to whoever opened it
-// (backlog.coordinator), because neither seat can hold the other's lock.
+// The coordinator itself is the `ailoop` skill: a model that decomposes a locked
+// spec, dispatches workers, and drives to a green campaign gate. This program is
+// everything underneath that seat — the sole backlog writer, the frontier
+// arithmetic, verification and its scope check, worktree provisioning, the role
+// prompts and their schemas — reached as verbs (mechanics.ts), plus `watch`, the
+// read-only window onto a campaign it is not driving.
+//
+// It used to be the coordinator too, with a deterministic drive loop in that
+// seat. That version needed an enumerated arm per fault, which is the cost a model
+// in the seat doesn't pay, and it is gone. What it left behind is the half worth
+// keeping: nothing here asks the coordinator to remember, count, or measure.
 
 import { program } from 'commander';
-import { runCampaign } from './campaign/index.ts';
 import { renderProgress } from './campaign/progress.ts';
+import { runWatch } from './tui/watch.ts';
 import { registerMechanics } from './mechanics.ts';
 import { installSkills, uninstallSkills } from './skills.ts';
 import { runUpdate } from './update.ts';
@@ -31,15 +33,9 @@ program
   .enablePositionalOptions();
 
 program
-  .command('campaign')
-  .description('start a campaign (or resume it, spec unchanged)')
-  .argument('<spec.md>', 'path to the locked build spec')
-  .action((spec: string) => runCampaign(spec));
-
-program
-  .command('resume')
-  .description('resume without re-supplying the spec path')
-  .action(() => runCampaign(null));
+  .command('watch')
+  .description('live read-only dashboard for the campaign in this repository (non-TTY prints the tree once)')
+  .action(async () => { await runWatch(); });
 
 program
   .command('status')
@@ -72,7 +68,7 @@ program
     installSkills({ force: false });
   });
 
-// The same mechanics this program drives with, as verbs for the other seat.
+// The verbs the coordinator drives through — most of this program's surface.
 registerMechanics(program);
 
 await program.parseAsync();
