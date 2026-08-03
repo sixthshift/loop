@@ -557,6 +557,34 @@ the work is the last one that should grade it.
 `.ailoop/learnings/` survives a campaign and feeds the next one's kickoff, which is
 the only way a later campaign can compare against an earlier one.
 
+### What the first campaigns must measure
+
+Several arguments above are settled by cost structure, not data — the same
+epistemic status as retiring the drive loop. Each carries a falsifiable
+prediction, and the journal already records the events that decide it, so the
+first campaigns double as the experiment. Re-litigating any of these before the
+data exists is design-by-prior; so is building more mechanics.
+
+- **Review's price.** The adversarial review is priced for workers that game and
+  misread. Count `gamed` verdicts and wrong-boundary retries per campaign:
+  near-zero after a handful of campaigns means review is over-priced insurance
+  and can be lightened — sampled, or triggered only on rung-climbs — with
+  evidence in hand rather than priors about model character.
+- **The fault tail.** "There was always another arm" was observed during
+  development, not steady state. Tally recover kinds per campaign: a kind
+  recurring with a stable shape is the next verb candidate, and a tail that
+  flattens reopens the script-seat question honestly — that bet was settled on
+  cost structure, and this is the counter-evidence that would unsettle it.
+- **Narrative continuity.** The model seat's claimed edge is lived context: it
+  diagnoses from having watched the situation develop, where the old escalate
+  path handed a fresh agent a briefing for a fault the script never anticipated.
+  If that's the real mechanism, coordinator quality should drop right after a
+  context compaction — the moment its history becomes a summary, it *is* the
+  briefing-packet agent. Observed degradation → invest in the journal as
+  reconstruction; none → compaction risk is overweighted.
+- **`loop watch` fidelity.** Already a known limit: the dashboard has never
+  rendered a real campaign. The first one is its validation run.
+
 ## Known limits
 
 - **Workers run `--dangerously-skip-permissions`** (as does the kickoff agent, so
