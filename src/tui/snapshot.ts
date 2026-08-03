@@ -74,41 +74,6 @@ const journalMtime = (): number | null => {
   catch { return null; }
 };
 
-// --- what the active pane shows ---------------------------------------------
-
-// One selectable line of live work. Tickets come from the backlog and runs from
-// the live directory, and they are one list rather than two panes because they
-// are one question — "what is happening right now" — answered at two grains: a
-// ticket is where the campaign is, a run is what is executing.
-export type ActiveRow =
-  | { kind: 'ticket'; key: string; ticket: Backlog['tickets'][number] }
-  | { kind: 'run'; key: string; run: LiveRun };
-
-// In-flight tickets, each followed by the checks running inside it, then any run
-// that belongs to no ticket — a campaign gate, a fast-tier probe at the root.
-//
-// A ticket with no run under it is the normal case, not a gap: for most of a
-// ticket's life the thing working on it is an agent in the coordinator's session,
-// which publishes nothing here. Its phase is what stands in for the tail.
-export function activeRows(snap: Snapshot): ActiveRow[] {
-  const tickets = (snap.backlog?.tickets ?? []).filter(t => t.status === 'in-flight');
-  const claimed = new Set<string>();
-  const rows: ActiveRow[] = [];
-
-  for (const ticket of tickets) {
-    rows.push({ kind: 'ticket', key: ticket.id, ticket });
-    for (const run of snap.runs) {
-      if (run.ticketId !== ticket.id) continue;
-      claimed.add(run.label);
-      rows.push({ kind: 'run', key: run.label, run });
-    }
-  }
-  for (const run of snap.runs) {
-    if (!claimed.has(run.label)) rows.push({ kind: 'run', key: run.label, run });
-  }
-  return rows;
-}
-
 // How long the campaign has been quiet, and whether that is worth a colour.
 // Thresholds are generous on purpose: a review agent reading a large diff, a
 // worker mid-build, and a coordinator waiting on a slow model all legitimately

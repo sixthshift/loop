@@ -19,8 +19,10 @@ import { coverage } from '../campaign/frontier.ts';
 import type { Backlog, Ticket } from '../campaign/backlog.ts';
 import type { JournalEntry } from '../campaign/journal.ts';
 import type { LiveRun } from '../campaign/live.ts';
-import { readSnapshot, activeRows, staleness } from './snapshot.ts';
-import type { Snapshot, ActiveRow, Staleness } from './snapshot.ts';
+import { readSnapshot, staleness } from './snapshot.ts';
+import type { Snapshot, Staleness } from './snapshot.ts';
+import { buildBoard, capBoard, columnWidths, fitSpans, jumpColumn, needsYou, recentNotable, selectables } from './board.ts';
+import type { Board, NoteRow } from './board.ts';
 import { railGraph } from './railgraph.ts';
 import type { RailGraph, RailLine } from './railgraph.ts';
 import { wrapText, windowAround, hhmm, dur } from './layout.ts';
@@ -85,9 +87,20 @@ function Dashboard() {
   const cols = Math.max(60, stdout.columns || 100);
 
   const b = snap.backlog;
-  const active = activeRows(snap);
   const tickets = ticketList(b);
   const graph = railGraph(tickets);
+
+  // The pipeline board: built raw, capped to the rows the frame can spare, then
+  // flattened for selection — from the CAPPED board, so j/k can never land on a
+  // cell the frame isn't showing.
+  const widths = columnWidths(cols, 5);
+  const notes = b ? needsYou(b) : [];
+  const ticker = recentNotable(snap.journal, 3);
+  const raw = b ? buildBoard(b, snap.runs, snap.readAt, widths[4]!) : null;
+  const boardBudget = Math.max(3,
+    rows - 10 - (raw?.looseRuns.length ?? 0) - Math.min(notes.length, 4) - ticker.length);
+  const board = raw ? capBoard(raw, boardBudget) : null;
+  const flat = board ? selectables(board) : [];
 
   // Nothing to tear down and nothing to kill: quitting a reader ends the reader.
   function quit() {
@@ -159,14 +172,16 @@ function Dashboard() {
     if (input === 'q') return quit();
 
     if (key.upArrow || input === 'k') setActiveSel(s => Math.max(0, s - 1));
-    if (key.downArrow || input === 'j') setActiveSel(s => Math.min(Math.max(0, active.length - 1), s + 1));
+    if (key.downArrow || input === 'j') setActiveSel(s => Math.min(Math.max(0, flat.length - 1), s + 1));
+    if (key.leftArrow || input === 'h') setActiveSel(s => jumpColumn(flat, s, -1));
+    if (key.rightArrow || input === 'l') setActiveSel(s => jumpColumn(flat, s, 1));
     // The two grains drill into different things: a ticket into its contract and
     // history, a run into what it is printing.
-    if (key.return && active.length) {
-      const row = active[clamp(activeSel, active.length)]!;
-      setView(row.kind === 'ticket'
-        ? { name: 'ticket', id: row.ticket.id, from: 'active' }
-        : { name: 'inspect', label: row.run.label });
+    if (key.return && flat.length) {
+      const it = flat[clamp(activeSel, flat.length)]!;
+      setView(it.target.kind === 'ticket'
+        ? { name: 'ticket', id: it.target.id, from: 'active' }
+        : { name: 'inspect', label: it.target.label });
     }
   });
 
@@ -180,69 +195,84 @@ function Dashboard() {
   if (view.name === 'journal') return <JournalView {...frame} snap={snap} journalOff={journalOff} filterIdx={filterIdx} />;
   if (view.name === 'inspect')
     return <RunTailView {...frame} run={snap.runs.find(r => r.label === view.label)} label={view.label} />;
-  return <ActiveView {...frame} snap={snap} active={active} activeSel={clamp(activeSel, active.length)} />;
+  return <ActiveView {...frame} snap={snap} board={board} flat={flat} widths={widths}
+    notes={notes} ticker={ticker} activeSel={clamp(activeSel, flat.length)} />;
 }
 
-// --- active view: in-flight tickets, and the checks running inside them ------
+// --- active view: the pipeline board ------------------------------------------
 
-// The pane is ticket-oriented, and that is the pivot rather than a layout choice.
-// It used to list processes, because the coordinator owned them and could be asked
-// what was running. A reader cannot have that list: most of a ticket's life is an
-// agent inside the coordinator's own session, invisible from here. What IS
-// knowable is where each in-flight ticket has got to and how long it has been
-// there — the same question, asked at the grain the files can answer.
-function ActiveView({ rows, cols, snap, active, activeSel }: Frame & {
-  snap: Snapshot; active: ActiveRow[]; activeSel: number;
+// The pane is the pipeline itself: a column per stage, tickets flowing left to
+// right, board.ts owning which cell lands where. Under the board, in attention
+// order: checks no ticket owns (a gate run), whatever waits on a human, the
+// last few story events — so the screen answers "do I need to do anything?"
+// before it answers anything else. It replaced a flat in-flight list plus
+// counters, which showed the same facts and left the motion to be
+// reconstructed in the operator's head.
+function ActiveView({ rows: _rows, cols, snap, board, flat, widths, notes, ticker, activeSel }: Frame & {
+  snap: Snapshot; board: Board | null; flat: ReturnType<typeof selectables>;
+  widths: number[]; notes: NoteRow[]; ticker: JournalEntry[]; activeSel: number;
 }) {
   const b = snap.backlog;
+  const selKey = flat[clamp(activeSel, flat.length)]?.key;
   return (
     <Box flexDirection="column" width={cols}>
       <Header cols={cols} snap={snap} />
       <Rule cols={cols} />
-      {b && <>
-        <GatePanel b={b} cols={cols} />
+      {board && b ? <>
+        <BoardGrid board={board} widths={widths} selKey={selKey} />
+        {board.looseRuns.map(r => (
+          <RunLine key={r.label} run={r} selected={selKey === `run:${r.label}`} cols={cols} />
+        ))}
         <Rule cols={cols} />
-        <CountsLine b={b} cols={cols} />
+        {notes.slice(0, 4).flatMap((n, i) =>
+          wrapText(n.text, cols - 1, 4).slice(0, 2).map((line, k) => (
+            <Text key={`${i}:${k}`} color={n.color} dimColor={n.dim}>{line}</Text>
+          )))}
+        {ticker.map((j, i) => <TickerLine key={i} j={j} cols={cols} />)}
         <Rule cols={cols} />
-      </>}
-      <Text bold>
-        {`▸ in flight${active.length ? '' : '  (nothing in flight)'}`}
-        <Text dimColor>   active · journal (tab)</Text>
-      </Text>
-      {active.map((row, i) => (
-        <ActiveRowLine key={row.key} row={row} selected={i === activeSel} cols={cols} caps={b?.caps} />
-      ))}
-      <Rule cols={cols} />
+        <SpecLine b={b} cols={cols} />
+      </> : <Text dimColor>{'  no campaign — kickoff writes .ailoop/campaign/ and this pane fills in'}</Text>}
       <Footer cols={cols}
-        hint="tab journal · R requirements · t tickets · g graph · ↵ detail · q quit · ? help" />
+        hint="h/l columns · j/k cells · ↵ detail · tab journal · R reqs · t tickets · g graph · q quit · ? help" />
     </Box>
   );
 }
 
-function ActiveRowLine({ row, selected, cols, caps }: {
-  row: ActiveRow; selected: boolean; cols: number; caps: Backlog['caps'];
-}) {
-  if (row.kind === 'run') return <RunLine run={row.run} selected={selected} cols={cols} />;
-
-  const t = row.ticket;
-  // Merit attempts only: an infra death didn't spend the ticket's budget, and a
-  // row reading 3/3 because the engine died three times would send the operator
-  // to look at a ticket that never failed on its own terms.
-  const merit = (t.attempts ?? []).filter(a => !a.infra).length;
-  const max = caps?.maxAttempts ?? 3;
-  const phase = t.phase;
-  const held = phase ? Date.now() - Date.parse(phase.at) : null;
+function BoardGrid({ board, widths, selKey }: { board: Board; widths: number[]; selKey?: string }) {
+  const height = Math.max(1, ...board.columns.map(c => c.cells.length));
   return (
-    <Text inverse={selected}>
-      {`  ⚙ ${t.id.padEnd(6)} `}
-      {phase
-        ? <Text color={PHASE_COLOR[phase.name]}>{phase.name.padEnd(13)}</Text>
-        : <Text dimColor>{'—'.padEnd(13)}</Text>}
-      {held === null ? '        ' : `${dur(held).padEnd(8)}`}
-      <Text dimColor>{`${merit}/${max} `}</Text>
-      {t.dispatch ? <Text dimColor>{`${t.dispatch.model} `}</Text> : null}
-      {trunc(t.title, Math.max(10, cols - 48))}
-    </Text>
+    <>
+      <Text>
+        {board.columns.map((c, i) => (
+          <React.Fragment key={i}>
+            {i ? <Text dimColor>│</Text> : null}
+            {fitSpans([{ text: ` ${c.title}`, bold: true }], widths[i]!).map((s, j) => (
+              <Text key={j} bold={s.bold}>{s.text}</Text>
+            ))}
+          </React.Fragment>
+        ))}
+      </Text>
+      <Text dimColor>{widths.map(w => '─'.repeat(w)).join('┼')}</Text>
+      {Array.from({ length: height }, (_, r) => (
+        <Text key={r}>
+          {board.columns.map((c, i) => {
+            const cell = c.cells[r];
+            const spans = fitSpans(cell ? [{ text: ' ' }, ...cell.spans] : [], widths[i]!);
+            // Only a targeted cell highlights: the bar, the gate, and "+N more"
+            // are furniture, and furniture lighting up reads as a cursor bug.
+            const inverse = !!cell?.target && cell.key === selKey;
+            return (
+              <React.Fragment key={i}>
+                {i ? <Text dimColor>│</Text> : null}
+                {spans.map((s, j) => (
+                  <Text key={j} color={s.color} dimColor={s.dim} bold={s.bold} inverse={inverse}>{s.text}</Text>
+                ))}
+              </React.Fragment>
+            );
+          })}
+        </Text>
+      ))}
+    </>
   );
 }
 
@@ -259,11 +289,6 @@ function RunLine({ run, selected, cols }: { run: LiveRun; selected: boolean; col
     </Text>
   );
 }
-
-const PHASE_COLOR: Record<string, string> = {
-  dispatched: 'cyan', verifying: 'blue', 'under-review': 'magenta',
-  probing: 'yellow', merging: 'green',
-};
 
 function Header({ cols, snap }: { cols: number; snap: Snapshot }) {
   const b = snap.backlog;
@@ -294,59 +319,40 @@ function StalenessCell({ stale }: { stale: Staleness }) {
   return <Text color={stale.grade === 'stale' ? 'red' : 'yellow'}>{quiet}</Text>;
 }
 
-function GatePanel({ b }: { b: Backlog; cols: number }) {
-  const ts = b.tickets.filter(t => t.status !== 'decomposed');
-  const done = ts.filter(t => t.status === 'closed').length;
-  const live = ts.filter(t => t.status !== 'closed').length;
-  const last = b.gateState?.lastRun;
-  const current = last?.tickets === b.tickets.length
-    && last.closed === b.tickets.filter(ticket => ticket.status === 'closed').length;
-  const gate = !b.gate?.length ? <Text dimColor>[no gate]</Text>
-    : b.gateState?.parked ? <Text color="red">[gate parked]</Text>
-    : last?.result === 'green' && current ? <Text color="green">[gate ✓]</Text>
-    : last?.result === 'red' && current ? <Text color="red">[gate ✗]</Text>
-    : live === 0 ? <Text color="yellow">[gate …]</Text>
-    : <Text> </Text>;
-  // Two bars, because they answer different questions and can disagree: the
-  // first is the backlog closing itself out, the second is how much of the SPEC
-  // that accounts for. A campaign can be 8/8 tickets with a clause nobody
-  // claimed, and only the lower bar says so.
-  const cov = b.requirements?.length ? coverage(b) : null;
+// The last few story events, one line each — a truncating ticker, because the
+// wrap-to-read version of every entry is one tab away in the journal.
+const WARM_KINDS = ['gate-red', 'escalation', 'integration-red', 'attempt', 'parked', 'recover-refused'];
+
+function TickerLine({ j, cols }: { j: JournalEntry; cols: number }) {
+  const warm = WARM_KINDS.includes(j.kind);
+  const line = ` ${hhmm(Date.parse(j.ts))} ${KIND_ICON[j.kind] ?? '·'} ${String(j.subject ?? '').padEnd(8)} ${j.body ?? ''}`;
   return (
-    <>
-      <Text>
-        {'  '}<Bar done={done} total={ts.length} width={24} />
-        {` ${String(done).padStart(2)}/${ts.length}  `}{gate}
-      </Text>
-      {cov && (
-        <Text>
-          {'  '}<Bar done={cov.proven.length} total={cov.requirements} width={24} />
-          {` ${String(cov.proven.length).padStart(2)}/${cov.requirements}  `}
-          {cov.unmapped.length
-            ? <Text color="yellow">[{cov.unmapped.length} clause{cov.unmapped.length > 1 ? 's' : ''} unclaimed]</Text>
-            : <Text dimColor>[spec]</Text>}
-        </Text>
-      )}
-    </>
+    <Text color={warm ? 'red' : j.kind === 'close' ? 'green' : undefined}
+      dimColor={!warm && j.kind !== 'close'}>{trunc(line, cols - 1)}</Text>
   );
 }
 
-// Spend used to live on this line, tallied from the token counts the in-process
-// agent runner read off each stream. Nothing reports those to the coordinator now,
-// so what the files carry is whatever a `close` was handed — see postmortem.ts,
-// which prices what it has and says so. Rather than render a running total that
-// silently means "the subset of workers whose tokens someone passed along", the
-// line shows what it can count exactly and leaves cost to the post-mortem.
-function CountsLine({ b, cols }: { b: Backlog; cols: number }) {
-  const counts = b.tickets.reduce<Record<string, number>>((m, t) => ((m[t.status] = (m[t.status] || 0) + 1), m), {});
+// The spec's own bar — separate from the closed column's because the two can
+// disagree (8/8 tickets closed with a clause nobody claimed), and this line is
+// where the disagreement shows. No spend total on purpose: the files only carry
+// the token counts a close was handed, and a figure that silently means "the
+// subset someone priced" misleads more than it informs — postmortem.ts prices
+// what it has and says so.
+function SpecLine({ b, cols }: { b: Backlog; cols: number }) {
   const attempts = b.tickets.reduce((n, t) => n + (t.attempts?.length ?? 0), 0);
   const merit = b.tickets.reduce((n, t) => n + (t.attempts ?? []).filter(a => !a.infra).length, 0);
-  const line = ' ' + ['open', 'waiting', 'in-flight', 'closed', 'parked']
-    .filter(s => counts[s]).map(s => `${counts[s]} ${s}`).join(' · ')
-    + `   attempts ${attempts} (${merit} merit)`;
-  // Wrapped here rather than left to Ink, whose continuation starts at column 0 and
-  // reads as a stray line rather than as the rest of this one.
-  return <>{wrapText(line, cols, 1).map((l, i) => <Text key={i}>{l}</Text>)}</>;
+  const tail = ` · attempts ${attempts} (${merit} merit)`;
+  const cov = b.requirements?.length ? coverage(b) : null;
+  if (!cov) return <Text dimColor>{trunc(` attempts ${attempts} (${merit} merit)`, cols - 1)}</Text>;
+  return (
+    <Text>
+      {' spec '}
+      <Bar done={cov.proven.length} total={cov.requirements} width={16} />
+      {` ${cov.proven.length}/${cov.requirements} proven`}
+      {cov.unmapped.length ? <Text color="yellow">{` · ${cov.unmapped.length} unclaimed`}</Text> : null}
+      <Text dimColor>{tail}</Text>
+    </Text>
+  );
 }
 
 // --- journal view (its own tab) ---------------------------------------------
@@ -707,8 +713,9 @@ function RunTailView({ rows, cols, run, label }: Frame & { run: LiveRun | undefi
 
 function HelpView({ cols }: Frame) {
   const keys: [string, string][] = [
-    ['tab', 'switch between the active work and the journal'],
+    ['tab', 'switch between the pipeline board and the journal'],
     ['j/k ↑/↓', 'move selection / scroll the journal'],
+    ['h/l ←/→', 'jump between the board’s columns'],
     ['↵', 'ticket detail, or the selected check’s live output'],
     ['t', 'ticket browser'],
     ['R', 'requirements — the locked clauses and their claiming tickets'],

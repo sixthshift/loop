@@ -335,16 +335,27 @@ conversation, so there is no process to attach to and no way to ask it anything;
 replaced by atomic rename, and a path watcher misses exactly the writes that
 matter.
 
-The main screen is **ticket-oriented**, which is the pivot rather than a layout
-choice. It used to list processes, because the drive loop owned them; a reader
-cannot have that list, since most of a ticket's life is an agent inside the
-coordinator's own session. What the files do support is where each in-flight ticket
-has got to:
+The main screen is a **pipeline board** — a column per stage, tickets flowing
+left to right, because the loop *is* a pipeline and a flat list left the motion
+to be reconstructed in the operator's head. The grain is still the ticket, and
+that pivot is forced rather than chosen: the screen used to list processes,
+because the drive loop owned them; a reader cannot have that list, since most of
+a ticket's life is an agent inside the coordinator's own session. What the files
+do support is where each ticket has got to:
 
 ```
-⚙ T007   under-review   4m12s  1/3  claude-opus   wire the auth middleware
-    $ verify:T007 · unit   38s   ✓ 12 passed, 0 failed
+ ready 4 +2⋯ │ building 2  │ verify 1     │ review 1    │ closed 9/18
+─────────────┼─────────────┼──────────────┼─────────────┼──────────────
+ T013        │ T012 2m08s  │ T014 38s     │ T007 4m12s  │ ██████░░░░░
+ T016        │ T015 11m ⚠  │ $ 12 passed  │             │ gate —
+ ⋯ T020      │             │              │             │ ✓ T011
 ```
+
+Under the board, in attention order: checks no ticket owns (a campaign gate run,
+rendered full-width while it exists), whatever waits on a human — a parked
+ticket with its reason, a parked gate, an unclaimed clause — or the one line
+saying nothing does, then the last few story events from the journal. The
+screen answers "do I need to do anything?" before it answers anything else.
 
 The phase comes from `loop backlog phase`, which the coordinator stamps as it moves
 a ticket through settling. It is the only field in the snapshot no mechanic reads —
@@ -374,7 +385,7 @@ Prose **wraps rather than truncating**, everywhere it is the thing you came to
 read: journal bodies (a park reason is a paragraph), ticket titles and contracts,
 every attempt's hypothesis, and a check's output. Panes therefore budget the frame
 in display *rows*, not entries, and scrolling moves by row (`layout.ts` holds that
-arithmetic). Three things still cut at the edge on purpose: the active rows and the
+arithmetic). Three things still cut at the edge on purpose: the board's cells and the
 rail graph's labels, which are one-line summaries of something `↵` opens in full; a
 check's in-progress line, so a progress bar rewriting itself cannot resize the
 pane; and the header/footer chrome.
