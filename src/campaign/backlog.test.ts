@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import { describe, expect, test } from 'bun:test';
-import { backlog, backlogWrite } from './backlog.ts';
+import { backlog, backlogWrite, wantsStdinPayload } from './backlog.ts';
 import type { Backlog } from './backlog.ts';
 import { buildTicket, withScratchCampaign } from './scratch-campaign.ts';
 
@@ -498,5 +498,26 @@ describe('persistent coordinator state', () => {
     });
     expect(b.tickets[0]!.status).toBe('in-flight');
     expect(b.tickets[0]!.baseSha).toBe('abc123');
+  });
+});
+
+describe('wantsStdinPayload', () => {
+  // The CLI reads stdin only when asked. A payload-less command under an
+  // inherited pipe that never closes (a harness-spawned shell) would otherwise
+  // block forever on EOF it has no use for.
+  test('a positional `-` asks for stdin', () => {
+    expect(wantsStdinPayload(['update', 'T001', '-', '--note', 'sharpen'])).toBe(true);
+  });
+
+  test('a payload-less command never touches stdin', () => {
+    expect(wantsStdinPayload(['attempt', 'T001', '--failed', 'lint', '--hypothesis', 'blind: unproven clause'])).toBe(false);
+  });
+
+  test('a file-path payload never touches stdin', () => {
+    expect(wantsStdinPayload(['update', 'T001', '/tmp/patch.json'])).toBe(false);
+  });
+
+  test("an option's value is never mistaken for the marker", () => {
+    expect(wantsStdinPayload(['set-status', 'T001', 'open', '--note', '-'])).toBe(false);
   });
 });

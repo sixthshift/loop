@@ -30,7 +30,7 @@
 
 import fs from 'node:fs';
 import type { Command } from 'commander';
-import { backlog, backlogWrite, campaignExists, renumber } from './campaign/backlog.ts';
+import { backlog, backlogWrite, campaignExists, renumber, wantsStdinPayload } from './campaign/backlog.ts';
 import { frontier } from './campaign/frontier.ts';
 import type { Check, TicketDraft } from './campaign/agents/schemas.ts';
 import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
@@ -92,7 +92,10 @@ export function registerMechanics(program: Command): void {
     .passThroughOptions()
     .allowUnknownOption()
     .action(async (args: string[]) => {
-      const input = await stdinJson();
+      // Read stdin only when a positional `-` asks for it: a payload-less
+      // writer command under an inherited pipe that never closes must not
+      // block on EOF it will never use.
+      const input = wantsStdinPayload(args) ? await stdinJson() : undefined;
       assertSkillSeat();
       try { console.log(backlogWrite(args, input)); }
       catch (e: any) { fail(e.message); }

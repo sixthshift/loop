@@ -181,6 +181,23 @@ function validateTicket(t: any, existingIds: Set<string>, requirementIds: Set<st
 // `input` (object|array) is the payload for commands that took one on stdin as
 // a script (add/seed/update/decompose pass '-' as the positional). Every other
 // command reads only flags/positionals from `args`.
+// Whether this invocation asked for a stdin payload: a positional `-`. The CLI
+// must not read stdin unless asked — a payload-less command (`attempt`,
+// `set-status`) run with an inherited pipe that never closes would otherwise
+// block forever waiting for EOF it has no use for. The scan mirrors
+// backlogWrite's own option parsing so an option's value is never mistaken for
+// the marker.
+export function wantsStdinPayload(args: string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a.startsWith('--')) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('--')) i++;
+    } else if (a === '-') return true;
+  }
+  return false;
+}
+
 export function backlogWrite(args: string[], input?: unknown): string {
   const rest = [...args];
   const cmd = rest.shift();
@@ -229,7 +246,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
   };
   const readInput = (src: string | undefined): any[] => {
     if (src === undefined || src === '-') {
-      if (input === undefined) refuse('expected an input payload');
+      if (input === undefined) refuse('expected a payload — pass `-` as the positional and pipe JSON on stdin, or pass a file path');
       return Array.isArray(input) ? input : [input];
     }
     const parsed = JSON.parse(fs.readFileSync(src, 'utf8'));
