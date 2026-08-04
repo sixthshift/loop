@@ -103,6 +103,35 @@ export function attachWorktree(id: string): { dir: string; branch: string } | nu
   return { dir, branch };
 }
 
+export type PreserveResult =
+  | { ok: true; dir: string; branch: string; baseSha: string }
+  | { ok: false; conflict: string };
+
+// The sharpen verdict's half of the lifecycle: keep the judged build, re-cut its
+// checkout against the moved mainline. Rebase over merge because the next session
+// must sit on mainline the way a fresh dispatch would — verify diffs from
+// `baseSha`, and only a rebase keeps that diff the ticket's own work. A conflict
+// is reported, never resolved: resolving it here would be a mechanic writing
+// product code, so the caller files it as infra and falls back to
+// discard-and-rebuild, exactly the merge-conflict path.
+export function preserveWorktree(id: string): PreserveResult {
+  const branch = branchOf(id);
+  if (sh(`git rev-parse --verify ${branch}`).status !== 0)
+    throw new Error(`worktree preserve ${id}: no branch ${branch} to preserve`);
+  removeWorktree(id); // re-cut rather than reuse: the judged checkout may hold verify litter
+  const dir = dirOf(id);
+  const r = sh(`git worktree add "${dir}" ${branch}`);
+  if (r.status !== 0) throw new Error(`worktree preserve ${id}: ${r.stderr}`);
+  const base = mainSha();
+  const rb = sh(`git rebase ${base}`, dir);
+  if (rb.status !== 0) {
+    sh('git rebase --abort', dir);
+    removeWorktree(id); // leave only the branch — the caller discards and rebuilds fresh
+    return { ok: false, conflict: (rb.stdout + rb.stderr).slice(-2000) };
+  }
+  return { ok: true, dir, branch, baseSha: base };
+}
+
 export function removeWorktree(id: string): void {
   sh(`git worktree remove --force "${dirOf(id)}"`);
   sh('git worktree prune');

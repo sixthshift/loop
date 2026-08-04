@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
-import { createWorktree, attachWorktree, removeWorktree, worktreesRoot, mergeBranch } from './worktree.ts';
+import { createWorktree, attachWorktree, preserveWorktree, removeWorktree, worktreesRoot, mergeBranch } from './worktree.ts';
 import { provision } from './provision.ts';
 
 const git = (cmd: string, cwd?: string) => execSync(`git ${cmd}`, { stdio: 'pipe', cwd }).toString();
@@ -176,6 +176,58 @@ describe('provisioning', () => {
       await provision('T001', dir);
       removeWorktree('T001');
       expect(fs.existsSync(dir)).toBe(false); // hundreds of megabytes per ticket, so a leak here compounds
+    });
+  });
+});
+
+describe('preserving a judged build (sharpen)', () => {
+  // One commit of worker output on the ticket's branch, as a sharpen verdict
+  // inherits it.
+  const workOn = (id: string): void => {
+    const { dir } = createWorktree(id);
+    fs.writeFileSync(path.join(dir, 'src/a.ts'), 'export const a = "worker";\n');
+    git('add -A && git commit -qm "feat: ticket work"', dir);
+  };
+
+  test('re-cuts the worktree on its branch, rebased onto the moved mainline', () => {
+    inRepo(() => {
+      workOn('T001');
+      fs.writeFileSync('README.md', 'another ticket landed first\n');
+      git('add -A && git commit -qm "other landing"');
+      const main = git('rev-parse HEAD').trim();
+      const kept = preserveWorktree('T001');
+      expect(kept.ok).toBe(true);
+      if (!kept.ok) return;
+      // The new base is the moved mainline, and the ticket's commit sits
+      // directly on it — so verify's diff-since-base is still the ticket's
+      // own work and nothing else.
+      expect(kept.baseSha).toBe(main);
+      expect(git('rev-parse HEAD^', kept.dir).trim()).toBe(main);
+      expect(git(`diff --name-only ${kept.baseSha}..HEAD`, kept.dir).trim()).toBe('src/a.ts');
+      expect(fs.readFileSync(path.join(kept.dir, 'src/a.ts'), 'utf8')).toBe('export const a = "worker";\n');
+    });
+  });
+
+  test('a rebase conflict reports instead of resolving, leaving only the branch', () => {
+    inRepo(() => {
+      workOn('T001');
+      fs.writeFileSync('src/a.ts', 'export const a = "mainline";\n');
+      git('add -A && git commit -qm "conflicting landing"');
+      const kept = preserveWorktree('T001');
+      expect(kept.ok).toBe(false);
+      if (kept.ok) return;
+      expect(kept.conflict.toLowerCase()).toContain('conflict');
+      // Nothing half-rebased lingers: the worktree is gone, the branch —
+      // still the only copy of the judged build — survives for the caller
+      // to discard or retry.
+      expect(fs.existsSync(path.join(worktreesRoot(), 'T001'))).toBe(false);
+      expect(git('rev-parse --verify ailoop/T001').trim()).not.toBe('');
+    });
+  });
+
+  test('refuses when no branch survives to preserve', () => {
+    inRepo(() => {
+      expect(() => preserveWorktree('T404')).toThrow(/no branch/);
     });
   });
 });

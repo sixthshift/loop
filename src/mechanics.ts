@@ -43,7 +43,7 @@ import type { TreeSnapshot } from './campaign/jurisdiction.ts';
 import { writePostmortem } from './campaign/postmortem.ts';
 import { mergeLearnings } from './campaign/learn.ts';
 import type { Harvest } from './campaign/learn.ts';
-import { createWorktree, attachWorktree, removeWorktree, deleteBranch, mergeBranch } from './campaign/worktree.ts';
+import { createWorktree, attachWorktree, preserveWorktree, removeWorktree, deleteBranch, mergeBranch } from './campaign/worktree.ts';
 import { rawPrompt, renderPrompt } from './campaign/agents/prompt.ts';
 import { SCHEMAS } from './campaign/agents/schemas.ts';
 import { MODELS, resolvedChain } from './campaign/agents/models.ts';
@@ -179,7 +179,7 @@ export function registerMechanics(program: Command): void {
     });
 
   const worktree = mechanic('worktree')
-    .description('worker checkout lifecycle: add attach remove merge delete-branch');
+    .description('worker checkout lifecycle: add attach preserve remove merge delete-branch');
 
   worktree
     .command('add')
@@ -200,6 +200,18 @@ export function registerMechanics(program: Command): void {
     .action((id: string) => {
       assertSkillSeat();
       try { emit(attachWorktree(id)); } catch (e: any) { fail(e.message); }
+    });
+
+  worktree
+    .command('preserve')
+    .description('re-cut a judged worktree from its surviving branch, rebased onto mainline — the sharpen verdict keeps the build; a conflict is the caller\'s infra path')
+    .argument('<id>', 'ticket id')
+    .action(async (id: string) => {
+      assertSkillSeat();
+      try {
+        const kept = preserveWorktree(id);
+        emit(kept.ok ? { ...kept, provision: await provision(id, kept.dir) } : kept);
+      } catch (e: any) { fail(e.message); }
     });
 
   worktree

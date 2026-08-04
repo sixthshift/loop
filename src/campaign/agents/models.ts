@@ -44,8 +44,8 @@
 //   review      — ticket review: rules on a returned ticket from the verify
 //                 evidence AND its own cold read of the diff for cheats (hardcoded
 //                 outputs, weakened/deleted tests, special-cased inputs,
-//                 out-of-scope features): close / retry / gamed / flake-probe /
-//                 amend / escalate. The sole post-work authority.
+//                 out-of-scope features): close / retry / gamed / sharpen /
+//                 flake-probe / amend / escalate. The sole post-work authority.
 //   sweep       — campaign-level reflection on a cadence: reads the whole
 //                 journal and names the pattern no per-ticket verdict can see
 //                 — a systemic landmine, a mis-decomposition, a check the

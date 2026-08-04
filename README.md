@@ -107,7 +107,7 @@ corrupting the parse:
 loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
 loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage
 loop verify --ticket … --dir … --base …    # the measurement; --cmd … for a flake probe
-loop worktree add|attach|remove|merge|delete-branch <id>
+loop worktree add|attach|preserve|remove|merge|delete-branch <id>
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
 loop recovery-budget --kind … [--ticket …]  # may a recover be spent here, and what did the last two say
 loop gate-amend --by … --note … --anomaly … # the gate, under the authority its anomaly grants
@@ -228,9 +228,11 @@ returns:
   stay inside the ticket's declared modules. Writes an evidence log and a patch.
 - **review** (fresh agent, cold read of the diff and the evidence) is the single
   adversarial gate. It rules `close`, `retry`, `gamed` (hardcoded outputs,
-  weakened tests, special-cased inputs, scope creep — the cheated check gets
-  sharpened before re-dispatch), `flake-probe` (re-run a command N times),
-  `amend-typo`, or `escalate`.
+  weakened tests, special-cased inputs, scope creep — the build is discarded and
+  the cheated check gets sharpened before re-dispatch), `sharpen` (the build is
+  affirmed correct but the checks can't observe a locked clause — the checks
+  grow, the build is preserved and re-proven rather than rebuilt), `flake-probe`
+  (re-run a command N times), `amend-typo`, or `escalate`.
 - **close** merges to mainline, fast-forwarding when the ticket's base is still
   the tip — a merge commit there would record nothing the journal's close event
   doesn't. A merge conflict is an *infra* failure, not a merit one — the ticket

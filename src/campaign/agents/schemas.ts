@@ -52,8 +52,12 @@ export type WorkerVerdict = {
   reason?: string;
 };
 
+// `gamed` and `sharpen` both carry sharpenChecks — the escaped-bug rule either
+// way — but fork on the build: gamed discards it (deliberate evasion, or a blind
+// spot the reviewer cannot clear the diff of), sharpen preserves it (the diff is
+// affirmed correct; only the checks failed to prove it).
 export type ReviewVerdict = {
-  verdict: 'close' | 'retry' | 'gamed' | 'flake-probe' | 'amend-typo' | 'escalate';
+  verdict: 'close' | 'retry' | 'gamed' | 'sharpen' | 'flake-probe' | 'amend-typo' | 'escalate';
   note?: string;
   failing?: string[];
   hypothesis?: string;
@@ -213,7 +217,7 @@ export const WORKER = {
 export const REVIEW = {
   type: 'object',
   properties: {
-    verdict: { type: 'string', enum: ['close', 'retry', 'gamed', 'flake-probe', 'amend-typo', 'escalate'] },
+    verdict: { type: 'string', enum: ['close', 'retry', 'gamed', 'sharpen', 'flake-probe', 'amend-typo', 'escalate'] },
     note: { type: 'string' },
     failing: { type: 'array', items: { type: 'string' } },
     hypothesis: { type: 'string' },
