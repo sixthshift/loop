@@ -324,11 +324,16 @@ real and file the attempt under the right half of the taxonomy (invariants 1 and
 
 Check the cadence at the top of each pass: 5 or more closes since
 `backlog.json`'s `sweep.closed` (and at least 3 journal entries — there is no
-pattern to see in two). Then run the `sweep` role on the whole journal. It is the
-only arm not scoped to one ticket, so it sees what no per-ticket verdict can: a
-systemic landmine, a decomposition wrong at the seams, a check the campaign keeps
-re-sharpening. It proposes; you apply through `loop backlog`, and a proposal the
-writer refuses is journaled rather than dropped.
+pattern to see in two). Then run the `sweep` role on the journal **since the last
+sweep**, with every prior sweep's summary as `sweepSummaries` (`(none recorded)`
+on the first): the summaries are the rolling memory, which is what keeps each
+sweep's read bounded instead of re-reading the whole history every five closes.
+Both live in the journal — a `sweep` entry's body is its summary, so the delta
+is everything after the last one. The sweep is the only arm not scoped to one
+ticket, so it sees what no per-ticket verdict can: a systemic landmine, a
+decomposition wrong at the seams, a check the campaign keeps re-sharpening. It
+proposes; you apply through `loop backlog`, and a proposal the writer refuses is
+journaled rather than dropped.
 
 Record it with `loop backlog sweep-run --closed <n> --body "<summary>"`, where
 `<n>` is the closed count **when the sweep started**, not when it returned —

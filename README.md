@@ -237,8 +237,10 @@ returns:
   rebuilds against the moved HEAD without burning its attempt budget. If mainline
   moved, the fast tier re-runs on the merged tree.
 
-Every 5 closes, a **sweep** agent reads the *whole* journal and names the
-cross-ticket pattern no per-ticket verdict can see — a systemic landmine, a
+Every 5 closes, a **sweep** agent reads the journal since the last sweep plus
+every prior sweep's summary — the summaries are the rolling memory, which keeps
+each read bounded instead of quadratic over the campaign — and names the
+cross-ticket pattern no per-ticket verdict can see: a systemic landmine, a
 decomposition wrong at the seams, a check the campaign keeps re-sharpening. It
 is the only arm not scoped to a single ticket, so it runs on the strong tier;
 its output is still proposals the coordinator applies.

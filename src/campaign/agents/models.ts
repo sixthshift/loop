@@ -25,7 +25,8 @@
 //   • recover and coverage lead claude-opus — judgment-heavy (recover self-audits
 //     definition-of-done; coverage rules done-ness).
 //   • sweep leads claude-opus — it is the campaign's only reflective arm, the
-//     one pass whose input is the whole journal rather than one ticket. The
+//     one pass whose input is campaign-wide (the journal since the last sweep
+//     plus every prior sweep's summary) rather than one ticket. The
 //     cross-ticket pattern (a systemic fixture problem, a bad decomposition,
 //     checks that keep needing the same sharpening) exists in the campaign only
 //     if sweep names it, and no per-ticket arm can: review sees one diff,
