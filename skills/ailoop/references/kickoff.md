@@ -133,5 +133,12 @@ requirement enumeration **printed in full with the ticket claiming each clause**
 spec that surprised you. Journal the same summary (`--kind preflight`) — this is
 the last point before the loop runs unattended, and the screen does not survive.
 
-Then start the drive. No approval wait unless something in kickoff was genuinely
-ambiguous.
+Then start the drive **in the same turn as this report** — the report is not a
+stopping point and not an approval gate. A sentence describing what you are about
+to dispatch is not a dispatch: a coordinator that ends its turn here leaves a
+fully initialised campaign with zero workers running, and that state reads
+healthy from every angle — `open:N in-flight:0`, no red check, no refused verb —
+until a human notices nothing has happened, which is exactly the supervision the
+loop exists to remove. The frontier reports it as `idle: true`. The only
+legitimate stop before the first dispatch is a genuine kickoff blocker, and step
+2 already handled those.

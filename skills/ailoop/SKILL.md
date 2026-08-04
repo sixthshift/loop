@@ -137,7 +137,7 @@ side — read it and fix the call, never route around it.
 | Verb | What it owns |
 |---|---|
 | `loop backlog <cmd> …` | **the sole writer.** `init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`. JSON payloads on stdin. It validates the ticket schema, enforces legal transitions, and journals every mutation. |
-| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `complete`, `gateGreen`, `counts`, `coverage`. Three guarantees you never re-derive: deps-closed is what makes a ticket ready, two tickets sharing a module or a resource can never both be dispatchable, and a green gate goes stale the moment the ticket or closed count moves. |
+| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`. Three guarantees you never re-derive: deps-closed is what makes a ticket ready, two tickets sharing a module or a resource can never both be dispatchable, and a green gate goes stale the moment the ticket or closed count moves. |
 | `loop renumber` | id allocation for proposed drafts (stdin → stdout), rewiring edges between them. Every prompt that asks an agent for tickets promises this — use it, never renumber by eye. |
 | `loop recovery-budget --kind … [--ticket …]` | whether a recover may be spent on this anomaly: the scoped key, what it has spent, and the prior fixes a park cites. The scoping rule is not yours to infer. |
 | `loop gate-amend --by … --note … --anomaly …` | the gate under the authority its anomaly grants. Replacing a live command is granted by `campaign-gate-red` alone; every other kind may only add, and the refusal is journaled. |
@@ -204,7 +204,8 @@ kickoff role to derive the campaign config and enumerate the spec's
 requirements, refuse to start if "done" isn't machine-checkable (the **only**
 permitted human interruption in a healthy run — it happens here, never
 mid-drive), `init` + `seed`, run decompose into open tickets, report the
-pre-flight summary including the full requirement enumeration, begin the drive.
+pre-flight summary including the full requirement enumeration, then dispatch the
+first ticket **in the same turn** — the report is not a stopping point.
 
 ## Stage 2 — The drive
 
@@ -238,6 +239,10 @@ order**, never on your own reading of the backlog:
    returns and you finish settling it, re-run frontier and spawn whatever that
    unblocked. Never wait for a cohort to drain. The dependency graph,
    disjointness, and the cap (invariant 5) are the only three bounds.
+   `idle: true` is this branch stated as a fault: dispatchable work with
+   nothing in flight means the next action is a dispatch, **this turn** — a
+   pass that reads `idle` and ends without dispatching or journaling why is
+   the one coordinator stall no downstream check can see.
 
 None of the seven is a fault handler. Anything the frontier reports that you can
 resolve yourself — a dangling edge, a ticket whose contract you can see is wrong,

@@ -43,12 +43,13 @@ export function frontier(): Frontier {
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
+  const idle = dispatchable.length > 0 && inFlight.length === 0;
   // parked/open/in-flight tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
-  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts,
+  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, idle, complete, counts,
     gateGreen: gateGreen(), coverage: coverage(b) };
 }
 
