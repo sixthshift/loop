@@ -38,13 +38,12 @@ import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
 import { amendFastChecks } from './campaign/fastcheck.ts';
 import { recoveryBudget } from './campaign/recovery-budget.ts';
 import { verify, flakeProbe } from './campaign/verify.ts';
-import { provision } from './campaign/provision.ts';
 import { snapshotTree, revertOutOfBounds } from './campaign/jurisdiction.ts';
 import type { TreeSnapshot } from './campaign/jurisdiction.ts';
 import { writePostmortem } from './campaign/postmortem.ts';
 import { mergeLearnings } from './campaign/learn.ts';
 import type { Harvest } from './campaign/learn.ts';
-import { createWorktree, attachWorktree, preserveWorktree, removeWorktree, deleteBranch, mergeBranch } from './campaign/worktree.ts';
+import { createBranch, attachBranch, discardCheckout, landBranch, deleteBranch } from './campaign/branch.ts';
 import { rawPrompt, renderPrompt } from './campaign/agents/prompt.ts';
 import { SCHEMAS } from './campaign/agents/schemas.ts';
 import { MODELS, resolvedChain } from './campaign/agents/models.ts';
@@ -145,20 +144,19 @@ export function registerMechanics(program: Command): void {
     });
 
   mechanic('verify')
-    .description('measure a worker branch (--ticket --dir --base), or probe one command for flake (--cmd --dir)')
+    .description('measure a worker branch (--ticket --base), or probe one command for flake (--cmd)')
     .option('--ticket <id>', 'ticket to verify, or to label a flake probe')
-    .option('--dir <path>', 'the worktree to measure in')
-    .option('--base <sha>', 'the sha the worktree was cut from')
+    .option('--dir <path>', 'the checkout to measure in', '.')
+    .option('--base <sha>', 'the mainline sha the branch was cut from')
     .option('--cmd <cmd>', 'flake-probe mode: the single command to repeat')
     .option('--repeat <n>', 'flake-probe repetitions', '5')
-    .action(async (opts: { ticket?: string; dir?: string; base?: string; cmd?: string; repeat: string }) => {
-      if (!opts.dir) fail('verify requires --dir <worktree>');
+    .action(async (opts: { ticket?: string; dir: string; base?: string; cmd?: string; repeat: string }) => {
       if (opts.cmd) {
-        emit(await flakeProbe({ cmd: opts.cmd, dir: opts.dir!, repeat: Number(opts.repeat), id: opts.ticket }));
+        emit(await flakeProbe({ cmd: opts.cmd, dir: opts.dir, repeat: Number(opts.repeat), id: opts.ticket }));
         return;
       }
       if (!opts.ticket || !opts.base) fail('verify requires --ticket and --base (or --cmd for a flake probe)');
-      try { emit(await verify({ id: opts.ticket!, dir: opts.dir!, base: opts.base! })); }
+      try { emit(await verify({ id: opts.ticket!, dir: opts.dir, base: opts.base! })); }
       catch (e: any) { fail(e.message); }
     });
 
@@ -200,56 +198,43 @@ export function registerMechanics(program: Command): void {
       catch (e: any) { fail(e.message); }
     });
 
-  const worktree = mechanic('worktree')
-    .description('worker checkout lifecycle: add attach preserve remove merge delete-branch');
+  const branch = mechanic('branch')
+    .description('the serial checkout lifecycle: create attach discard land delete');
 
-  worktree
-    .command('add')
-    .description('cut a worktree outside the repository and copy the installed dependency trees in')
-    .argument('<id>', 'ticket id')
-    .action(async (id: string) => {
-      assertSkillSeat();
-      try {
-        const cut = createWorktree(id);
-        emit({ ...cut, provision: await provision(id, cut.dir) });
-      } catch (e: any) { fail(e.message); }
-    });
-
-  worktree
-    .command('attach')
-    .description('rebuild a worktree from a surviving branch (resume); null when the branch is gone')
+  branch
+    .command('create')
+    .description('cut the ticket branch from mainline and check it out — refuses off-mainline or unclean trees')
     .argument('<id>', 'ticket id')
     .action((id: string) => {
       assertSkillSeat();
-      try { emit(attachWorktree(id)); } catch (e: any) { fail(e.message); }
+      try { emit(createBranch(id)); } catch (e: any) { fail(e.message); }
     });
 
-  worktree
-    .command('preserve')
-    .description('re-cut a judged worktree from its surviving branch, rebased onto mainline — the sharpen verdict keeps the build; a conflict is the caller\'s infra path')
+  branch
+    .command('attach')
+    .description('check a surviving branch back out (resume); null when the branch is gone')
     .argument('<id>', 'ticket id')
-    .action(async (id: string) => {
+    .action((id: string) => {
       assertSkillSeat();
-      try {
-        const kept = preserveWorktree(id);
-        emit(kept.ok ? { ...kept, provision: await provision(id, kept.dir) } : kept);
-      } catch (e: any) { fail(e.message); }
+      try { emit(attachBranch(id)); } catch (e: any) { fail(e.message); }
     });
 
-  worktree
-    .command('remove')
-    .description('drop the worktree, keeping the branch (bisection needs it until the gate is green)')
-    .argument('<id>', 'ticket id')
-    .action((id: string) => { assertSkillSeat(); removeWorktree(id); emit({ removed: id }); });
+  branch
+    .command('discard')
+    .description('erase worker litter and return the checkout to mainline, keeping the branch (bisection needs it until the gate is green)')
+    .action(() => {
+      assertSkillSeat();
+      try { emit(discardCheckout()); } catch (e: any) { fail(e.message); }
+    });
 
-  worktree
-    .command('merge')
-    .description('land the branch on mainline, fast-forwarding when its base is still the tip')
+  branch
+    .command('land')
+    .description('return to mainline and fast-forward it onto the ticket branch; a non-ff result is interference, classified not resolved')
     .argument('<id>', 'ticket id')
-    .action((id: string) => { assertSkillSeat(); emit(mergeBranch(id)); });
+    .action((id: string) => { assertSkillSeat(); emit(landBranch(id)); });
 
-  worktree
-    .command('delete-branch')
+  branch
+    .command('delete')
     .description('reap a landed branch once the campaign gate is green')
     .argument('<id>', 'ticket id')
     .action((id: string) => { assertSkillSeat(); deleteBranch(id); emit({ deleted: id }); });
