@@ -41,10 +41,10 @@ export type Ticket = TicketDraft & {
   status: TicketStatus;
   attempts?: Attempt[];
   evidence?: string | null;
-  // The mainline sha this ticket's live worktree was cut from, stamped at
-  // dispatch. A resume reads it to re-verify a surviving branch whose worker
-  // session died; it survives the in-flight → open → in-flight round trip a
-  // check amendment makes, and the next dispatch overwrites it.
+  // The mainline sha this ticket's branch was cut from, stamped at dispatch.
+  // A resume reads it to re-verify a surviving branch whose worker session
+  // died; it survives the in-flight → open → in-flight round trip a check
+  // amendment makes, and the next dispatch overwrites it.
   baseSha?: string;
   phase?: { name: TicketPhase; at: string };
   // Which rung of the worker chain this dispatch spent, stamped beside baseSha
@@ -479,7 +479,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       else if (to === 'open') delete t.parkReason;
       // Only a dispatch carries a base — the re-stamps that put a ticket back
       // in-flight mid-review (typo amendment, closing) leave the original in
-      // place, since the worktree they refer to was never re-cut.
+      // place, since the branch it refers to was never re-cut.
       if (opts['base-sha'] !== undefined) t.baseSha = opts['base-sha'] as string;
       if (opts.model !== undefined) {
         const rung = opts.rung === undefined ? 1 : Number(opts.rung);

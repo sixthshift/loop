@@ -1,7 +1,7 @@
 // The measurement. No model — exit codes and a git scope check decide.
 //
 // Ticket mode: refuse a dirty tree (only committed work verifies), run every
-// fastCheck + the ticket's acceptanceChecks in the worktree, then require the
+// fastCheck + the ticket's acceptanceChecks in the checkout, then require the
 // committed diff to stay inside the ticket's declared modules (∪ a manifest/
 // lockfile allowlist). Writes the evidence log + the diff patch, journals the
 // timing, returns a verdict. Flake mode: run one command N times and classify
@@ -37,7 +37,7 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
     .filter(l => l.trim() && !l.slice(3).startsWith('.ailoop/')).join('\n').trim();
   if (dirty) return { pass: false, failing: ['dirty-tree'], scopeOverflow: [], evidence: '', diff: '' };
 
-  // 2. run every fast check + the ticket's acceptance checks in the worktree.
+  // 2. run every fast check + the ticket's acceptance checks in the checkout.
   const startedAt = Date.now();
   const checks = [...(backlog().fastChecks ?? []), ...(t.acceptanceChecks ?? [])];
   const failing: string[] = [];

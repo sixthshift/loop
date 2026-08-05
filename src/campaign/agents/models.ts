@@ -78,7 +78,7 @@
 // codex-sol (the first survivor) merges. One reconcile pass, drafts anonymized
 // so the reconciler can't favor its own. Worth it only where the schema output
 // IS the artifact and the campaign has a later coverage backstop — decompose,
-// coverage, harvest, sweep. NEVER worker: its product is a diff in a worktree,
+// coverage, harvest, sweep. NEVER worker: its product is a diff on a branch,
 // unmergeable from JSON, and it runs per-ticket so the N+1× cost bites hardest.
 import { engineFor, available } from './engines.ts';
 

@@ -104,7 +104,7 @@ export function buildBoard(b: Backlog, runs: LiveRun[], now: number, colWidth: n
   const waitingCell = (t: Ticket): Cell =>
     ({ key: t.id, spans: [{ text: `⋯ ${t.id}`, dim: true }], target: { kind: 'ticket', id: t.id } });
 
-  // A check runs inside some ticket's worktree; its cell rides directly under
+  // A check runs on behalf of some ticket; its cell rides directly under
   // that ticket, whichever column the ticket is in.
   const claimed = new Set<string>();
   const runCell = (r: LiveRun): Cell => {

@@ -4,7 +4,7 @@
 // The coordinator itself is the `ailoop` skill: a model that decomposes a locked
 // spec, dispatches workers, and drives to a green campaign gate. This program is
 // everything underneath that seat — the sole backlog writer, the frontier
-// arithmetic, verification and its scope check, worktree provisioning, the role
+// arithmetic, verification and its scope check, the branch lifecycle, the role
 // prompts and their schemas — reached as verbs (mechanics.ts), plus `watch`, the
 // read-only window onto a campaign it is not driving.
 //
