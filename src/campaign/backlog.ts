@@ -180,7 +180,6 @@ function validateTicket(t: any, existingIds: Set<string>, requirementIds: Set<st
   if (!t.acceptance) errs.push(`${t.id}: missing acceptance`);
   if (!Array.isArray(t.acceptanceChecks) || t.acceptanceChecks.length === 0) errs.push(`${t.id}: acceptanceChecks must be a non-empty array of {name, cmd}`);
   (t.acceptanceChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`${t.id}: acceptanceCheck missing name or cmd`); });
-  if (t.resources !== undefined && !Array.isArray(t.resources)) errs.push(`${t.id}: resources must be an array of shared-resource names`);
   if (!t.origin) errs.push(`${t.id}: missing origin (spec §, decomposed-from, or repair)`);
   // A claim on a requirement that doesn't exist is worse than no claim: the
   // frontier counts the clause as unmapped while the ticket reads as covering
@@ -354,7 +353,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const patchIn = readInput(pos[1]);
       if (patchIn.length !== 1) refuse('update takes a single patch object');
       const patch = patchIn[0];
-      const MUTABLE = ['title', 'depends_on', 'modules', 'resources', 'context', 'acceptance', 'acceptanceChecks'];
+      const MUTABLE = ['title', 'depends_on', 'modules', 'context', 'acceptance', 'acceptanceChecks'];
       const illegal = Object.keys(patch).filter(k => !MUTABLE.includes(k));
       if (illegal.length) refuse(`immutable or unknown field(s): ${illegal.join(', ')} — mutable: ${MUTABLE.join(', ')}`);
       Object.assign(t, patch);
@@ -377,7 +376,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       const errs = incoming.flatMap((t: any) => validateTicket(t, ids, requirementIds(b)));
       if (errs.length) refuse(errs.join('\n'));
       for (const t of incoming) {
-        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...t, status: 'open' });
+        b.tickets.push({ depends_on: [], attempts: [], evidence: null, ...t, status: 'open' });
         ids.add(t.id);
       }
       save(b);
@@ -562,7 +561,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       transition(t, 'decomposed');
       const childIds = children.map((c: any) => c.id);
       for (const c of children) {
-        b.tickets.push({ depends_on: [], resources: [], attempts: [], evidence: null, ...c, status: 'open' });
+        b.tickets.push({ depends_on: [], attempts: [], evidence: null, ...c, status: 'open' });
         ids.add(c.id);
       }
       // rewire dependents of the parent onto ALL children (coordinator may narrow after)

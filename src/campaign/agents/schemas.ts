@@ -14,7 +14,6 @@ export type TicketDraft = {
   // Repo-relative directories the ticket lives in — its footprint. See
   // campaign/footprint.ts for why this is a module and not a file list.
   modules: string[];
-  resources?: string[];
   // Requirement ids from the kickoff enumeration that this ticket delivers.
   satisfies?: string[];
   origin: string;
@@ -141,7 +140,6 @@ export const TICKET = {
     title: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
     modules: { type: 'array', items: { type: 'string' } },
-    resources: { type: 'array', items: { type: 'string' } },
     // Requirement ids this ticket delivers. Optional in the schema because a
     // repair or proof ticket answers a defect rather than a clause; decompose's
     // prompt requires it, and an unclaimed requirement is what the frontier's
@@ -164,7 +162,6 @@ const TICKET_PATCH = {
     title: { type: 'string' },
     depends_on: { type: 'array', items: { type: 'string' } },
     modules: { type: 'array', items: { type: 'string' } },
-    resources: { type: 'array', items: { type: 'string' } },
     context: { type: 'string' },
     acceptance: { type: 'string' },
     acceptanceChecks: { type: 'array', items: CHECK },

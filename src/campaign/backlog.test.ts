@@ -313,7 +313,7 @@ describe('update', () => {
 describe('add', () => {
   test('a new ticket arrives open with its collections initialised', () => {
     const b = afterWrites({ tickets: [] }, () => { backlogWrite(['add', '-'], [buildTicket({ id: 'T001' })]); });
-    expect(b.tickets[0]).toMatchObject({ status: 'open', depends_on: [], resources: [], attempts: [], evidence: null });
+    expect(b.tickets[0]).toMatchObject({ status: 'open', depends_on: [], attempts: [], evidence: null });
   });
 
   test('a duplicate id is refused, and the batch it rode in on lands nothing', () => {
