@@ -438,6 +438,7 @@ describe('persistent coordinator state', () => {
       backlogWrite([
         'init',
         '--project', 'example',
+        '--mainline', 'main',
         '--spec-path', 'spec.md',
         '--spec-sha', 'abc123',
       ]);

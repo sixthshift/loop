@@ -31,6 +31,7 @@
 import fs from 'node:fs';
 import type { Command } from 'commander';
 import { backlog, backlogWrite, campaignExists, renumber, wantsStdinPayload } from './campaign/backlog.ts';
+import { sh } from './campaign/state.ts';
 import { frontier } from './campaign/frontier.ts';
 import type { Check, TicketDraft } from './campaign/agents/schemas.ts';
 import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
@@ -58,10 +59,28 @@ const emit = (value: unknown): void => { console.log(JSON.stringify(value, null,
 // tickets were measured against arms these verbs don't have, so continuing it is
 // not a thing this binary can honestly do. Say that, rather than mutate it into
 // a state half-owned by two coordinators — one of which no longer exists.
+// A `skill` campaign without a recorded mainline is refused on the same
+// grounds: it was opened before serial checkouts, and its state describes
+// worktrees these verbs no longer have.
 function assertSkillSeat(): void {
   if (!campaignExists()) return; // `init` legitimately runs before one exists
-  if ((backlog().coordinator ?? 'cli') === 'cli')
+  const b = backlog();
+  if ((b.coordinator ?? 'cli') === 'cli')
     fail('this campaign was opened by `loop campaign` (coordinator: cli), the deterministic drive loop, which was removed. Nothing here can continue it: archive `.ailoop/campaign/` with `loop postmortem --out <file>` and start fresh, or install the last release that still had that seat (v0.5.0).');
+  if (!b.mainline)
+    fail('this campaign predates serial checkouts — no mainline recorded in backlog.json. Nothing here can continue it: archive `.ailoop/campaign/` with `loop postmortem --out <file>` (postmortem still reads it), or continue with the last worktree release (v0.6).');
+}
+
+// `init` records the branch the campaign builds on. The writer demands the
+// name and stays git-free; resolving it from HEAD is this layer's one git
+// read, done here so a coordinator never types a branch name the repository
+// disagrees with. A detached HEAD is refused — a campaign cut from no named
+// branch has nothing for ticket branches to land back onto.
+function withMainline(args: string[]): string[] {
+  if (args[0] !== 'init' || args.includes('--mainline')) return args;
+  const head = sh('git symbolic-ref --short -q HEAD').stdout.trim();
+  if (!head) return fail('init: HEAD is detached — check out the branch the campaign should build on');
+  return [...args, '--mainline', head];
 }
 
 // Commands that take a JSON payload read it from stdin, so a coordinator can
@@ -97,7 +116,7 @@ export function registerMechanics(program: Command): void {
       // block on EOF it will never use.
       const input = wantsStdinPayload(args) ? await stdinJson() : undefined;
       assertSkillSeat();
-      try { console.log(backlogWrite(args, input)); }
+      try { console.log(backlogWrite(withMainline(args), input)); }
       catch (e: any) { fail(e.message); }
     });
 

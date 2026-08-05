@@ -83,6 +83,13 @@ export type Seat = 'cli' | 'skill';
 export type Backlog = {
   project: string;
   coordinator?: Seat;
+  // The branch the campaign builds on: ticket branches are cut from it,
+  // landings fast-forward it, and nothing measures or amends off it. Recorded
+  // at init because HEAD stopped being the answer — under serial checkouts
+  // HEAD spends most of a campaign on a ticket branch. Doubles as the seat's
+  // second compat stamp: a backlog without it predates serial checkouts, and
+  // the verbs refuse it (assertSkillSeat) rather than drive worktree-era state.
+  mainline?: string;
   // When `init` ran. The campaign clock has to live here rather than in the
   // process that renders it: a skill-driven campaign spans many separate verb
   // invocations and any number of sessions, so a clock started by the display
@@ -276,10 +283,18 @@ export function backlogWrite(args: string[], input?: unknown): string {
         refuse('init takes --spec-path and --spec-sha together');
       const seat = (opts.coordinator as string | undefined) ?? 'skill';
       if (seat !== 'cli' && seat !== 'skill') refuse(`--coordinator must be cli or skill, got ${JSON.stringify(seat)}`);
+      // The writer demands the branch name rather than reading git itself —
+      // this file's imports stay git-free, and the CLI resolves HEAD before
+      // delegating (mechanics.ts), so a refusal here means a direct caller
+      // forgot what the CLI would have supplied.
+      const mainline = opts.mainline;
+      if (typeof mainline !== 'string' || !mainline)
+        refuse('init requires --mainline <branch> — the branch the campaign builds on (the CLI resolves it from HEAD when omitted)');
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
       save({
         project: (opts.project as string) || 'unnamed',
         coordinator: seat,
+        mainline,
         startedAt: new Date().toISOString(),
         ...(opts['spec-path'] && opts['spec-sha']
           ? { contract: { specPath: opts['spec-path'] as string, sha256: opts['spec-sha'] as string } }
@@ -292,7 +307,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
         sweep: { closed: 0 },
         tickets: [],
       });
-      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (coordinator: ${seat})`);
+      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (coordinator: ${seat}, mainline: ${mainline})`);
       return `initialized ${BACKLOG}`;
     }
     case 'seed': {

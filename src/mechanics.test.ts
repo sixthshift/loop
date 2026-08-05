@@ -76,6 +76,52 @@ describe('the coordinator seat stamp', () => {
   });
 });
 
+// The mainline record is both the ref the checkout lifecycle resolves against
+// and the second compat stamp: a backlog without one was opened by a worktree
+// release, whose state these verbs no longer know how to drive.
+describe('the mainline stamp', () => {
+  test('init resolves the campaign mainline from HEAD', () => {
+    withRepository(dir => {
+      expect(loop(dir, 'backlog', 'init', '--project', 'p').status).toBe(0);
+      const head = spawnSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+      expect(backlogOf(dir).mainline).toBe(head);
+    });
+  });
+
+  test('an explicit --mainline wins over HEAD', () => {
+    withRepository(dir => {
+      expect(loop(dir, 'backlog', 'init', '--project', 'p', '--mainline', 'trunk').status).toBe(0);
+      expect(backlogOf(dir).mainline).toBe('trunk');
+    });
+  });
+
+  test('a detached HEAD refuses init rather than recording nothing', () => {
+    withRepository(dir => {
+      spawnSync('bash', ['-lc',
+        'git -c user.email=t@t -c user.name=t commit --allow-empty -qm x && git checkout -q --detach'],
+        { cwd: dir });
+      const refused = loop(dir, 'backlog', 'init', '--project', 'p');
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain('detached');
+      expect(fs.existsSync(path.join(dir, '.ailoop/campaign/backlog.json'))).toBe(false);
+    });
+  });
+
+  test('a mechanics verb refuses a campaign with no recorded mainline', () => {
+    withRepository(dir => {
+      loop(dir, 'backlog', 'init', '--project', 'p');
+      const file = path.join(dir, '.ailoop/campaign/backlog.json');
+      const b = JSON.parse(fs.readFileSync(file, 'utf8'));
+      delete b.mainline;
+      fs.writeFileSync(file, JSON.stringify(b));
+
+      const refused = loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b');
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toContain('no mainline recorded');
+    });
+  });
+});
+
 const backlogOf = (dir: string): any =>
   JSON.parse(fs.readFileSync(path.join(dir, '.ailoop/campaign/backlog.json'), 'utf8'));
 
