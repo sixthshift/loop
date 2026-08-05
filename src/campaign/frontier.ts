@@ -4,7 +4,7 @@
 // whole contract.
 //
 // Most of it reads the backlog against itself (what is runnable, what is
-// walled, what may run together). `coverage` is the exception: it reads the
+// walled, what runs next). `coverage` is the exception: it reads the
 // backlog against the SPEC, joining tickets to the requirement ids kickoff
 // enumerated, which is the only way the loop can notice work nobody wrote a
 // ticket for while there is still time to write one.
@@ -17,11 +17,8 @@ import { backlog } from './backlog.ts';
 import type { Backlog, Ticket } from './backlog.ts';
 import type { Frontier } from './state.ts';
 import { gateGreen } from './gate.ts';
-import { modulesCollide, normalizeModule } from './footprint.ts';
 
 const isLive = (t: Ticket) => !['closed', 'decomposed'].includes(t.status);
-
-const declaredModules = (t: Ticket) => (t.modules ?? []).map(normalizeModule);
 
 export function frontier(): Frontier {
   const b = backlog();
@@ -43,7 +40,10 @@ export function frontier(): Frontier {
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
-  const idle = dispatchable.length > 0 && inFlight.length === 0;
+  // Serial dispatch makes the second clause structural — dispatchable is
+  // empty whenever anything is in flight — so idle reads directly: work was
+  // available and the coordinator's pass ended without dispatching it.
+  const idle = dispatchable.length > 0;
   // parked/open/in-flight tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
@@ -178,29 +178,14 @@ function findWalls(
   return { capped, stuck };
 }
 
-// --- dispatchable: greedily admit ready tickets that are module- AND resource-
-//     disjoint from everything in flight and from each other. Seed the occupied
-//     sets with what's already running, then stream admissions. Modules nest, so
-//     the occupied footprint is a list walked with modulesCollide rather than a
-//     set membership test — `src/` holds `src/auth/`. ------------------------
+// --- dispatchable: the next ticket, singular. The primary checkout hosts one
+//     worker at a time, so anything in flight means nothing else dispatches.
+//     Among the ready, the first with a declared footprint — an undeclared one
+//     verifies against nothing, so it is held here rather than dispatched
+//     where no scope check can measure it (`problems` already reports it for
+//     recover to fix). ------------------------------------------------------
 function pickDispatchable(candidates: string[], b: Backlog, byId: Map<string, Ticket>): string[] {
-  const inFlight = b.tickets.filter(t => t.status === 'in-flight');
-  const occupiedModules = inFlight.flatMap(declaredModules);
-  const occupiedResources = new Set(inFlight.flatMap(t => t.resources ?? []));
-  const dispatchable: string[] = [];
-  for (const id of candidates) {
-    const t = byId.get(id)!;
-    const modules = declaredModules(t);
-    const resources = t.resources ?? [];
-    // An undeclared footprint collides with nothing and verifies against
-    // nothing — hold it here rather than dispatch work no scope check can
-    // measure. `problems` already reports it for recover to fix.
-    if (!modules.length) continue;
-    if (modules.some(m => occupiedModules.some(o => modulesCollide(m, o)))) continue;
-    if (resources.some(r => occupiedResources.has(r))) continue;
-    dispatchable.push(id);
-    occupiedModules.push(...modules);
-    resources.forEach(r => occupiedResources.add(r));
-  }
-  return dispatchable;
+  if (b.tickets.some(t => t.status === 'in-flight')) return [];
+  const next = candidates.find(id => (byId.get(id)!.modules ?? []).length > 0);
+  return next ? [next] : [];
 }

@@ -4,7 +4,7 @@
 // repository's own — the suite runs from the repository root.
 
 import { describe, expect, test } from 'bun:test';
-import { isInside, isManifest, moduleErrors, modulesCollide, normalizeModule, ROOT } from './footprint.ts';
+import { isInside, isManifest, moduleErrors, normalizeModule, ROOT } from './footprint.ts';
 
 describe('normalizeModule', () => {
   test('a leading ./ or /, a trailing /, and doubled slashes all wash out', () => {
@@ -38,17 +38,6 @@ describe('isInside', () => {
 
   test('a path above the module is outside', () => {
     expect(isInside('src/index.ts', 'src/auth')).toBe(false);
-  });
-});
-
-describe('modulesCollide', () => {
-  test('nesting collides in both directions', () => {
-    expect(modulesCollide('src', 'src/auth')).toBe(true);
-    expect(modulesCollide('src/auth', 'src')).toBe(true);
-  });
-
-  test('disjoint siblings do not collide', () => {
-    expect(modulesCollide('src/auth', 'src/api')).toBe(false);
   });
 });
 

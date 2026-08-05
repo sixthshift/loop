@@ -7,24 +7,21 @@
 // the declared module is a real violation worth charging; a new file inside it
 // is not.
 //
-// Both readers of the footprint compute containment here. The scheduler asks
-// whether two tickets may run in parallel — disjointness is an optimization
-// against merge rework, not a safety invariant (the post-merge integration
-// check is what catches two disjoint tickets breaking each other), and
-// directory-disjointness serves it as well as file-disjointness did, still
-// statically and still deadlock-free. Verify asks whether the committed diff
-// stayed inside the module.
+// One reader computes containment here: verify, asking whether the committed
+// diff stayed inside the declared module. The footprint used to serve a
+// second reader — the scheduler, deciding which tickets could run in parallel
+// — but serial dispatch removed it, and the fence remained: a lone worker
+// wanders outside its ticket exactly as readily as a parallel one did.
 
 import fs from 'node:fs';
 import path from 'node:path';
 
-// The whole repository. A ticket that declares it collides with every other
-// ticket — honest, since that is the footprint it asked for.
+// The whole repository — the widest footprint a ticket can ask for.
 export const ROOT = '';
 
 // Manifest/lockfiles sit outside every module: many tickets legitimately touch
 // one, so a diff into it is never a scope overflow. Concurrent manifest edits
-// are serialized by the `dependency-manifest` resource lock, not by footprint.
+// stopped being a case to defend — serial execution is the lock.
 const MANIFESTS = new Set(['package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock']);
 export const isManifest = (file: string): boolean => MANIFESTS.has(path.posix.basename(file));
 
@@ -40,16 +37,13 @@ export function isInside(file: string, module: string): boolean {
   return file === module || file.startsWith(`${module}/`);
 }
 
-// Two modules can host the same file exactly when one contains the other.
-export const modulesCollide = (a: string, b: string): boolean => isInside(a, b) || isInside(b, a);
-
 // The perimeter against the shape this replaced: an agent that answers
 // `src/auth/service.ts` is declaring a file, and a file-shaped module would
 // contain nothing the worker writes beside it. Refuse it at the sole writer
 // rather than let verify fail the diff for it three attempts later.
 export function moduleErrors(modules: unknown): string[] {
   if (!Array.isArray(modules) || modules.length === 0)
-    return ['modules must be a NON-EMPTY array of repo-relative directories, e.g. ["src/auth"] (unknown footprint is unbatchable and unverifiable)'];
+    return ['modules must be a NON-EMPTY array of repo-relative directories, e.g. ["src/auth"] (an unknown footprint is unverifiable — no scope check can measure it)'];
   const errs: string[] = [];
   for (const raw of modules) {
     if (typeof raw !== 'string' || !raw.trim()) {

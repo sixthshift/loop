@@ -151,21 +151,24 @@ describe('findWalls', () => {
   });
 });
 
+// Serial dispatch: the primary checkout hosts one worker at a time, so
+// `dispatchable` is the next ticket or nothing — never a batch.
 describe('pickDispatchable', () => {
-  test('two tickets sharing a module — only the first is admitted', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src/auth', 'src/api'] }),
-      buildTicket({ id: 'T002', modules: ['src/api', 'src/web'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001']);
-  });
-
-  test('fully disjoint tickets are all admitted', () => {
+  test('the first ready ticket is the whole dispatch, disjoint or not', () => {
     const f = onScratch([
       buildTicket({ id: 'T001', modules: ['src/auth'] }),
       buildTicket({ id: 'T002', modules: ['src/api'] }),
     ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001', 'T002']);
+    expect(f.dispatchable).toEqual(['T001']);
+  });
+
+  test('anything in flight means nothing else dispatches', () => {
+    const f = onScratch([
+      buildTicket({ id: 'T001', modules: ['src/auth'], status: 'in-flight' }),
+      buildTicket({ id: 'T002', modules: ['src/api'] }),
+    ], NO_WALLS);
+    expect(f.inFlight).toEqual(['T001']);
+    expect(f.dispatchable).toEqual([]);
   });
 
   test('a ticket whose deps are not closed never reaches admission', () => {
@@ -177,49 +180,6 @@ describe('pickDispatchable', () => {
     ], NO_WALLS);
     expect(f.ready).toEqual(['T001', 'T003']);
     expect(f.waiting).toEqual(['T002']);
-    expect(f.dispatchable).toEqual(['T001', 'T003']);
-  });
-
-  test('a module held by an in-flight ticket is already occupied', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src/auth'], status: 'in-flight' }),
-      buildTicket({ id: 'T002', modules: ['src/auth'] }),
-      buildTicket({ id: 'T003', modules: ['src/api'] }),
-    ], NO_WALLS);
-    expect(f.inFlight).toEqual(['T001']);
-    expect(f.dispatchable).toEqual(['T003']);
-  });
-
-  test('a nested module collides with the parent that contains it', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src'] }),
-      buildTicket({ id: 'T002', modules: ['src/auth'] }),
-      buildTicket({ id: 'T003', modules: ['test'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001', 'T003']);
-  });
-
-  test('a sibling sharing a name prefix is not a collision', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src/auth'] }),
-      buildTicket({ id: 'T002', modules: ['src/authz'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001', 'T002']);
-  });
-
-  test('trailing slashes and ./ prefixes name the same module', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src/auth/'] }),
-      buildTicket({ id: 'T002', modules: ['./src/auth'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001']);
-  });
-
-  test('a ticket declaring the repository root blocks every other ticket', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['.'] }),
-      buildTicket({ id: 'T002', modules: ['src/auth'] }),
-    ], NO_WALLS);
     expect(f.dispatchable).toEqual(['T001']);
   });
 
@@ -230,15 +190,6 @@ describe('pickDispatchable', () => {
     ], NO_WALLS);
     expect(f.problems).toEqual([{ ticket: 'T001', issue: 'empty modules declaration — unknown footprint' }]);
     expect(f.dispatchable).toEqual(['T002']);
-  });
-
-  test('a shared resource collides even when the modules are disjoint', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', modules: ['src/a'], resources: ['postgres'] }),
-      buildTicket({ id: 'T002', modules: ['src/b'], resources: ['postgres'] }),
-      buildTicket({ id: 'T003', modules: ['src/c'], resources: ['redis'] }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001', 'T003']);
   });
 });
 
@@ -335,12 +286,12 @@ describe('idle', () => {
     expect(f.idle).toBe(true);
   });
 
-  test('a live worker clears it, even with more work dispatchable', () => {
+  test('a live worker clears it — serial dispatch offers nothing while one runs', () => {
     const f = onScratch([
       buildTicket({ id: 'T001', status: 'in-flight' }),
       buildTicket({ id: 'T002' }),
     ], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T002']);
+    expect(f.dispatchable).toEqual([]);
     expect(f.idle).toBe(false);
   });
 
