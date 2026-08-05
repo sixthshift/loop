@@ -6,10 +6,11 @@
 //
 // The pact that makes that survivable: `create` refuses any tree that is not
 // exactly mainline plus nothing — untracked files included — BECAUSE
-// `discard` answers worker litter with `git checkout -- .` and
-// `git clean -fd`. Every file the clean can see is a file some worker
-// created; anything a human left lying around would be indistinguishable
-// from litter and deleted with it. Loosening the refusal arms the clean.
+// `discard` answers worker litter with `git reset --hard` and
+// `git clean -fd`. Every file the reset and the clean can see is a file some
+// worker created; anything a human left lying around would be
+// indistinguishable from litter and deleted with it. Loosening the refusal
+// arms the clean.
 //
 // Branches survive until the campaign gate is green (bisection needs them);
 // the checkout returns to mainline as each ticket settles.
@@ -63,10 +64,15 @@ export function attachBranch(id: string): { branch: string } | null {
 // The rejection path: erase worker litter, return the checkout to mainline.
 // Clean before checkout, load-bearing order — an untracked worker file
 // shadowing a tracked mainline path would make the checkout itself refuse.
+// `reset --hard` over `git checkout -- .`, which restores from the INDEX: a
+// worker that staged and died would ride its staged edits through the
+// checkout onto mainline. The reset never touches untracked files, so the
+// clean still owns that class — and a staged-new `.ailoop/` file drops back
+// to untracked, where `-e` spares it.
 // The branch is untouched: rejected or not, it survives for gate bisection
 // until the retrospective reaps it.
 export function discardCheckout(): { mainline: string } {
-  sh('git checkout -- .');
+  sh('git reset -q --hard');
   sh('git clean -fd -e .ailoop');
   const main = mainline();
   const r = sh(`git checkout ${main}`);

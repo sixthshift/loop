@@ -121,6 +121,20 @@ describe('discarding a rejected build', () => {
     });
   });
 
+  test('staged-but-uncommitted litter is erased, not carried onto mainline', () => {
+    inRepo(() => {
+      createBranch('T001');
+      fs.writeFileSync('src/a.ts', 'export const a = 999;\n');
+      write('staged-new.txt', 'worker litter\n');
+      git('add src/a.ts staged-new.txt'); // the worker staged and died before committing
+      discardCheckout();
+      expect(head()).toBe('main');
+      expect(git('status --porcelain').trim()).toBe('');
+      expect(fs.readFileSync('src/a.ts', 'utf8')).toContain('a = 1');
+      expect(fs.existsSync('staged-new.txt')).toBe(false);
+    });
+  });
+
   test('clean-before-checkout: an untracked file shadowing a mainline path cannot block the return', () => {
     inRepo(() => {
       createBranch('T001');
