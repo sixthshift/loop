@@ -44,21 +44,74 @@ a spec missing any of them bounces:
    Kickoff enumerates them as `R1`, `R2`, … and this happens *once*: tickets
    carry `satisfies: [R…]`, the frontier counts progress against them, and the
    final coverage pass grades proof clause by clause. **A clause you omit is one
-   nothing downstream is looking for.** One clause per requirement, worded so
-   that whether it holds is decidable by inspection.
+   nothing downstream is looking for.** One *atomic* clause per requirement
+   heading — no "and" joining separately-verifiable behaviors — worded so that
+   whether it holds is decidable by inspection, and every *requirement-grade*
+   clause — anything kickoff could enumerate as an R — confined to the
+   Requirements section. The other sections keep their own normative forms (a
+   "do not add" bullet, an exclusion, a "before" constraint — kickoff knows
+   those aren't requirements); what it can't classify is a *behavior* clause
+   stranded in Locked decisions or the vision paragraph, which gets enumerated
+   at its discretion or not at all. Headings that map one-to-one onto clauses
+   make the enumeration a transcription of your structure instead of an
+   interpretation of your prose.
 2. **Locked decisions** — stack, data model, architecture, "do not add X":
    every choice a builder could stall on or re-litigate, decided.
-3. **Out-of-scope list** — the tripwire the loop halts on. Explicit, not implied.
+3. **Out-of-scope list** — the tripwire the loop halts on. Explicit, not
+   implied, and worded as *observable* tripwires — the behavior whose
+   appearance is the violation — never feature labels: kickoff may condense
+   but never infer, so it cannot conjure the observable behavior a feature
+   label left out, and a fuzzy entry either never trips or halts a healthy
+   build.
 4. **Per-requirement acceptance, executable as written** — a command with an
-   expected result, or a behavioral contract with concrete input→output
-   examples sharp enough that kickoff can mechanize it into a runnable check.
+   expected result, or a behavioral contract with **literal** input→output
+   examples (a real input, the exact expected output — never `<a valid X>`
+   placeholders) sharp enough to mechanize into a runnable check.
 5. **Two check tiers, campaign-wide** — `fastChecks` (safe to repeat per ticket,
    seconds to ~1 minute, and **green at baseline**; a red baseline is a blocker)
    and `gate` (the merged-tree integration/e2e set). A `gate` check may be red at
    kickoff *only* when it ran correctly and the failure is specifically behavior
    this campaign will build.
 6. **Environment preconditions** — keys, services, runtimes the checks need;
-   kickoff probes these and a missing one is a refuse-to-start.
+   kickoff probes these and a missing one is a refuse-to-start. Two
+   machine-facing lists belong here too: **shared mutable state the checks
+   touch** (a dev DB they reset, a fixed port — decompose lifts these into
+   scheduler locks), and for any **remote isolated test resource**, the full
+   five-field grant — host/boundary, credential reference name, allowed
+   operations, ownership, cleanup. A partial grant is a kickoff blocker, and
+   workers receive no grant the spec didn't state.
+
+### Decompose reads the same file — write for it too
+
+Kickoff is the gate, but decompose decides campaign quality, and it is the
+harder reader: a read-only consensus group with no human in the loop, deriving
+every ticket's `modules`, `resources`, `context`, and acceptance commands from
+the spec text plus tree inspection. What it fails to find there arrives later
+only through fault paths — the costs the bullets below name. Four things it
+needs that the gate never checks:
+
+- **A layout map** (Locked decisions). Tickets declare directories, and
+  disjoint footprints are the module half of the frontier's parallelism
+  arithmetic (resource locks are the other) and the whole of verify's scope
+  boundary. State where each area of work lives — a loud
+  default the human can override in one line — or decompose invents the
+  layout, and every mis-forecast is a burned scope-violation attempt or two
+  tickets needlessly serialized.
+- **Scheduler-lock candidates** (Environment). A missed shared-mutable
+  resource co-schedules two tickets onto the same state; the symptom is flaky
+  verifies spending merit attempts and each ticket's one flake probe on
+  contention it didn't cause. Ask directly — humans volunteer this exactly as
+  often as they volunteer out-of-scope.
+- **Pinned shared contracts** (Locked decisions). When an ordering
+  constraint's reason is "a schema both sides read," pin the schema itself —
+  the shape, the flag names, the DDL. Parallel workers get only their own
+  ticket's context; drift between them passes every per-ticket verify and
+  surfaces at the campaign gate, the most expensive detection point in the
+  loop.
+- **Literal examples** (each requirement's acceptance). Decompose cannot run
+  anything, so the spec's concrete values are the only fixtures its checks can
+  be built from. A placeholder makes it invent the fixture, and invented
+  fixtures are where gameable existence checks come from.
 
 **There are no phases.** Neither coordinator has a phase concept: dependencies
 sequence the backlog, and the slow suite is one campaign-level gate that runs once
@@ -78,7 +131,10 @@ the work**, not by grouping requirements under headings:
 
 Give every ordering constraint a *reason a decomposer can act on* — a shared
 file, an inverted baseline, a schema both sides read. Put them in one section so
-none is buried in prose.
+none is buried in prose. A reason that names a shared artifact obliges Locked
+decisions to pin that artifact's shape: the constraint orders the work, and the
+pinned shape is what keeps the two sides compatible while they build in
+parallel.
 
 ### Unverifiable requirements are blockers — keep them out of the normative set
 
@@ -192,7 +248,18 @@ it is their contract:
       disappearance is not resolution, and neither is a lock-time default.
 - [ ] Every requirement is **decidable by inspection** and its acceptance is
       executable **as written** — command + expected result, or behavioral
-      contract with concrete contrasting input→output examples. No vibes.
+      contract with **literal** contrasting input→output values, no
+      placeholders (the decompose section carries the why). No vibes.
+- [ ] **Requirements are atomic and confined** — one clause per `###`, no
+      "and" joining separately-verifiable behaviors, no requirement-grade
+      clause (nothing kickoff could enumerate as an R) outside the
+      Requirements section. Kickoff enumerates exactly once;
+      headings that map one-to-one onto clauses make that a transcription
+      rather than an interpretation.
+- [ ] **The decompose inputs are present** — a layout map and any shared
+      contract shapes under Locked decisions, scheduler-lock candidates under
+      Environment. Loud defaults count; absence doesn't — decompose is
+      read-only and gets no human.
 - [ ] **No unverifiable requirement sits in the normative set** — anything the
       human has knowingly made unprovable lives under `## Known limits`, not in
       the requirements list, or kickoff refuses to start.
@@ -208,10 +275,21 @@ it is their contract:
       rewording is cheap.
 - [ ] **Ordering constraints stated as dependencies** — each with a reason a
       decomposer can act on, gathered in one section, and confirmed with the
-      human as the right de-risk order.
-- [ ] Environment preconditions listed and, where checkable now, checked.
+      human as the right de-risk order; any constraint citing a shared artifact
+      has that artifact's shape pinned under Locked decisions.
+- [ ] Environment preconditions listed and, where checkable now, checked —
+      including shared mutable state the checks touch and, for any remote test
+      resource, the full five-field grant (host/boundary, credential
+      reference, allowed operations, ownership, cleanup).
 - [ ] **`fastChecks` candidates verified green at baseline**, and any `gate`
       expected to be red identified with the behavior that will turn it green.
+      A repo with no checks yet makes the harness itself the first
+      requirement, ordered ahead of everything.
+- [ ] **Template comments stripped.** The locked text is injected verbatim
+      into kickoff, every decompose drafter, and the terminal coverage pass —
+      the scaffold's HTML comments are aispec-facing instruction, not
+      contract, and an agent told the spec is the authority can read them as
+      one.
 - [ ] **Working tree clean, `.gitignore` correct** — no tracked modifications,
       no untracked paths beyond the five `.ailoop/learnings/*` files, and an
       exact `.ailoop/campaign/` line present. Tell the human what to commit; a
@@ -273,6 +351,12 @@ is the one honest view of where it has got to.
 - **Harvest out-of-scope explicitly.** Humans never volunteer what NOT to
   build. Ask directly, and mine rejected interpretations and "maybe later"
   answers — the tripwire list is built from exactly those.
+- **Harvest for decompose in the first session.** Layout and shared-contract
+  shapes are engineering convention — default them loudly, list for override.
+  Scheduler-lock candidates are a fact about the environment, not a
+  convention — ask. Settle all three while a human is present: after lock they
+  are recoverable only through fault paths priced in burned attempts and
+  recover rounds.
 - **Batch and budget.** Up to 4 questions per round, related
   ones together, at most a couple of rounds per session. A large backlog gets
   triaged, not marched through: ask the load-bearing forks, default the rest.
