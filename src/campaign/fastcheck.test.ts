@@ -4,6 +4,7 @@
 // reads back both halves of the record — the tier in force, and the journal
 // entries that have to survive into the post-mortem.
 
+import { execSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
 import { amendFastChecks, classifyFastCheckEdit } from './fastcheck.ts';
 import { backlog } from './backlog.ts';
@@ -13,11 +14,16 @@ import type { Check } from './agents/schemas.ts';
 
 const UNIT: Check = { name: 'unit', cmd: 'true' };
 
+// The amendment measures candidates in the checkout and refuses to do so off
+// the recorded mainline, so its scratch campaign needs a real (if unborn) ref.
+const gitInit = () => execSync('git init -q -b main .', { stdio: 'pipe' });
+
 type Amended = { fastChecks: Check[]; kinds: { kind: string; body: string }[]; returned: string };
 
 const amend = async (inForce: Check[], proposed: Check[]): Promise<Amended> => {
   let out!: Amended;
-  await withScratchCampaignAsync({ backlog: { tickets: [], fastChecks: inForce }, journal: [] }, async () => {
+  await withScratchCampaignAsync({ backlog: { tickets: [], fastChecks: inForce, mainline: 'main' }, journal: [] }, async () => {
+    gitInit();
     const returned = await amendFastChecks(proposed, { by: 'recover(stalled)', note: 'why' });
     out = {
       fastChecks: backlog().fastChecks ?? [],
@@ -79,6 +85,19 @@ describe('a proposal that does not run green on the mainline', () => {
     expect(out.fastChecks).toEqual([UNIT, { name: 'types', cmd: 'true' }]);
     expect(out.kinds.map(k => k.kind)).toEqual(['fast-check-refused', 'fast-check-amendment']);
     expect(out.returned).toBe('fast tier [+types, ✗unit]');
+  });
+});
+
+describe('an amendment proposed off the mainline', () => {
+  test('is refused before anything is measured — the tier is untouched', async () => {
+    await withScratchCampaignAsync({ backlog: { tickets: [], fastChecks: [UNIT], mainline: 'main' }, journal: [] }, async () => {
+      gitInit();
+      execSync('git checkout -q -b ailoop/T001', { stdio: 'pipe' });
+      await expect(amendFastChecks([{ name: 'types', cmd: 'true' }], { by: 'recover', note: 'why' }))
+        .rejects.toThrow(/HEAD is on ailoop\/T001, not main/);
+      expect(backlog().fastChecks).toEqual([UNIT]);
+      expect(journalEntries()).toEqual([]);
+    });
   });
 });
 

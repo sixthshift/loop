@@ -20,15 +20,15 @@
 // refuse a measured one because an ordinary kind did — trading a fact for a label
 // when the fact is two seconds away.
 //
-// The scar: green-here is not green-everywhere. Proving a command on the mainline
-// says nothing about a worktree that a diff has changed, which is exactly the
-// campaign's business — so this can seat a command that passes at the root and
-// fails in a worker. That is the same exposure kickoff's baseline probe has, and
-// it is why the amendment lands in the journal under its own kind rather than
-// inside a `recovered` note.
+// The scar: green-here is green-on-the-baseline only. Proving a command on
+// mainline says nothing about the same command over a ticket branch's diff —
+// which is exactly the campaign's business — so this can seat a command that
+// passes at the baseline and fails over a worker's change. That is the same
+// exposure kickoff's baseline probe has, and it is why the amendment lands in
+// the journal under its own kind rather than inside a `recovered` note.
 
-import { backlog, backlogWrite } from './backlog.ts';
-import { shAsync } from './state.ts';
+import { backlog, backlogWrite, mainline } from './backlog.ts';
+import { sh, shAsync } from './state.ts';
 import type { Check } from './agents/schemas.ts';
 
 export type FastCheckEdit = {
@@ -51,17 +51,23 @@ export function classifyFastCheckEdit(proposed: Check[]): FastCheckEdit {
   return edit;
 }
 
-// Apply an amendment, admitting only what runs green in the primary checkout.
+// Apply an amendment, admitting only what runs green on the mainline.
 //
-// These commands run at the repo root, so the caller must not have other tickets
-// landing while they do — a candidate measured against a tree that is being merged
-// into proves nothing about the baseline. Nothing enforces that here: the
-// coordinator serializes it (SKILL.md invariant 3), because a lock held across
-// separate verb invocations is not available to a seat that is a conversation.
+// The candidates run in the primary checkout, and serial dispatch makes the
+// wrong tree an ordinary hazard rather than a scheduling accident: a verify
+// red mid-ticket — the very moment amendments get proposed — leaves HEAD on
+// the ticket branch, half-built. So the guard is mechanical: refuse to
+// measure anywhere but the recorded mainline, rather than asking the seat to
+// remember (a conversation cannot hold a lock across verb invocations).
 export async function amendFastChecks(
   proposed: Check[],
   opts: { by: string; note: string },
 ): Promise<string> {
+  const main = mainline();
+  const at = sh('git symbolic-ref --short -q HEAD').stdout.trim();
+  if (at !== main)
+    throw new Error(`fastcheck-amend: HEAD is on ${at || '(detached)'}, not ${main} — a candidate proven green here would be measured against a ticket's half-built tree, not the baseline`);
+
   const { added, replaced } = classifyFastCheckEdit(proposed);
   const candidates = [...added, ...replaced.map(r => r.check)];
 
