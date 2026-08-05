@@ -15,7 +15,7 @@
 // the checkout returns to mainline as each ticket settles.
 
 import { sh } from './state.ts';
-import { backlog } from './backlog.ts';
+import { mainline } from './backlog.ts';
 
 export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
 export type CreateResult =
@@ -23,15 +23,6 @@ export type CreateResult =
   | { ok: false; reason: string; paths?: string[] };
 
 const branchOf = (id: string) => `ailoop/${id}`;
-
-// The recorded mainline, not HEAD: under serial checkouts HEAD spends most of
-// a campaign on a ticket branch. Absence is unreachable through the CLI —
-// assertSkillSeat refuses a backlog without the stamp — so here it is a bug.
-function mainline(): string {
-  const m = backlog().mainline;
-  if (!m) throw new Error('no mainline recorded in backlog.json (pre-serial campaign?)');
-  return m;
-}
 
 const currentRef = (): string => sh('git symbolic-ref --short -q HEAD').stdout.trim(); // '' when detached
 

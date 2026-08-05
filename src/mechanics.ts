@@ -248,9 +248,11 @@ export function registerMechanics(program: Command): void {
     .requiredOption('--out <file>', 'where to persist the snapshot')
     .action((opts: { out: string }) => {
       assertSkillSeat();
-      const snapshot = snapshotTree();
-      fs.writeFileSync(opts.out, JSON.stringify(snapshot, null, 2) + '\n');
-      emit(snapshot);
+      try {
+        const snapshot = snapshotTree();
+        fs.writeFileSync(opts.out, JSON.stringify(snapshot, null, 2) + '\n');
+        emit(snapshot);
+      } catch (e: any) { fail(e.message); }
     });
 
   jurisdiction

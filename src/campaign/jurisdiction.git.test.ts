@@ -23,13 +23,17 @@ function inRepo(body: () => void): void {
   const cwd = process.cwd();
   process.chdir(dir);
   try {
-    git('init -q .');
+    git('init -q -b main .');
     git('config user.email loop@test && git config user.name loop');
     fs.mkdirSync('src');
     fs.writeFileSync('src/a.ts', 'export const a = 1;\n');
     fs.writeFileSync('package.json', '{"name":"x"}\n');
     fs.writeFileSync('.gitignore', '.ailoop/\n');
     git('add -A && git commit -qm base');
+    fs.mkdirSync('.ailoop/campaign', { recursive: true });
+    fs.writeFileSync('.ailoop/campaign/backlog.json', JSON.stringify({
+      project: 't', coordinator: 'skill', mainline: 'main', tickets: [],
+    }));
     body();
   } finally {
     process.chdir(cwd);
@@ -100,12 +104,12 @@ describe('a committed breach', () => {
   test('refuses the reset when the repository tracks campaign state, and says the breach stands', () => {
     inRepo(() => {
       fs.mkdirSync('.ailoop/campaign', { recursive: true });
-      fs.writeFileSync('.ailoop/campaign/backlog.json', '{"v":1}\n');
+      fs.writeFileSync('.ailoop/campaign/backlog.json', '{"v":1,"mainline":"main"}\n');
       git('add -f .ailoop && git commit -qm "campaign state tracked"');
 
       const before = snapshotTree();
       fs.writeFileSync('src/a.ts', 'export const a = 7;\n');
-      fs.writeFileSync('.ailoop/campaign/backlog.json', '{"v":2}\n'); // this run's bookkeeping
+      fs.writeFileSync('.ailoop/campaign/backlog.json', '{"v":2,"mainline":"main"}\n'); // this run's bookkeeping
       git('add -A && git commit -qm "recover edit + campaign write"');
 
       const breach = revertOutOfBounds(before);
@@ -114,6 +118,55 @@ describe('a committed breach', () => {
       expect(breach.reverted).toBe(false); // the caller owes the human a park
       // The undo would have rolled the ledger back to punish the run that wrote it.
       expect(JSON.parse(read('.ailoop/campaign/backlog.json')).v).toBe(2);
+    });
+  });
+});
+
+// Serial checkouts put ticket branches in the same working tree recover is
+// trusted with, so HEAD itself is jurisdiction: a snapshot taken on a ticket
+// branch would pin the wrong baseline, and a revert fired there would read
+// the whole ticket diff as recover's breach.
+describe('the pinned ref', () => {
+  test('snapshot refuses to start anywhere but the recorded mainline', () => {
+    inRepo(() => {
+      git('checkout -q -b ailoop/T001');
+      expect(() => snapshotTree()).toThrow(/HEAD is on ailoop\/T001, not main/);
+    });
+  });
+
+  test('a run that wandered off the ref is put back before anything is measured', () => {
+    inRepo(() => {
+      const before = snapshotTree();
+      git('checkout -q -b probe');
+      fs.writeFileSync('src/a.ts', 'export const a = 5;\n');
+      git('add -A && git commit -qm "probing on a branch"');
+
+      const breach = revertOutOfBounds(before);
+
+      expect(git('symbolic-ref --short HEAD').trim()).toBe('main');
+      expect(breach.ref).toEqual({ expected: 'main', found: 'probe', restored: true });
+      // The probe branch's commit is not mainline history — nothing to revert.
+      expect(breach.paths).toEqual([]);
+      expect(breach.reverted).toBe(true);
+      expect(read('src/a.ts')).toBe('export const a = 1;\n');
+    });
+  });
+
+  test('a return git refuses is a standing breach, not a guess', () => {
+    inRepo(() => {
+      const before = snapshotTree();
+      git('checkout -q -b probe');
+      fs.writeFileSync('src/a.ts', 'export const a = 5;\n');
+      git('add -A && git commit -qm "probe commit"');
+      fs.writeFileSync('src/a.ts', 'export const a = 6; // uncommitted on top\n');
+
+      const breach = revertOutOfBounds(before);
+
+      expect(breach.reverted).toBe(false);
+      expect(breach.ref).toEqual({ expected: 'main', found: 'probe', restored: false });
+      // Nothing was destroyed by the refusal — the tree recover left is intact
+      // for the human the park hands it to.
+      expect(read('src/a.ts')).toContain('uncommitted on top');
     });
   });
 });

@@ -123,6 +123,15 @@ export type Backlog = {
 export const requirementIds = (b: Backlog): Set<string> =>
   new Set((b.requirements ?? []).map(r => r.id));
 
+// The recorded mainline, for every verb that resolves against it. Absence is
+// unreachable through the CLI — assertSkillSeat refuses a backlog without the
+// stamp — so a throw here means a direct caller skipped that gate.
+export const mainline = (): string => {
+  const m = backlog().mainline;
+  if (!m) throw new Error('no mainline recorded in backlog.json (pre-serial campaign?)');
+  return m;
+};
+
 export function backlog(): Backlog {
   return JSON.parse(fs.readFileSync(path.join(RUN, 'backlog.json'), 'utf8'));
 }

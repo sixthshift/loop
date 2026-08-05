@@ -7,9 +7,13 @@
 // measured against: a worker's diff meets an adversarial judge and then the
 // merged-tree gate, while recover's edit to the same file meets nobody.
 //
-// So the boundary is checked rather than asked for. Recover holds the mainline
-// lock for its whole run, so nothing else moves that checkout: the difference
-// between the tree before and the tree after is attributable to it alone.
+// So the boundary is checked rather than asked for. Nothing else runs while
+// recover does — a live worker is settled or killed first — so the difference
+// between the tree before and after is attributable to recover alone. Serial
+// checkouts add a second axis to defend: HEAD. The snapshot refuses to start
+// anywhere but the recorded mainline and pins the ref; the revert returns to
+// that ref before measuring — fired with HEAD on a ticket branch, the diff
+// would read the whole ticket's work as recover's breach and reset it away.
 //
 // In bounds: untracked files (a scratch reproduction is how a fault gets
 // diagnosed), manifests and lockfiles (an install IS a manifest edit — the
@@ -25,18 +29,28 @@
 
 import path from 'node:path';
 import { sh } from './state.ts';
+import { mainline } from './backlog.ts';
 import { isManifest } from './footprint.ts';
 
-export type TreeSnapshot = { sha: string; dirt: string[] };
+export type TreeSnapshot = { ref: string; sha: string; dirt: string[] };
 // `reverted: false` means the breach is STANDING — the undo was refused or
 // failed, and the caller owes the human a park rather than a reassuring note.
-export type Breach = { paths: string[]; diff: string; reverted: boolean };
+// `ref` reports a run that left HEAD somewhere else, and whether the revert
+// got it back.
+export type Breach = {
+  paths: string[]; diff: string; reverted: boolean;
+  ref?: { expected: string; found: string; restored: boolean };
+};
 
 const CAMPAIGN = '.ailoop/';
 const DIFF_CAP = 20_000; // the repair ticket carries this; a worker needs the shape, not every hunk
 
 export function snapshotTree(): TreeSnapshot {
-  return { sha: headSha(), dirt: porcelain() };
+  const main = mainline();
+  const at = currentRef();
+  if (at !== main)
+    throw new Error(`jurisdiction snapshot: HEAD is on ${at || '(detached)'}, not ${main} — recover is trusted with the mainline checkout only`);
+  return { ref: main, sha: headSha(), dirt: porcelain() };
 }
 
 // Which paths a run put out of bounds. Working-tree lines are compared verbatim
@@ -59,11 +73,24 @@ export function outOfBounds(before: string[], after: string[], committed: string
 
 // Undo whatever the run left outside its jurisdiction, returning what was undone
 // and the diff that recorded it. Empty paths is the ordinary result.
+//
+// First obligation: HEAD. Every measurement below diffs against the pinned
+// ref's history, so a run that wandered off it is put back before anything is
+// compared — and a return that git refuses (the run left tracked
+// modifications that can't carry over) is a standing breach, not a guess.
 export function revertOutOfBounds(before: TreeSnapshot): Breach {
+  if (!before.ref) throw new Error('snapshot predates serial checkouts — no ref pinned; nothing safe to revert against');
+  const found = currentRef();
+  const moved = found !== before.ref
+    ? { expected: before.ref, found: found || '(detached)', restored: sh(`git checkout ${before.ref}`).status === 0 }
+    : undefined;
+  if (moved && !moved.restored) return { paths: [], diff: '', reverted: false, ref: moved };
+  const withRef = (b: Breach): Breach => (moved ? { ...b, ref: moved } : b);
+
   const sha = headSha();
   const committed = sha === before.sha ? [] : diffNames(`${before.sha}..HEAD`);
   const paths = outOfBounds(before.dirt, porcelain(), committed);
-  if (!paths.length) return { paths: [], diff: '', reverted: true };
+  if (!paths.length) return withRef({ paths: [], diff: '', reverted: true });
 
   const spec = paths.map(quote).join(' ');
   // Captured before the undo: this diff is the only surviving account of what
@@ -84,8 +111,8 @@ export function revertOutOfBounds(before: TreeSnapshot): Breach {
     // started — silently undoing this run's bookkeeping to punish it. Refuse and
     // report the breach standing: an unreverted breach the human is told about
     // beats a revert that corrupts the ledger recording it.
-    if (campaignTracked()) return { paths, diff, reverted: false };
-    if (sh(`git reset --hard ${before.sha}`).status !== 0) return { paths, diff, reverted: false };
+    if (campaignTracked()) return withRef({ paths, diff, reverted: false });
+    if (sh(`git reset --hard ${before.sha}`).status !== 0) return withRef({ paths, diff, reverted: false });
   } else {
     for (const p of paths) {
       // Tracked in HEAD → restore it. Otherwise recover staged a NEW file:
@@ -95,7 +122,7 @@ export function revertOutOfBounds(before: TreeSnapshot): Breach {
       else sh(`git rm -q --cached -- ${quote(p)}`);
     }
   }
-  return { paths, diff, reverted: true };
+  return withRef({ paths, diff, reverted: true });
 }
 
 // Campaign state normally sits untracked (or ignored) beside the work. A repo
@@ -108,6 +135,8 @@ export const breachedModules = (paths: string[]): string[] =>
   [...new Set(paths.map(p => path.posix.dirname(p) || '.'))];
 
 const headSha = (): string => sh('git rev-parse HEAD').stdout.trim();
+
+const currentRef = (): string => sh('git symbolic-ref --short -q HEAD').stdout.trim(); // '' when detached
 
 const porcelain = (): string[] => sh('git status --porcelain').stdout.split('\n').filter(l => l.trim());
 
