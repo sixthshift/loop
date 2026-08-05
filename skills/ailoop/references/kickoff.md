@@ -59,8 +59,10 @@ loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"re
 explicitly anyway, so the stamp in `backlog.json` is a statement rather than a
 default nobody chose.
 
-Add `.ailoop/campaign/` to `.gitignore` (learnings/ stays tracked; worktrees live
-outside the repo, so there is nothing there for git to ignore).
+Add `.ailoop/campaign/` to `.gitignore` (learnings/ stays tracked). Campaign
+state shares the checkout with every worker; ignoring it is what keeps verify's
+dirty-tree refusal and `branch discard`'s clean honest about whose files are
+whose.
 
 Journal the enumeration and the contract so both outlive the screen:
 
@@ -118,9 +120,10 @@ the file the implementation turns out to need, and a file list charges the ticke
 for that forecast error. `satisfies` claims only what the ticket's own acceptance
 actually proves; leave a clause unclaimed rather than parking it on the nearest
 ticket, because an over-claim reads as coverage and nothing downstream will
-disagree. If a ticket's checks *mutate* shared external state (a dev DB they
-reset, a queue), name it in `resources` — the frontier never co-schedules two
-tickets sharing one. Read-only touches don't count.
+disagree. Shared mutable state a ticket's checks touch (a dev DB they reset, a
+queue) needs no scheduling declaration — tickets run one at a time — but the
+cleanup obligation stays: a check that leaves shared state dirty fails the
+*next* ticket, and the fault will be filed against the wrong one.
 
 There is no pre-dispatch vetting step. Open tickets dispatch straight to a
 worker, and the post-build review carries the whole adversarial load.

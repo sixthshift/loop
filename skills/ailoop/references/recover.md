@@ -25,9 +25,8 @@ budget, the jurisdiction dance, and applying what comes back.
 | `worker-blocked` | a worker's `blocked` reply |
 | `toobig-without-split` | a `tooBig` reply with no proposed children |
 | `judge-escalate` | the review returned `escalate` |
-| `campaign-gate-red` | the campaign gate red after clean merges |
-| `integration-red` | fast tier red on the merged tree after a close |
-| `dirty-mainline` | a merge refused because the mainline has uncommitted work |
+| `campaign-gate-red` | the campaign gate red after clean landings |
+| `dirty-mainline` | a land refused because the checkout has uncommitted work |
 | `stalled` | nothing moving, nothing dispatchable |
 | `decompose-refused` | the writer refused a decomposition twice |
 | `script-refused` | a `REFUSED:` you can't interpret as your own bug |
@@ -85,8 +84,8 @@ loop jurisdiction revert --in .ailoop/campaign/juris.json
 
 Run the revert **before you read the verdict**, and whether or not it claims
 success — an out-of-bounds edit is a fact about the tree, not a claim in the
-reply. Nothing else may move that checkout while recover is live: no merge, no
-gate run, no worker landing, or the difference between the two snapshots stops
+reply. Nothing else may move that checkout while recover is live: no land, no
+gate run, no worker dispatch, or the difference between the two snapshots stops
 being attributable to recover alone.
 
 `revert` prints `{paths, diff, reverted}`. On a non-empty `paths`:

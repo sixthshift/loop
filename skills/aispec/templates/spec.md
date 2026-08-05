@@ -25,13 +25,12 @@ spec_version: 1          # bumped by change orders after lock
      Two entries are written FOR decompose, which is read-only and gets no
      human. `Layout` — where each area of work lives (`src/<area>/` plus its
      test tree): decompose turns it into per-ticket module footprints, and
-     disjoint footprints are the module half of the frontier's parallelism
-     arithmetic and the whole of verify's scope boundary; unstated, decompose
-     invents the layout, and every
-     mis-forecast is a burned scope-violation attempt or two tickets needlessly
-     serialized. `Shared contracts` — the exact shape of any artifact two
-     requirements both read (the schema, the DDL, the flag names): parallel
-     workers see only their own ticket's context, and drift between them passes
+     the declared footprint is the whole of verify's scope boundary — the
+     fence every diff is judged against; unstated, decompose invents the
+     layout, and every mis-forecast is a burned scope-violation attempt.
+     `Shared contracts` — the exact shape of any artifact two requirements
+     both read (the schema, the DDL, the flag names): workers see only their
+     own ticket's context, and drift between two tickets' readings passes
      every per-ticket verify to surface at the campaign gate, the most
      expensive detection point in the loop. -->
 
@@ -106,7 +105,7 @@ spec_version: 1          # bumped by change orders after lock
      schema both sides read. Keep them all here so none is buried in prose.
      A reason that names a shared artifact obliges Locked decisions to pin
      that artifact's shape — the constraint orders the work; the pinned shape
-     is what keeps the two sides compatible while they build in parallel. -->
+     is what keeps the two sides compatible while they are built apart. -->
 
 - <requirement A> must land before <requirement B> — because <the concrete
   reason: they share this file / A inverts the baseline B asserts against / …>
@@ -146,10 +145,10 @@ spec_version: 1          # bumped by change orders after lock
      a refuse-to-start, so surface them here, not mid-build.
 
      Two machine-facing lists live here too. Shared mutable state the checks
-     touch — a dev DB they reset, a fixed port, a fixture directory — becomes
-     decompose's scheduler locks; a missed one co-schedules two tickets onto
-     the same state, and the symptom is flaky verifies burning merit attempts
-     and each ticket's one flake probe on contention it didn't cause. And any
+     touch — a dev DB they reset, a fixed port, a fixture directory — with its
+     reset/cleanup expectation: tickets run one at a time, so nothing
+     contends, but a check that leaves such state dirty fails the NEXT
+     ticket, and the fault is filed against the wrong one. And any
      remote isolated test resource needs its FULL grant — host/boundary,
      credential reference name, allowed operations, ownership, cleanup — all
      five, or kickoff records a blocker and workers receive no grant at all.
@@ -159,8 +158,10 @@ spec_version: 1          # bumped by change orders after lock
      modification as a blocker. The only tolerated untracked paths are exactly
      `.ailoop/learnings/{checks.json,flakes.json,sizing.md,gaming.md,landmines.md}`;
      any other untracked path blocks too. `.gitignore` must contain an exact
-     `.ailoop/campaign/` line — that line only; worker worktrees are created
-     outside the repository. Note here what the human still needs to commit. -->
+     `.ailoop/campaign/` line — that line only; campaign state shares the
+     checkout with every worker, and the ignore line is what keeps the loop's
+     dirty-tree measurements honest. Note here what the human still needs to
+     commit. -->
 
 - ...
 - Shared mutable state the checks touch: ...

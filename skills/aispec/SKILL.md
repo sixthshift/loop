@@ -75,8 +75,10 @@ a spec missing any of them bounces:
 6. **Environment preconditions** — keys, services, runtimes the checks need;
    kickoff probes these and a missing one is a refuse-to-start. Two
    machine-facing lists belong here too: **shared mutable state the checks
-   touch** (a dev DB they reset, a fixed port — decompose lifts these into
-   scheduler locks), and for any **remote isolated test resource**, the full
+   touch** (a dev DB they reset, a fixed port — tickets run one at a time, so
+   nothing contends, but a check that leaves such state dirty fails the *next*
+   ticket, so state the reset/cleanup expectation), and for any **remote
+   isolated test resource**, the full
    five-field grant — host/boundary, credential reference name, allowed
    operations, ownership, cleanup. A partial grant is a kickoff blocker, and
    workers receive no grant the spec didn't state.
@@ -85,29 +87,27 @@ a spec missing any of them bounces:
 
 Kickoff is the gate, but decompose decides campaign quality, and it is the
 harder reader: a read-only consensus group with no human in the loop, deriving
-every ticket's `modules`, `resources`, `context`, and acceptance commands from
+every ticket's `modules`, `context`, and acceptance commands from
 the spec text plus tree inspection. What it fails to find there arrives later
 only through fault paths — the costs the bullets below name. Four things it
 needs that the gate never checks:
 
-- **A layout map** (Locked decisions). Tickets declare directories, and
-  disjoint footprints are the module half of the frontier's parallelism
-  arithmetic (resource locks are the other) and the whole of verify's scope
-  boundary. State where each area of work lives — a loud
+- **A layout map** (Locked decisions). Tickets declare directories, and the
+  declared footprint is the whole of verify's scope boundary — the fence
+  every diff is judged against. State where each area of work lives — a loud
   default the human can override in one line — or decompose invents the
-  layout, and every mis-forecast is a burned scope-violation attempt or two
-  tickets needlessly serialized.
-- **Scheduler-lock candidates** (Environment). A missed shared-mutable
-  resource co-schedules two tickets onto the same state; the symptom is flaky
-  verifies spending merit attempts and each ticket's one flake probe on
-  contention it didn't cause. Ask directly — humans volunteer this exactly as
-  often as they volunteer out-of-scope.
+  layout, and every mis-forecast is a burned scope-violation attempt.
+- **Shared-state cleanup expectations** (Environment). Tickets run one at a
+  time, so shared mutable state is never contended — but a check that leaves
+  a dev DB or fixture dirty fails the *next* ticket, and the fault is filed
+  against the wrong one. Ask directly what the checks touch and what resets
+  it — humans volunteer this exactly as often as they volunteer out-of-scope.
 - **Pinned shared contracts** (Locked decisions). When an ordering
   constraint's reason is "a schema both sides read," pin the schema itself —
-  the shape, the flag names, the DDL. Parallel workers get only their own
-  ticket's context; drift between them passes every per-ticket verify and
-  surfaces at the campaign gate, the most expensive detection point in the
-  loop.
+  the shape, the flag names, the DDL. Workers get only their own ticket's
+  context; drift between two tickets' readings passes every per-ticket verify
+  and surfaces at the campaign gate, the most expensive detection point in
+  the loop.
 - **Literal examples** (each requirement's acceptance). Decompose cannot run
   anything, so the spec's concrete values are the only fixtures its checks can
   be built from. A placeholder makes it invent the fixture, and invented
@@ -133,8 +133,8 @@ Give every ordering constraint a *reason a decomposer can act on* — a shared
 file, an inverted baseline, a schema both sides read. Put them in one section so
 none is buried in prose. A reason that names a shared artifact obliges Locked
 decisions to pin that artifact's shape: the constraint orders the work, and the
-pinned shape is what keeps the two sides compatible while they build in
-parallel.
+pinned shape is what keeps the two sides compatible while they are built
+apart.
 
 ### Unverifiable requirements are blockers — keep them out of the normative set
 
@@ -154,8 +154,10 @@ tracked modification as a blocker**. The only untracked paths it tolerates are
 exactly `.ailoop/learnings/{checks.json,flakes.json,sizing.md,gaming.md,landmines.md}`;
 **any other untracked path is a blocker too**, because workers start from
 committed HEAD and gates inspect the shared tree. It also requires `.gitignore`
-to already contain an exact `.ailoop/campaign/` line — *that line only*: worker
-worktrees are created outside the repository and need no entry.
+to already contain an exact `.ailoop/campaign/` line — *that line only*.
+Campaign state shares the checkout with every worker, and the ignore line is
+what keeps the loop's dirty-tree measurements honest about whose files are
+whose.
 
 None of that is the spec's content, but all of it decides whether the campaign
 can start — so check it at lock time and tell the human what to commit. A

@@ -2,10 +2,10 @@
 name: ailoop
 description: >-
   Drive a locked build spec to completion through an autonomous engineering
-  loop: decompose the spec into a ticket backlog, dispatch parallel workers in
-  git worktrees, verify every result with scripts, judge every diff with a
-  fresh-context adversarial reviewer, and repeat until the campaign gate is
-  green. Use whenever the user wants a defined spec built end-to-end with
+  loop: decompose the spec into a ticket backlog, dispatch workers one at a
+  time on ticket branches in the checkout, verify every result with scripts,
+  judge every diff with a fresh-context adversarial reviewer, and repeat until
+  the campaign gate is green. Use whenever the user wants a defined spec built end-to-end with
   minimal supervision — "run the loop", "drive this spec to done",
   "autonomously build this", or when they point at a spec and ask for it to be
   executed as a campaign. NOT for one-off edits or tasks without a
@@ -19,9 +19,9 @@ app. You decompose, dispatch, judge, and stop only when the campaign gate is
 green or nothing autonomous is left.
 
 Everything below the seat is the `loop` binary's, reached through `loop <verb>`:
-the backlog writer, the frontier arithmetic, verification, worktrees, id
-allocation, the check-amendment rules, recover's jurisdiction boundary and its
-budget, the role prompts, their schemas, the model chains. Never reimplement any
+the backlog writer, the frontier arithmetic, verification, the branch
+lifecycle, id allocation, the check-amendment rules, recover's jurisdiction
+boundary and its budget, the role prompts, their schemas, the model chains. Never reimplement any
 of it, never hand-edit the state it owns, and never work around a refusal — a
 refusal is the mechanism telling you the move was illegal.
 
@@ -41,43 +41,39 @@ for.
 
 ## The invariants
 
-Everything else here is guidance you may depart from with a reason. These six are
+Everything else here is guidance you may depart from with a reason. These five are
 not, because breaking one produces a wrong state that nothing downstream can see —
 no check goes red, no verb refuses, and the report still reads fine.
 
 1. **A ticket is never `in-flight` without a live worker.** In-flight is what
-   makes the frontier treat its modules and resources as occupied, so a stranded
-   one silently blocks every ticket that shares a directory with it, forever.
+   tells the frontier the checkout is occupied, so a stranded one blocks the
+   **entire campaign** — nothing dispatches while it stands — and usually
+   leaves HEAD parked on its ticket branch, where nothing else can measure.
    However a dispatch ends — verdict, dead engine, operator kill, timeout, a
    fault with no name — the ticket lands somewhere real before you move on:
    `closed`, `open`, `parked`, or `decomposed`.
 2. **Failure is a taxonomy, and misfiling it costs a ticket its budget.** An
    attempt is *merit* (the build was wrong: verify red, gamed, judge-rejected) or
-   *infra* (`--infra`: the machine failed it — dead session, operator kill,
-   moved mainline, merge conflict, an unprovisioned checkout). Only merit
-   attempts count toward the wall and climb the model ladder. File a machine
-   fault as merit and the ticket parks for something it never did.
-3. **One writer on the shared checkout at a time.** A landing
-   (merge → close → integration check), a campaign gate run, and a live recover
-   each own the mainline exclusively for their whole span. This is the invariant
-   with no symptom: a second landing merging mid-run doesn't fail anything, it
-   just makes the integration verdict a statement about a tree that no longer
-   exists, attributed to the wrong ticket. Serialize them even when you could
-   overlap them.
+   *infra* (`--infra`: the machine failed it — dead session, operator kill, a
+   land refused because something outside the campaign moved mainline). Only
+   merit attempts count toward the wall and climb the model ladder. File a
+   machine fault as merit and the ticket parks for something it never did.
+3. **One actor on the checkout at a time — and recover never runs over a live
+   worker.** Serial dispatch makes most of the old exclusivity structural: a
+   landing, a gate run, and a recover cannot contend when one thing runs at
+   once. The half that is still yours: settle or kill a live worker before
+   spawning recover. The product-code guard is the difference between two
+   snapshots of the checkout, so a worker committing mid-recover makes the
+   breach unattributable — the guard doesn't fail loudly, it just stops
+   meaning anything. The snapshot's ref pin catches the obvious case; the
+   attribution is only as good as the exclusivity you keep.
 4. **A check only ever gets sharper.** You may correct a command's letter; you
    may add coverage. Narrowing what a check *measures* is the human's, and that
    includes narrowing it by accepting a second "typo" on the same ticket. One
    typo amendment and one flake probe per ticket: past that it is not a typo and
    not a flake, it is the judge negotiating its way to green, and the whole
    escaped-bug rule exists to stop exactly that.
-5. **Every parallel worker is a full checkout.** Cap concurrent *build* sessions
-   at **3** unless the human says otherwise. `loop worktree add` copies the
-   primary checkout's dependency trees, which is real seconds and real disk per
-   ticket — that cost is what the cap is for. Settling tickets don't hold a slot:
-   a returned ticket's review runs on top of the cap, deliberately, because
-   holding the slot through the merge is what leaves workers idle behind one slow
-   settle.
-6. **Nothing is done on your word.** A closed ticket carries verify evidence a
+5. **Nothing is done on your word.** A closed ticket carries verify evidence a
    script wrote; a green gate carries its own run against the current counts.
    You never supply either from your own reading.
 
@@ -117,16 +113,18 @@ Two trees, both loop's:
 - **`.ailoop/learnings/`** — survives the campaign, git-tracked, capped. Written
   by the harvest, read at kickoff.
 
-Worker worktrees live *outside* the repository (`loop worktree add` places them);
-never cut one yourself. Your context will be compacted during long runs: the
-files are the loop's memory, not the conversation. A fact that matters and isn't
-in a ticket or the journal is lost — write it down now rather than remember
-harder.
+Workers run in the primary checkout, on `ailoop/<id>` branches
+(`loop branch create` cuts them); never cut one yourself. While a worker is
+live, HEAD is its branch — the checkout is not readable as mainline until the
+ticket settles. Your context will be compacted during long runs: the files are
+the loop's memory, not the conversation. A fact that matters and isn't in a
+ticket or the journal is lost — write it down now rather than remember harder.
 
-`backlog.json` is stamped `coordinator: skill` at init, which is now the default
-and the only reachable value. A campaign stamped `cli` was opened by the drive
-loop that has since been removed; the verbs refuse it and tell the human why
-rather than half-adopting state whose worktrees answered to a dead process.
+`backlog.json` is stamped `coordinator: skill` and `mainline: <branch>` at
+init. A campaign stamped `cli` was opened by the drive loop that has since
+been removed; one without a recorded mainline was opened by a worktree-era
+release. The verbs refuse both and tell the human why rather than
+half-adopting state they cannot honestly drive.
 
 ## The verbs
 
@@ -137,13 +135,13 @@ side — read it and fix the call, never route around it.
 | Verb | What it owns |
 |---|---|
 | `loop backlog <cmd> …` | **the sole writer.** `init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`. JSON payloads on stdin. It validates the ticket schema, enforces legal transitions, and journals every mutation. |
-| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`. Three guarantees you never re-derive: deps-closed is what makes a ticket ready, two tickets sharing a module or a resource can never both be dispatchable, and a green gate goes stale the moment the ticket or closed count moves. |
+| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`. Three guarantees you never re-derive: deps-closed is what makes a ticket ready, `dispatchable` is at most one ticket and empty while anything is in flight, and a green gate goes stale the moment the ticket or closed count moves. |
 | `loop renumber` | id allocation for proposed drafts (stdin → stdout), rewiring edges between them. Every prompt that asks an agent for tickets promises this — use it, never renumber by eye. |
 | `loop recovery-budget --kind … [--ticket …]` | whether a recover may be spent on this anomaly: the scoped key, what it has spent, and the prior fixes a park cites. The scoping rule is not yours to infer. |
 | `loop gate-amend --by … --note … --anomaly …` | the gate under the authority its anomaly grants. Replacing a live command is granted by `campaign-gate-red` alone; every other kind may only add, and the refusal is journaled. |
 | `loop fastcheck-amend --by … --note …` | the fast tier, admitting only candidates that exit 0 at the repo root. It runs them — you never attest to having done that yourself. |
-| `loop worktree add\|attach\|preserve\|remove\|merge\|delete-branch <id>` | worker checkouts, outside the repo, with the primary tree's installed dependencies copied in. `merge` fast-forwards when the base is still the tip. `preserve` re-cuts a judged worktree from its surviving branch rebased onto mainline — the `sharpen` verdict's keep-the-build path; a rebase conflict comes back `ok: false` and is infra. |
-| `loop verify --ticket <id> --dir <wt> --base <sha>` | the measurement: dirty-tree refusal, every fastCheck + the ticket's acceptanceChecks, the diff scope-checked against declared `modules`, evidence and patch written. `--cmd "<c>" --dir <wt> [--repeat 5]` is the flake probe. |
+| `loop branch create\|attach\|discard\|land\|delete` | the serial checkout lifecycle. `create <id>` cuts `ailoop/<id>` from mainline and checks it out, refusing an off-mainline or unclean tree (it names the litter — resolve it, never route around it). `attach <id>` checks a surviving branch back out for resume. `discard` erases worker litter and returns the checkout to mainline, keeping the branch. `land <id>` returns to mainline and fast-forwards it onto the branch; a non-ff result is interference, infra. `delete <id>` reaps a branch once the gate is green. |
+| `loop verify --ticket <id> --base <sha>` | the measurement, run at the root on the checked-out branch: dirty-tree refusal, every fastCheck + the ticket's acceptanceChecks, the diff scope-checked against declared `modules`, evidence and patch written. `--cmd "<c>" [--repeat 5]` is the flake probe. |
 | `loop prompt <role> [--vars -]` / `loop schema <role> [--engine codex]` / `loop models [<role>]` | the judgment layer: role prompt, its output contract, its resolved model chain. Roles: `kickoff decompose worker review sweep recover coverage harvest`. |
 | `loop jurisdiction snapshot --out F` / `revert --in F` | recover's enforced product-code boundary. |
 | `loop status` | the backlog tree, rendered. Zero tokens, for the human. |
@@ -173,10 +171,12 @@ Every role runs the same way, and this is the one mechanism the seat owns:
    Either way, re-ask once if the reply doesn't conform; then fall to the next
    available rung.
 4. Workers get write access (`-s danger-full-access
-   --dangerously-bypass-approvals-and-sandbox` for codex) and the worktree as
-   cwd. Read-only roles — review, sweep, coverage — get a read-only sandbox and
-   must never execute project scripts. Never dispatch a worker into the primary
-   checkout.
+   --dangerously-bypass-approvals-and-sandbox` for codex) and run at the
+   repository root, on the ticket branch `create` checked out — the same
+   checkout everything else uses, which is why only one runs at a time.
+   Read-only roles — review, sweep, coverage — get a read-only sandbox and
+   must never execute project scripts; while a ticket branch is checked out,
+   their repository reads include its diff, and review's prompt says so.
 
 You never fill a role yourself. Not review, not sweep, not coverage — a
 coordinator that dispatched the work is the builder's advocate, not its auditor,
@@ -216,15 +216,18 @@ order**, never on your own reading of the backlog:
    (with a note saying why), else **recover** (`frontier-problems`). Hand a given
    problem-set to recover once; if it survives, park it.
 2. **`inFlight` with no live worker** → stale. Reconcile per Resume before
-   anything else. Your own running workers appearing here is normal; frontier
-   reports the fact, you supply the staleness judgment.
+   anything else — a stranded in-flight blocks every dispatch (nothing runs
+   while it stands) and usually holds HEAD on its ticket branch, so the whole
+   campaign waits on this one reconciliation. Your own running worker
+   appearing here is normal; frontier reports the fact, you supply the
+   staleness judgment.
 3. **`capped` / `stuck`** → a merit wall is a decision, not a dead end.
    **recover** (`attempt-wall`) reads the attempt hypotheses and fixes the
    campaign's definition at the root: a check that never matched the DoD, a
    contract contradicting a delivered dependency, an under-built dependency
    (repair ticket + rewire). Two distinct attempts per wall, then park. A walled
    ticket stays in `ready` but is held out of `dispatchable`, so it cannot be
-   re-spawned while you deal with it — keep driving everything disjoint.
+   re-spawned while you deal with it — keep driving what remains.
 4. **`coverage.unmapped` non-empty** → clauses nobody claimed. Write those
    tickets now, while the tree can still absorb them. A clause that looks
    *already delivered* still gets a ticket — a check-only one that claims the
@@ -234,15 +237,14 @@ order**, never on your own reading of the backlog:
 5. **`complete: true`** → Stage 3, the campaign gate.
 6. **Nothing moving and nothing dispatchable** → **recover** (`stalled`), then
    re-read the frontier. Only a stall that survives recover is the human's.
-7. **Otherwise `dispatchable`** is the set safe to spawn *now*. Dispatch is
-   continuous, not batched: spawn up to the worker cap, and the moment a worker
-   returns and you finish settling it, re-run frontier and spawn whatever that
-   unblocked. Never wait for a cohort to drain. The dependency graph,
-   disjointness, and the cap (invariant 5) are the only three bounds.
-   `idle: true` is this branch stated as a fault: dispatchable work with
-   nothing in flight means the next action is a dispatch, **this turn** — a
-   pass that reads `idle` and ends without dispatching or journaling why is
-   the one coordinator stall no downstream check can see.
+7. **Otherwise `dispatchable`** is the next ticket, singular — one worker, in
+   the primary checkout, at a time. The moment it returns and you finish
+   settling it, re-run frontier and dispatch what that unblocked; the
+   dependency graph is the only ordering bound. `idle: true` is this branch
+   stated as a fault: dispatchable work with nothing in flight means the next
+   action is a dispatch, **this turn** — a pass that reads `idle` and ends
+   without dispatching or journaling why is the one coordinator stall no
+   downstream check can see.
 
 None of the seven is a fault handler. Anything the frontier reports that you can
 resolve yourself — a dangling edge, a ticket whose contract you can see is wrong,
@@ -254,16 +256,18 @@ find a different one or park, rather than applying it a third time.
 
 ### 2.1 Dispatch
 
-Per dispatchable ticket, up to the cap: `loop worktree add <id>` (returns `dir`,
-`branch`, `baseSha`), then
+For the dispatchable ticket: `loop branch create <id>` (returns `branch` and
+`baseSha`; a refusal names what blocks it — an off-mainline HEAD or litter in
+the tree — and is resolved, never routed around), then
 
 ```sh
 loop backlog set-status <id> in-flight --base-sha <baseSha> \
   --model <the rung's model> --rung <n>
 ```
 
-so the next frontier counts its modules and resources as occupied. Then run the
-`worker` role in that `dir`, at the ladder rung its merit-attempt count earns.
+so the next frontier knows the checkout is occupied. Then run the `worker`
+role at the repository root, on that branch, at the ladder rung its
+merit-attempt count earns.
 
 `--model` / `--rung` and the phase stamps below are the campaign's only outward
 sign of life. Nobody can see your session: `loop watch` renders in-flight tickets
@@ -283,15 +287,15 @@ The worker builds, **adds tests for any new behavior**, runs the checks, commits
 on its branch, and reports `done` / `tooBig` (a proposed split, never a
 half-build) / `blocked`. Its report is testimony, not evidence.
 
-While workers run, prep: sharpen soon-to-unblock tickets, keep the journal
+While the worker runs, prep: sharpen soon-to-unblock tickets, keep the journal
 current. Write prep into files as it lands — context prep dies at compaction.
 
 ### 2.2 Settle a returned ticket
 
 Three layers, in order, per ticket:
 
-1. **`loop verify --ticket <id> --dir <dir> --base <baseSha>`** (`phase verifying`).
-   Facts, no model.
+1. **`loop verify --ticket <id> --base <baseSha>`** (`phase verifying`), at the
+   root, on the branch the worker left checked out. Facts, no model.
 2. **The `review` role** (`phase under-review`) — a fresh agent, always spawned. It
    gets the ticket, the worker's report, the verify result, the diff path,
    `outOfScope`, prior attempts, and `gaming.md` from learnings. It returns exactly
@@ -299,10 +303,10 @@ Three layers, in order, per ticket:
 3. **You apply that verdict.** You do not re-litigate it; you carry it out.
 
 Two mechanics run through the whole table, so they are stated once here. **A
-rejected build is discarded** — `loop worktree remove <id>` then
-`loop worktree delete-branch <id>` — because the next attempt cuts a fresh
-worktree from the moved mainline. The one verdict that keeps its build is
-`sharpen`, whose remedy is `loop worktree preserve`; otherwise only a *closed*
+rejected build is discarded** — `loop branch discard` (erases litter, returns
+the checkout to mainline) then `loop branch delete <id>` — because the next
+attempt cuts a fresh branch from mainline. The one verdict that keeps its
+build is `sharpen`, whose branch survives untouched; otherwise only a *closed*
 ticket's branch survives, and only until the gate is green, for bisection. And
 **`update` is refused on an in-flight ticket**, so any check amendment is
 `set-status <id> open` first. Both are the writer telling you the order, not
@@ -310,19 +314,19 @@ obstacles to route around.
 
 The table below is the ordinary path, not an exhaustive one. A dispatch that ends
 some other way — the engine died mid-run, the operator killed it, it timed out, a
-worktree wouldn't provision, something with no name at all — is yours to diagnose
-and resolve; there is no arm to look up and no reason to stop. Land it somewhere
+`create` refused, something with no name at all — is yours to diagnose and
+resolve; there is no arm to look up and no reason to stop. Land it somewhere
 real and file the attempt under the right half of the taxonomy (invariants 1 and
 2), and you are free.
 
 | Verdict | What you do |
 |---|---|
-| `close` | `phase merging`. The whole landing holds the mainline alone (invariant 3): `loop worktree merge <id>` → `loop backlog close <id> --evidence <path> --note "<decisive evidence>" --data '{"workerTokens":N,"workerSeconds":S}'` (the telemetry the post-mortem prices — close is the only moment it exists) → `loop worktree remove <id>`, **keeping the branch**. If mainline moved between this worker's `baseSha` and the merge, re-run the fast tier on the merged tree *inside the same exclusive span* — a check that measures a tree another landing has since changed is attributed to the wrong ticket. Red there is **recover** (`integration-red`), not a reopened ticket: the ticket is closed and stays closed. A merge refused as dirty is **recover** (`dirty-mainline`), then retry the merge — the branch was judged closeable and must not burn an attempt on someone else's mess. A merge *conflict* is infra: `--infra` attempt, rebuild against the moved HEAD, merit budget untouched. |
+| `close` | `phase merging`. `loop branch land <id>` — it returns the checkout to mainline and fast-forwards it onto the branch — then `loop backlog close <id> --evidence <path> --note "<decisive evidence>" --data '{"workerTokens":N,"workerSeconds":S}'` (the telemetry the post-mortem prices — close is the only moment it exists). The branch survives until the gate is green, for bisection. Serially the branch's base is mainline's tip, so there is no moved-mainline case inside the campaign and nothing to re-run after the land. A land refused as *dirty* is **recover** (`dirty-mainline`), then retry — the branch was judged closeable and must not burn an attempt on someone else's mess. A land that *cannot fast-forward* means something outside the campaign moved mainline: infra — `--infra` attempt, discard, rebuild against mainline as it now stands, merit budget untouched. |
 | `retry` | Discard the build, then `loop backlog attempt <id> --failed <names> --hypothesis "…" --fix "…" --data '{…}'` with the review's fields verbatim (`failing` if it gave one, else verify's, else `judge-rejected`). Re-dispatch a rung higher. |
 | `gamed` | Discard the build. Then **sharpen before logging the attempt**: `set-status <id> open --note "check amendment"`, `loop backlog update <id> - --note "gamed: <hypothesis>"` piping `{"acceptanceChecks": <the review's complete sharpenChecks array>}` — complete, never a partial patch — then the `attempt` entry. The escaped-bug rule: a defect that passed a check must strengthen the check that let it through. This, with `sharpen` below, is what makes the checks sharper over a campaign instead of frozen at kickoff quality. |
-| `sharpen` | The build **stands** — the review affirmed the implementation as correct and demonstrated only that the checks cannot observe a locked clause. Keep it: `loop worktree preserve <id>` re-cuts the worktree from the surviving branch rebased onto current mainline and returns the new `baseSha` (an `ok: false` rebase conflict is infra — `--infra` attempt, discard, rebuild fresh, exactly the merge-conflict path). Then amend the checks exactly as `gamed` does, and log the attempt as **merit**: the ticket failed to prove itself, and the attempt wall is what bounds a ticket that keeps needing its checks grown. Re-dispatch a **fresh** session into the preserved worktree — `set-status <id> in-flight --base-sha <the new baseSha> --model … --rung …`, rung per its merit count as usual — told that the build is inherited and judged correct and its job is to extend the proof, never rewrite the code. Settle the result like any other return (this section, from the top). Discarding protected three things and preserve keeps all three: a fresh base (the rebase), a cold reader (the new session, and review is always fresh-context), and measurement under the sharpened checks (verify runs them on this branch). What it stops paying is the rebuild of correct code — a re-derivation can silently drop a subtlety no check covers. |
-| `flake-probe` | `phase probing`, then `loop verify --cmd "<probeCmd verbatim>" --dir <dir> --repeat 5` on the **surviving** worktree — nothing is discarded yet. Journal the result. `real-red` → re-judge as `retry`/`gamed`. Any intermittent verdict (`flaky`, `flaky-under-full-run-only`) → park; there is no quarantine-and-close, and the original red still forbids a close. Invariant 4: one probe per ticket. A second request is the judge stalling — discard and park. |
-| `amend-typo` | **No re-dispatch and no attempt** — the build stands and only the check was wrong. `set-status <id> open --note "check amendment"` → `loop backlog update <id> - --note "typo-level amendment: …"` piping the complete `fixedChecks` as `acceptanceChecks` → `set-status <id> in-flight` → **re-verify the same worktree** and hand the fresh result back to a new review. Invariant 4: one per ticket, letter-level. A second one on the same ticket is the judge narrowing its way to green, so it parks as a meaning-level amendment — and so does anything meaning-level the first time. |
+| `sharpen` | The build **stands** — the review affirmed the implementation as correct and demonstrated only that the checks cannot observe a locked clause. Keep it: the branch survives untouched, and serially nothing has moved under it — its `baseSha` still holds. Amend the checks exactly as `gamed` does, and log the attempt as **merit**: the ticket failed to prove itself, and the attempt wall is what bounds a ticket that keeps needing its checks grown. Re-dispatch a **fresh** session onto the surviving branch — `loop branch attach <id>`, then `set-status <id> in-flight --base-sha <the same baseSha> --model … --rung …`, rung per its merit count as usual — told that the build is inherited and judged correct and its job is to extend the proof, never rewrite the code. Settle the result like any other return (this section, from the top). Discarding protected three things and keeping the branch keeps all three: the base never moved (serial dispatch), the reader is cold (the new session, and review is always fresh-context), and the measurement runs under the sharpened checks (verify runs them on this branch). What it stops paying is the rebuild of correct code — a re-derivation can silently drop a subtlety no check covers. |
+| `flake-probe` | `phase probing`, then `loop verify --cmd "<probeCmd verbatim>" --repeat 5` on the **surviving** branch, still checked out — nothing is discarded yet. Journal the result. `real-red` → re-judge as `retry`/`gamed`. Any intermittent verdict (`flaky`, `flaky-under-full-run-only`) → park; there is no quarantine-and-close, and the original red still forbids a close. Invariant 4: one probe per ticket. A second request is the judge stalling — discard and park. |
+| `amend-typo` | **No re-dispatch and no attempt** — the build stands and only the check was wrong. `set-status <id> open --note "check amendment"` → `loop backlog update <id> - --note "typo-level amendment: …"` piping the complete `fixedChecks` as `acceptanceChecks` → `set-status <id> in-flight` → **re-verify the same branch** and hand the fresh result back to a new review. Invariant 4: one per ticket, letter-level. A second one on the same ticket is the judge narrowing its way to green, so it parks as a meaning-level amendment — and so does anything meaning-level the first time. |
 | `escalate` | Discard the build, then **recover** (`judge-escalate`) — except the four decisions below, which park directly. Whatever recover returns, invariant 1 still binds: if the ticket is still in-flight when you're done, put it somewhere real. |
 | Review won't settle | Two full rounds with no terminal verdict means the review can't rule on this build. Discard and **recover** (`judge-no-converge`). Do not keep re-asking: a judge that won't converge on a fixed diff and fixed evidence will not converge on the third ask either. |
 | `tooBig` (worker) | Pipe its `proposedTickets` through **`loop renumber`** first — the worker chose ids blind to what has landed since, and its edges between siblings have to follow them — then `loop backlog decompose <id> -` with the result. The writer rewires the parent's dependents onto all children, so narrow those edges after. Children are born open. Expected and healthy. A `tooBig` with no proposed children is **recover** (`toobig-without-split`). |
@@ -374,11 +378,14 @@ Then read `references/recover.md`: it carries the anomaly table, the enforced
 jurisdiction dance (`snapshot` → spawn → `revert` **before you read the verdict**),
 and how to apply the actions it returns.
 
-A live recover holds the mainline alone (invariant 3), and that one is not
-negotiable even when you're impatient: the whole product-code guard is the
-difference between two snapshots of that checkout, so anything else touching it
-while recover runs makes the breach unattributable — the guard doesn't fail
-loudly, it just stops meaning anything.
+A live recover owns the checkout alone (invariant 3), and that one is not
+negotiable even when you're impatient: settle or kill a live worker first,
+never spawn recover over one. The whole product-code guard is the difference
+between two snapshots of that checkout, so a worker committing while recover
+runs makes the breach unattributable — the guard doesn't fail loudly, it just
+stops meaning anything. The jurisdiction snapshot refuses to start off
+mainline, which catches the stale-in-flight case mechanically; the
+exclusivity while recover runs is still yours to keep.
 
 ### Park — how the loop yields without stopping
 
@@ -402,9 +409,11 @@ loop that didn't finish, and never a stop over work it could still have done.
 ## Stage 3 — The campaign gate
 
 When frontier reports `complete: true` and nothing is still settling, the slow
-suite runs **once**, on the whole merged tree, holding the mainline alone
-(invariant 3). Run each `gate` check, then `loop backlog gate-run green|red
---note "<which checks ran>"`.
+suite runs **once**, on the whole merged tree, owning the checkout alone
+(invariant 3). Confirm HEAD is on mainline first — a settled campaign leaves
+it there, a stale in-flight does not, and a gate run on a ticket branch is a
+verdict about the wrong tree. Then run each `gate` check, then `loop backlog
+gate-run green|red --note "<which checks ran>"`.
 
 A green run only covers the tree it measured, and `gate-run` stamps the ticket and
 closed counts alongside the verdict for exactly that reason. If either count moves
@@ -413,9 +422,11 @@ must run again. **Read `gateGreen` off the frontier rather than remembering**; a
 remembered green carried past new work is the easiest false report in the loop, and
 the arithmetic that catches it is one field away.
 
-Red is an escaped bug, and you never patch the tree yourself. Bisect first (run
-the failing checks on base and on each branch alone — every branch is still
-there), then **recover** (`campaign-gate-red` — that exact kind, since it is also
+Red is an escaped bug, and you never patch the tree yourself. Bisect first —
+every closed ticket's branch is still there: check each out at the root, run
+the failing checks, and **finish with HEAD back on mainline**, because every
+measurement and the jurisdiction snapshot assume it. Then **recover**
+(`campaign-gate-red` — that exact kind, since it is also
 what grants the replacement authority below) with the evidence and the branches. It
 decides which of two things this is: a real escaped defect (a repair ticket whose
 checks *also* strengthen what let it through) or a mis-scoped gate (running the
@@ -451,12 +462,14 @@ frontmatter flipped to `status: done`.
 Never re-run kickoff. Read the journal tail, run `loop frontier`, reconcile:
 
 - **`inFlight` tickets** — all stale on resume; no worker survives the session.
-  Don't guess. `loop worktree attach <id>` — a branch survives → re-provision it
-  (`loop worktree add` already did that at dispatch, but the attach is a fresh
-  checkout) and settle it like any result (2.2), telling the review the worker
-  session was lost and the branch must be judged on evidence alone. Null →
-  nothing durable happened; `set-status <id> open`. Either way invariant 1 is
-  satisfied before you dispatch anything new.
+  Don't guess. The dead session may have left the checkout dirty and parked on
+  its branch, so `loop branch discard` first: it erases uncommitted litter and
+  returns the checkout to mainline, and the committed work is untouched — it
+  lives on the branch. Then `loop branch attach <id>` — the branch survives →
+  settle it like any result (2.2), telling the review the worker session was
+  lost and the branch must be judged on evidence alone. Null → nothing durable
+  happened; `set-status <id> open`. Either way invariant 1 is satisfied before
+  you dispatch anything new.
 - **`parked` tickets and gates** — a resume does not clear them. If the human
   answered a ticket park, record it (`set-status <id> open --note "<their
   answer>"`). A parked **gate** latch is released only by the amendment that
@@ -479,7 +492,7 @@ loop cannot recover from — because nothing downstream disagrees.
 
 - Start without a machine-checkable definition of done.
 - Reimplement any mechanic `loop` owns, or route around a `REFUSED:`.
-- Hand-edit `backlog.json`, `journal.jsonl`, or a worktree's branch.
+- Hand-edit `backlog.json`, `journal.jsonl`, or a ticket branch.
 - Fill a judgment role itself — review, sweep, coverage, recover are all spawned.
 - Trust a worker's self-report, at any level, ever.
 - Weaken a meaning-level check without the human — recover included, and a second

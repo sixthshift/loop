@@ -4,12 +4,12 @@ The substrate an autonomous build coordinator stands on.
 
 The coordinator is a **model** — the [`ailoop`](skills/ailoop) skill. Point it at a
 locked build spec and it decomposes the spec into a ticket backlog, dispatches
-parallel coding agents in isolated git worktrees, verifies every result with
-scripts, judges every diff with a fresh-context adversarial reviewer, and repeats
-until the campaign gate is green.
+coding agents one at a time on ticket branches in the checkout, verifies every
+result with scripts, judges every diff with a fresh-context adversarial
+reviewer, and repeats until the campaign gate is green.
 
 This binary is everything underneath that seat, as verbs: the sole backlog writer,
-the frontier arithmetic, verification and its scope check, worktree provisioning,
+the frontier arithmetic, verification and its scope check, the branch lifecycle,
 id allocation, the check-amendment rules, recover's jurisdiction boundary and its
 budget, the role prompts and their schemas. Plus `loop watch`, a read-only window
 onto a campaign it is not driving.
@@ -29,7 +29,7 @@ count, or a gate's freshness.
 |---|---|
 | Claude Code | the coordinator seat: `loop skills install`, then `/ailoop <spec>` |
 | `claude` and/or `codex` CLI | the agent engines, authenticated. Either alone works; both gives author≠judge engine independence |
-| `git` | worktrees are the isolation primitive |
+| `git` | branches are the unit of work — one per ticket, judged before it lands |
 | A git repo to build in | the target project, not this one |
 
 The binary is self-contained — no runtime to install. Bun is a *contributor*
@@ -106,8 +106,8 @@ corrupting the parse:
 ```sh
 loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
 loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage
-loop verify --ticket … --dir … --base …    # the measurement; --cmd … for a flake probe
-loop worktree add|attach|preserve|remove|merge|delete-branch <id>
+loop verify --ticket … --base …    # the measurement; --cmd … for a flake probe
+loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
 loop recovery-budget --kind … [--ticket …]  # may a recover be spent here, and what did the last two say
 loop gate-amend --by … --note … --anomaly … # the gate, under the authority its anomaly grants
@@ -188,7 +188,7 @@ and *runs* candidate commands to confirm them, yielding the campaign config: the
 fast checks (per-ticket tier), the campaign `gate` (the slow suite), and
 out-of-scope boundaries, and an enumeration of the spec's normative clauses as
 `requirements` — `R1`, `R2`, … Then decompose turns the spec into open tickets —
-each with declared `modules`, `depends_on`, `resources`, prose context,
+each with declared `modules`, `depends_on`, prose context,
 acceptance, its own `acceptanceChecks`, and the requirement ids it `satisfies`.
 The spec path and sha256 are persistent backlog state and mirrored into the
 audit journal: a resume against an edited spec refuses rather than drive an old
@@ -213,15 +213,16 @@ against the list and reports clauses missing from it as enumeration gaps.
 
 **2 · Drive.** One event loop. Each pass reads the frontier — a pure function
 over `backlog.json` — and walks a priority ladder: structural problems, merit
-walls, completion, dispatch, stall. Tickets dispatch when their dependencies are
-closed and their declared modules and resources are disjoint from everything in
-flight, so parallel workers can't collide. A ticket declares the *directories*
-it lives in, not a file list: a decomposer can predict "this ticket lives in
-`src/auth/`" from the spec alone, but not the file the implementation turns out
-to need — and a file list charges the ticket for that forecast error.
+walls, completion, dispatch, stall. Tickets dispatch one at a time, when their
+dependencies are closed and nothing else is in flight — the primary checkout
+hosts one worker at a time, on a fresh `ailoop/<id>` branch cut from mainline.
+A ticket declares the *directories* it lives in, not a file list: a decomposer
+can predict "this ticket lives in `src/auth/`" from the spec alone, but not
+the file the implementation turns out to need — and a file list charges the
+ticket for that forecast error. The declared footprint is verify's scope
+fence: the boundary every diff is judged against.
 
-Each dispatched ticket gets a fresh git worktree and branch. When its worker
-returns:
+When the worker returns:
 
 - **verify** (no model — exit codes and git) refuses a dirty tree, runs the fast
   checks plus the ticket's acceptance checks, and requires the committed diff to
@@ -233,11 +234,12 @@ returns:
   affirmed correct but the checks can't observe a locked clause — the checks
   grow, the build is preserved and re-proven rather than rebuilt), `flake-probe`
   (re-run a command N times), `amend-typo`, or `escalate`.
-- **close** merges to mainline, fast-forwarding when the ticket's base is still
-  the tip — a merge commit there would record nothing the journal's close event
-  doesn't. A merge conflict is an *infra* failure, not a merit one — the ticket
-  rebuilds against the moved HEAD without burning its attempt budget. If mainline
-  moved, the fast tier re-runs on the merged tree.
+- **close** returns the checkout to mainline and fast-forwards it onto the
+  branch — serially the branch's base is always the tip, so a merge commit
+  would record nothing the journal's close event doesn't, and there is no
+  moved-mainline case to re-check. A landing that cannot fast-forward means
+  something outside the campaign moved mainline: an *infra* failure, not a
+  merit one — the ticket rebuilds without burning its attempt budget.
 
 Every 5 closes, a **sweep** agent reads the journal since the last sweep plus
 every prior sweep's summary — the summaries are the rolling memory, which keeps
@@ -441,17 +443,14 @@ In the target repo, gitignored automatically at kickoff:
 <spec>.postmortem.html     self-contained archive of the journal
 ```
 
-Worker worktrees live **outside** the repository — `../.loop-worktrees/<repo>/<ticket>`,
-or `$XDG_STATE_HOME/loop/worktrees/` when the repo's parent isn't writable. Inside
-the repo, a worktree is swept up by every root-anchored test collector, and a
-runtime resolving dependencies from it silently walks up into the primary
-checkout's installed tree — so a missing dependency looks like a broken test
-rather than an unprovisioned worktree. Each worktree is provisioned at dispatch
-by copying the primary checkout's ignored dependency trees (`node_modules` and
-friends, workspace-nested ones included) with copy-on-write clone → hardlink →
-byte copy, whichever the filesystem allows. Nothing is installed: no network, no
-build hooks. On a filesystem without clone or hardlink support that is real disk
-per in-flight ticket, and the dispatch note records which rung ran.
+Workers run **in the primary checkout**, one at a time, each on a fresh
+`ailoop/<ticket>` branch cut from the recorded mainline. There is no isolation
+between a worker and the campaign's own state beyond the strictness of the
+verbs: `branch create` refuses to dispatch over an off-mainline HEAD or an
+unclean tree (naming the offending paths), and that refusal is precisely what
+makes `branch discard`'s cleanup safe — every file the clean can see is a file
+some worker created. Dependencies are simply the checkout's own installed
+trees; nothing is copied or provisioned.
 
 Every `backlog.json` mutation goes through one synchronous writer that validates
 the transition and atomically replaces the snapshot before appending its audit
@@ -472,7 +471,7 @@ bun run typecheck   # tsc --noEmit, strict
 | `src/index.ts` | CLI shell — verb wiring only |
 | `src/mechanics.ts` | the mechanics verbs: the whole surface the coordinator drives through |
 | `src/campaign/backlog.ts`, `frontier.ts`, `journal.ts` | authoritative snapshot writer and id allocation, pure derived scheduler facts, audit record |
-| `src/campaign/verify.ts`, `worktree.ts`, `provision.ts` | the measurement and its scope check; worker checkouts and their dependency trees |
+| `src/campaign/verify.ts`, `branch.ts` | the measurement and its scope check; the serial checkout lifecycle |
 | `src/campaign/gate.ts`, `fastcheck.ts`, `jurisdiction.ts`, `recovery-budget.ts` | the enforced authority boundaries: who may replace a live check, what must be measured before admission, what recover may touch, when it stops being believed |
 | `src/campaign/paths.ts`, `state.ts`, `live.ts` | where campaign state lives (a leaf); shell execution and spec hashing; the live-run window a verb publishes for the dashboard |
 | `src/campaign/agents/` | the judgment layer: role prompts, output schemas, model chains, engine naming and codex's schema adaptation |

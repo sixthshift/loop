@@ -98,7 +98,7 @@ The harvest role's `report` field is the draft; you own its accuracy.
 Journal the close (`--kind campaign-close`), flip the spec's frontmatter to
 `status: done` (aispec treats `done` specs as retired records — this flip is what
 tells it the contract is spent), reap the closed tickets' branches
-(`loop worktree delete-branch <id>` — they survived this long for gate
+(`loop branch delete <id>` — they survived this long for gate
 bisection), then delete `.ailoop/campaign/`. Learnings remain, tracked; the
 journal survives inside the post-mortem HTML.
 
