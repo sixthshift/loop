@@ -38,6 +38,7 @@ import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
 import { amendFastChecks } from './campaign/fastcheck.ts';
 import { recoveryBudget } from './campaign/recovery-budget.ts';
 import { verify, flakeProbe } from './campaign/verify.ts';
+import { vet } from './campaign/vet.ts';
 import { snapshotTree, revertOutOfBounds } from './campaign/jurisdiction.ts';
 import type { TreeSnapshot } from './campaign/jurisdiction.ts';
 import { writePostmortem } from './campaign/postmortem.ts';
@@ -157,6 +158,16 @@ export function registerMechanics(program: Command): void {
       }
       if (!opts.ticket || !opts.base) fail('verify requires --ticket and --base (or --cmd for a flake probe)');
       try { emit(await verify({ id: opts.ticket!, dir: opts.dir, base: opts.base! })); }
+      catch (e: any) { fail(e.message); }
+    });
+
+  mechanic('vet')
+    .description("the pre-dispatch vacuity measurement: which of a ticket's acceptance checks already pass on the base")
+    .requiredOption('--ticket <id>', 'the ticket about to be dispatched')
+    .option('--dir <path>', 'the checkout to measure in', '.')
+    .action(async (opts: { ticket: string; dir: string }) => {
+      assertSkillSeat();
+      try { emit(await vet({ id: opts.ticket, dir: opts.dir })); }
       catch (e: any) { fail(e.message); }
     });
 

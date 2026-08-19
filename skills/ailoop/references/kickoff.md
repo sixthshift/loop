@@ -118,6 +118,38 @@ If the writer refuses, re-run decompose with its exact refusal text as
 `feedback`. Two refusals and it is **recover** (`decompose-refused`) — a third
 identical ask will not produce a different answer.
 
+### 4.1 The critic pass — before `add`, not after
+
+Decompose authors the acceptance checks, and nothing downstream reads them until
+a judge does, after a worker has already built against them. Run the `critic`
+role on the drafts first:
+
+```
+echo '{"tickets":[…],"requirements":[…],"outOfScope":[…],"learnings":…}' \
+  | loop prompt critic --vars -
+```
+
+It asks exactly one question — *what contract-violating implementation would
+these exact checks accept?* — and returns `{findings, summary}`. Apply each
+finding before `add`:
+
+- `patch` → merge it into that draft's `acceptanceChecks` (the complete array it
+  returned, never a partial one) and add the ticket as amended.
+- `acceptedRisk` → add the ticket unchanged and journal the risk
+  (`--kind accepted-risk`, with its severity). It is carried to the review that
+  judges that ticket, which is the whole point of recording it rather than
+  arguing with it now.
+
+Run it on the drafts, not on the seeded backlog: a patch applied before `add`
+costs nothing, and the same correction after dispatch costs a build, a verify, a
+review and a merit attempt. Its chain leads Claude while decompose leads Codex,
+and that is deliberate — the check-author must not grade its own blind spots.
+
+Findings of `[]` is a normal, common result and needs no second ask. This pass
+also runs over any later batch of tickets an arm proposes — a coverage gap, a
+repair ticket, a `tooBig` split — for the same reason: those checks are authored
+by an agent that cannot run them either.
+
 Pass `.ailoop/learnings/sizing.md` as `learnings` when present: what proved too
 big before should be split preemptively, because `tooBig` replies are healthy but
 not free.
@@ -133,8 +165,11 @@ queue) needs no scheduling declaration — tickets run one at a time — but the
 cleanup obligation stays: a check that leaves shared state dirty fails the
 *next* ticket, and the fault will be filed against the wrong one.
 
-There is no pre-dispatch vetting step. Open tickets dispatch straight to a
-worker, and the post-build review carries the whole adversarial load.
+There is no pre-dispatch *state*: a ticket is `open` and becomes dispatchable
+when its deps close — nothing gates it on having been vetted. The two reads that
+happen before a worker sees it are both measurements against the checks rather
+than approvals of the plan: the critic pass above, once, over the drafts, and
+`loop vet` at dispatch. Judging the built diff remains the review's alone.
 
 ## 5. Pre-flight report
 

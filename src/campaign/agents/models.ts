@@ -18,6 +18,12 @@
 //     toolchain (tool work), and decompose AUTHORS the acceptance checks — so
 //     leading it with Codex keeps the check-author a different engine from the
 //     Claude review that judges against them (author ≠ judge, a second time).
+//   • critic leads claude-opus for the same reason review does, and it is the
+//     same independence fact one stage earlier: decompose AUTHORS the acceptance
+//     checks on Codex, and critic's only question is whether those checks can
+//     observe their clause. Running it on the authoring family would be the
+//     check-author grading its own blind spots — exactly what author ≠ judge
+//     exists to prevent. It degrades within Claude before dropping to Codex.
 //   • review leads claude-opus and must: it is the sole adversarial gate judging
 //     a Codex worker's diff, so it stays Claude for independence. It degrades
 //     within Claude (opus → sonnet) before dropping to Codex sol, so a Claude
@@ -41,6 +47,14 @@
 //   worker      — builds one ticket: writes the code and its tests, runs the
 //                 checks, commits on its branch. Every worker uses this chain;
 //                 tickets carry no model of their own.
+//   critic      — the one read of a ticket's acceptance checks BEFORE a worker
+//                 builds against them, asking review's own question: what
+//                 contract-violating implementation would these exact checks
+//                 accept? Returns a sharpened check array or an accepted risk
+//                 carried to the judge. It exists because the answer is usually
+//                 derivable from the check text alone, and discovering it after
+//                 a build costs a verify, a review, a merit attempt and a
+//                 rebuild instead of one read.
 //   review      — ticket review: rules on a returned ticket from the verify
 //                 evidence AND its own cold read of the diff for cheats (hardcoded
 //                 outputs, weakened/deleted tests, special-cased inputs,
@@ -105,6 +119,7 @@ export const MODELS = {
   worker: ['codex-gpt-5.6-terra', 'codex-gpt-5.6-sol', 'claude-opus'],
   kickoff: ['codex-gpt-5.6-sol', 'claude-opus'],
   decompose: [['codex-gpt-5.6-sol', 'claude-opus']],
+  critic: ['claude-opus', 'claude-sonnet', 'codex-gpt-5.6-sol'],
   review: ['claude-opus', 'claude-sonnet', 'codex-gpt-5.6-sol'],
   recover: ['claude-opus', 'codex-gpt-5.6-sol'],
   coverage: ['claude-opus', 'codex-gpt-5.6-sol'],

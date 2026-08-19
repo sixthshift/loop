@@ -52,6 +52,16 @@ export type KickoffVerdict = {
 
 export type DecomposeVerdict = { tickets: TicketDraft[] };
 
+export type CriticFinding = {
+  ticketId: string;
+  variant: string;
+  patch?: TicketPatch;
+  acceptedRisk?: string;
+  severity?: 'low' | 'medium' | 'high';
+};
+
+export type CriticVerdict = { findings: CriticFinding[]; summary: string };
+
 export type WorkerVerdict = {
   done?: boolean;
   summary?: string;
@@ -369,7 +379,35 @@ export const HARVEST = {
 // other coordinator seat reads both (`loop prompt`, `loop schema`), so its agents
 // answer in the same shape ours do — otherwise a seat comparison quietly becomes
 // a comparison of how loosely each side parses a verdict.
+// One finding per ticket, and the finding must arrive as a fix or as a risk the
+// judge will be handed — a bare complaint at this stage would cost a read and
+// change nothing, which is what got the original pre-dispatch pass deleted.
+export const CRITIC = {
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          ticketId: { type: 'string' },
+          // The variant that would pass the current checks — concrete, not a doubt.
+          variant: { type: 'string' },
+          patch: TICKET_PATCH,
+          acceptedRisk: { type: 'string' },
+          severity: { type: 'string', enum: ['low', 'medium', 'high'] },
+        },
+        required: ['ticketId', 'variant'],
+        additionalProperties: false,
+      },
+    },
+    summary: { type: 'string' },
+  },
+  required: ['findings', 'summary'],
+  additionalProperties: false,
+};
+
 export const SCHEMAS: Record<string, object> = {
-  kickoff: KICKOFF, decompose: DECOMPOSE, worker: WORKER, review: REVIEW,
+  kickoff: KICKOFF, decompose: DECOMPOSE, critic: CRITIC, worker: WORKER, review: REVIEW,
   recover: RECOVER, sweep: SWEEP, coverage: COVERAGE, harvest: HARVEST,
 };

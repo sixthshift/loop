@@ -106,6 +106,7 @@ corrupting the parse:
 ```sh
 loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
 loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage, sweep due
+loop vet --ticket T004    # pre-dispatch: which acceptance checks already pass on the base
 loop verify --ticket … --base …    # the measurement; --cmd … for a flake probe
 loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
@@ -190,6 +191,10 @@ out-of-scope boundaries, and an enumeration of the spec's normative clauses as
 `requirements` — `R1`, `R2`, … Then decompose turns the spec into open tickets —
 each with declared `modules`, `depends_on`, prose context,
 acceptance, its own `acceptanceChecks`, and the requirement ids it `satisfies`.
+A **critic** pass reads those drafts before any of them is added, asking the one
+question the post-build judge will otherwise ask after a full build has been
+spent — what wrong implementation would these exact checks accept? — and returns
+sharpened checks or a risk carried forward to that judge.
 The spec path and sha256 are persistent backlog state and mirrored into the
 audit journal: a resume against an edited spec refuses rather than drive an old
 contract to green.
@@ -423,9 +428,11 @@ instead of stalling.
 Two axes set each chain — difficulty picks the tier, and independence picks the
 order, because a diff's author and its judge should be different engines. So
 workers lead the light Codex (writing code is its home turf), decompose leads
-Codex (it authors the acceptance checks), and review leads `claude-opus` and
-degrades *within* Claude first, so a Claude outage never collapses the gate onto
-the worker's own family.
+Codex (it authors the acceptance checks), and both critic and review lead
+`claude-opus` and degrade *within* Claude first — critic grades the checks Codex
+wrote, review grades the diff Codex built, and neither may run on the authoring
+family. A Claude outage therefore never collapses either gate onto the worker's
+own side.
 
 The worker chain doubles as an escalation ladder: a ticket's Nth merit failure
 starts at the Nth rung, so a proven-hard ticket climbs terra → sol → opus. A
@@ -572,6 +579,7 @@ instructions because a plausible wrong answer to each is invisible downstream:
 | `gate-amend` | no comparison of two shell strings proves a replacement is a tightening, so the authority comes from the anomaly |
 | `fastcheck-amend` | "I ran it at the repo root and it passed" is a claim; the verb runs it |
 | `verify` | a worker's report is testimony. Exit codes and `git diff` are evidence |
+| `vet` | "this check would fail before the work exists" is a claim about a command nobody ran; the verb runs it |
 
 The coordinator also never fills a judgment role itself — review, sweep, coverage
 and recover are all spawned with fresh context, because the seat that dispatched

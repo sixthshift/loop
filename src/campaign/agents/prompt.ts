@@ -11,6 +11,7 @@
 // hole in the prompt.
 
 import coverage from './prompts/coverage.md' with { type: 'text' };
+import critic from './prompts/critic.md' with { type: 'text' };
 import decompose from './prompts/decompose.md' with { type: 'text' };
 import harvest from './prompts/harvest.md' with { type: 'text' };
 import kickoff from './prompts/kickoff.md' with { type: 'text' };
@@ -22,7 +23,7 @@ import worker from './prompts/worker.md' with { type: 'text' };
 // Embedded as text because a compiled binary has no prompt directory to read at
 // runtime. Adding a campaign role therefore adds one explicit registry entry.
 const PROMPTS: Record<string, string> = {
-  coverage, decompose, harvest, kickoff, recover, review, sweep, worker,
+  coverage, critic, decompose, harvest, kickoff, recover, review, sweep, worker,
 };
 
 // The template as authored, placeholders intact.

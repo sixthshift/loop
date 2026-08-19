@@ -99,6 +99,7 @@ If `loop` is missing, say so and stop — there is no fallback path, by design.
 | **Verify** | `loop verify` re-runs the checks and the scope check. Exit codes and git. No model. |
 | **Review** | The single adversarial gate: a fresh agent, cold read of the diff. It rules; you apply. |
 | **Sweep** | Campaign-level reflection, at each milestone — the cross-ticket pattern no per-ticket verdict can see, plus whether the slice the milestone claims actually composes. |
+| **Critic** | The one read of a ticket's acceptance checks *before* a worker builds against them, asking review's own question: what wrong implementation would these exact checks accept? Proposes sharpened checks or an accepted risk. |
 | **Recover** | The universal else: one full-tool agent per anomaly. Fixes the campaign definition or the environment, never product code. |
 | **Park** | Defer ONE decision to the human without stopping. The loop keeps driving everything else and drains only when nothing autonomous is left. |
 | **Journal** | `journal.jsonl` — append-only audit record. Never replayed into state. |
@@ -142,8 +143,9 @@ side — read it and fix the call, never route around it.
 | `loop gate-amend --by … --note … --anomaly …` | the gate under the authority its anomaly grants. Replacing a live command is granted by `campaign-gate-red` alone; every other kind may only add, and the refusal is journaled. |
 | `loop fastcheck-amend --by … --note …` | the fast tier, admitting only candidates that exit 0 at the repo root. It runs them — you never attest to having done that yourself. |
 | `loop branch create\|attach\|discard\|land\|delete` | the serial checkout lifecycle. `create <id>` cuts `ailoop/<id>` from mainline and checks it out, refusing an off-mainline or unclean tree (it names the litter — resolve it, never route around it). `attach <id>` checks a surviving branch back out for resume. `discard` erases worker litter and returns the checkout to mainline, keeping the branch. `land <id>` returns to mainline and fast-forwards it onto the branch; a non-ff result is interference, infra. `delete <id>` reaps a branch once the gate is green. |
+| `loop vet --ticket <id>` | the pre-dispatch vacuity measurement: runs the ticket's `acceptanceChecks` at the root on the base and reports which already pass. A check green before the work exists cannot be observing the work. It never refuses — a check-only ticket claiming a delivered clause is legitimately green — so the finding is yours to rule on, but it is a measurement, not your recollection of having thought about it. |
 | `loop verify --ticket <id> --base <sha>` | the measurement, run at the root on the checked-out branch: dirty-tree refusal, every fastCheck + the ticket's acceptanceChecks, the diff scope-checked against declared `modules`, evidence and patch written. `--cmd "<c>" [--repeat 5]` is the flake probe. |
-| `loop prompt <role> [--vars -]` / `loop schema <role> [--engine codex]` / `loop models [<role>]` | the judgment layer: role prompt, its output contract, its resolved model chain. Roles: `kickoff decompose worker review sweep recover coverage harvest`. |
+| `loop prompt <role> [--vars -]` / `loop schema <role> [--engine codex]` / `loop models [<role>]` | the judgment layer: role prompt, its output contract, its resolved model chain. Roles: `kickoff decompose critic worker review sweep recover coverage harvest`. |
 | `loop jurisdiction snapshot --out F` / `revert --in F` | recover's enforced product-code boundary. |
 | `loop status` | the backlog tree, rendered. Zero tokens, for the human. |
 | `loop postmortem --out F` / `loop learn --campaign N` | the durable archive; the learnings merge. Termination only. |
@@ -257,9 +259,25 @@ find a different one or park, rather than applying it a third time.
 
 ### 2.1 Dispatch
 
-For the dispatchable ticket: `loop branch create <id>` (returns `branch` and
-`baseSha`; a refusal names what blocks it — an off-mainline HEAD or litter in
-the tree — and is resolved, never routed around), then
+For the dispatchable ticket, **`loop vet --ticket <id>` first**, while HEAD is
+still on mainline — it measures the base, so it cannot run once a branch is cut.
+Any name it returns under `vacuous` is a check that passes before the work
+exists, which means it is observing something other than the work. Two readings,
+and they are yours to separate:
+
+- The check is blind — the common case. Sharpen it before dispatch
+  (`loop backlog update <id> -` with the complete `acceptanceChecks` array), and
+  you have spent one check run instead of a build, a verify, a review and a merit
+  attempt discovering the same thing from a judge.
+- The clause is genuinely already delivered, and this is the check-only ticket
+  that claims it. Then green on the base is correct and expected. Journal that
+  reading (`note --kind vet`) so the closing evidence is not read later as a
+  ticket that proved nothing.
+
+An empty `vacuous` is the healthy result and is journaled either way — it is what
+makes the later green mean something. Then `loop branch create <id>` (returns
+`branch` and `baseSha`; a refusal names what blocks it — an off-mainline HEAD or
+litter in the tree — and is resolved, never routed around), then
 
 ```sh
 loop backlog set-status <id> in-flight --base-sha <baseSha> \

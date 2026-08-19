@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { shAsync } from './state.ts';
+import { shAsync, SH_TIMEOUT } from './state.ts';
 import { RUN } from './paths.ts';
 import { backlog, ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
@@ -42,10 +42,19 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   const checks = [...(backlog().fastChecks ?? []), ...(t.acceptanceChecks ?? [])];
   const failing: string[] = [];
   const log: string[] = [];
+  // Per-check status and duration, journaled alongside the verdict. The evidence
+  // log has always carried the exit code, but evidence is deleted with the
+  // campaign — so a check killed by shAsync's hang backstop (124) was
+  // indistinguishable, forever after, from a suite that is merely slow. Which of
+  // those it was decides whether the answer is a flake probe, a scoped check, or
+  // a hung command nobody has noticed.
+  const runs: { name: string; status: number | null; ms: number; timedOut: boolean }[] = [];
   for (const c of checks) {
+    const at = Date.now();
     const r = await shAsync(c.cmd, dir, { label: `verify:${id} · ${c.name}`, ticketId: id });
     const ok = r.status === 0;
     if (!ok) failing.push(c.name);
+    runs.push({ name: c.name, status: r.status, ms: Date.now() - at, timedOut: r.status === SH_TIMEOUT });
     log.push(`### ${c.name} — ${ok ? 'PASS' : `FAIL (exit ${r.status})`}\n$ ${c.cmd}\n${r.stdout + r.stderr}`);
   }
 
@@ -70,7 +79,8 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   appendJournal({
     kind: 'verify', subject: id,
     body: `${pass ? 'pass' : `fail [${failing.join(', ')}]`} in ${Math.round((Date.now() - startedAt) / 1000)}s`,
-    data: { durationMs: Date.now() - startedAt, pass, failing },
+    data: { durationMs: Date.now() - startedAt, pass, failing, runs,
+      ...(runs.some(r => r.timedOut) ? { timedOut: runs.filter(r => r.timedOut).map(r => r.name) } : {}) },
   });
 
   return { pass, failing, scopeOverflow, evidence, diff };

@@ -76,6 +76,12 @@ export function sh(cmd: string, cwd = '.'): ShResult {
 // `.ailoop/campaign/live/` so a dashboard in another process can watch it, since
 // the coordinator driving this verb never sees the stream. Unlabeled runs stay
 // silent — internal git and probe calls are not what anyone is watching for.
+// The status a run carries when the backstop killed it, rather than the command
+// choosing an exit code. Exported because a killed check and a failing one are
+// different findings — one is a hang nobody has noticed, the other is the check
+// doing its job — and only the runner can tell them apart.
+export const SH_TIMEOUT = 124;
+
 export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId?: string } = {}): Promise<ShResult> {
   const { label, ticketId } = opts;
   const timeoutMs = 60 * 60 * 1000;
@@ -93,7 +99,7 @@ export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId
     const timer = setTimeout(() => {
       try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* group already gone */ }
       stderr += `\nshAsync: killed after ${Math.round(timeoutMs / 60000)}m (hang backstop)`;
-      finish(124);
+      finish(SH_TIMEOUT);
     }, timeoutMs);
     child.stdout.on('data', d => { stdout += d; if (label) liveData(label, String(d)); });
     child.stderr.on('data', d => { stderr += d; if (label) liveData(label, String(d)); });
