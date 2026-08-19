@@ -75,13 +75,32 @@ spec_version: 1          # bumped by change orders after lock
      enumeration a transcription of your structure instead of an
      interpretation of your prose.
 
-     Each clause carries its own executable acceptance. Prefer contrast
-     checks ("given A → X; given B → must differ in THIS way") over existence
-     checks — existence is the most gameable form. Write behavioral examples
-     with LITERAL values — a real input, the exact expected output — never
-     `<a valid X>` placeholders: decompose cannot execute anything, so these
-     literals are the only fixtures its generated checks can be built from,
-     and invented fixtures are where gameable checks come from. Anything
+     Each clause carries its own executable acceptance, and it has four parts.
+     Prefer contrast checks ("given A → X; given B → must differ in THIS way")
+     over existence checks — existence is the most gameable form. Write
+     behavioral examples with LITERAL values — a real input, the exact expected
+     output — never `<a valid X>` placeholders: decompose cannot execute
+     anything, so these literals are the only fixtures its generated checks can
+     be built from, and invented fixtures are where gameable checks come from.
+
+     The two lines builders keep missing are the last two, and every campaign
+     so far has paid for them at review time rather than here:
+
+     `Observed at` names WHERE the assertion must read from. A check reading an
+     admin connection has not proved an application's grant; one reading an
+     echo has not proved persistence; one reading the parse layer has not
+     proved what reaches the DOM; one decoding a token has not proved it was
+     verified. Decompose picks a boundary whether or not you name one, and a
+     proxy for the clause passes every per-ticket check while the clause fails.
+
+     `Must be red before this lands` names ONE wrong implementation that has to
+     fail. It is the same question the post-build judge asks of every diff, so
+     supplying it here converts a rejection into a fixture: decompose gets the
+     negative case, the check is born two-sided instead of bounded from one
+     side only, and `loop vet` can confirm mechanically at dispatch that the
+     check is red before the work exists. A clause with no statable failing
+     variant is usually a clause that is not yet decidable — take that as the
+     signal it is. Anything
      knowingly unverifiable belongs under Known limits, NOT here: kickoff
      refuses to start on a normative requirement no command can settle. -->
 
@@ -93,6 +112,9 @@ spec_version: 1          # bumped by change orders after lock
 - `<command>` → <expected result>
 - Behavioral: given <concrete input A> → <expected output>; given
   <contrasting input B> → output must differ: <how>
+- Observed at: <the boundary the assertion must read from — the persisted row,
+  the rendered output, the application's own connection>
+- Must be red before this lands: <one wrong implementation that has to fail>
 
 ### <next requirement>
 

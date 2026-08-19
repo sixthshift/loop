@@ -66,7 +66,11 @@ a spec missing any of them bounces:
 4. **Per-requirement acceptance, executable as written** — a command with an
    expected result, or a behavioral contract with **literal** input→output
    examples (a real input, the exact expected output — never `<a valid X>`
-   placeholders) sharp enough to mechanize into a runnable check.
+   placeholders) sharp enough to mechanize into a runnable check. Plus the two
+   lines that decide whether the check can *see* the clause: **`Observed at`**,
+   the boundary the assertion must read from, and **`Must be red before this
+   lands`**, one wrong implementation that has to fail. See below — this is the
+   single largest source of wasted build cycles downstream.
 5. **Two check tiers, campaign-wide** — `fastChecks` (safe to repeat per ticket,
    seconds to ~1 minute, and **green at baseline**; a red baseline is a blocker)
    and `gate` (the merged-tree integration/e2e set). A `gate` check may be red at
@@ -123,6 +127,10 @@ needs that the gate never checks:
   anything, so the spec's concrete values are the only fixtures its checks can
   be built from. A placeholder makes it invent the fixture, and invented
   fixtures are where gameable existence checks come from.
+- **The observation boundary and one failing variant** (each requirement's
+  acceptance). Decompose picks a boundary whether or not you name one, and the
+  cheapest boundary to write is rarely the one the clause lives at. This is the
+  bullet with the most evidence behind it — see the section below.
 
 **Phases were two jobs wearing one word, and the loop only ever kept one.**
 Dependencies sequence the backlog, and the slow suite is one campaign-level gate
@@ -180,6 +188,48 @@ answer about *what must be built first* is an ordering constraint instead. Every
 spec has this structure even when the human has not named it — a product with no
 interior seam at all is rare enough that its absence is worth one direct
 question, not a default.
+
+### Acceptance names its boundary, or the check picks one for you
+
+The dominant way a campaign wastes a build is not a bad implementation. It is a
+correct implementation measured by a check that reads the wrong place. Across the
+campaigns run so far, roughly four in five judge rejections were this — the judge
+naming a wrong implementation the ticket's own green checks would have accepted,
+against a build it often affirmed as correct.
+
+The shapes recur, and every one is a boundary the spec left unstated:
+
+| the check reads | the clause is about |
+|---|---|
+| a handle | the execution it started |
+| the parse layer | what reaches the DOM |
+| an in-memory value | the persisted row |
+| a decoded token payload | a verified signature |
+| an admin connection | the application's own grant |
+
+So every acceptance carries two more lines:
+
+```
+- Observed at: the persisted row, read back on a new connection
+- Must be red before this lands: a handler that returns the value from its own
+  request-scoped cache without writing
+```
+
+**`Observed at`** is the boundary. Name it in the clause's own terms, not the
+test's — you are telling decompose where to look, and it will choose the cheapest
+place if you don't.
+
+**`Must be red before this lands`** is the post-build judge's question — *what
+wrong implementation would these exact checks accept?* — asked while it is still
+free. It pays three times: decompose gets a fixture for the negative case, the
+check is born two-sided rather than bounded from one side only, and `loop vet`
+confirms mechanically at dispatch that the check actually fails before the work
+exists. A clause whose failing variant you cannot state is usually a clause that
+is not yet decidable; treat that as the finding, not as a line to skip.
+
+One variant is enough. This is not a request for exhaustive threat modelling —
+it is one sentence per clause, and it is the sentence the campaign otherwise buys
+with a build, a verify, a review and a burned attempt.
 
 ### Unverifiable requirements are blockers — keep them out of the normative set
 
@@ -293,6 +343,12 @@ it is their contract:
 - [ ] Open Questions is empty — every entry **answered by the human** or its
       feature cut (the two-exit rule, see Interrogation craft). Silent
       disappearance is not resolution, and neither is a lock-time default.
+- [ ] **Every acceptance names its boundary and one failing variant** — an
+      `Observed at` line stating where the assertion must read from, and a
+      `Must be red before this lands` line naming one wrong implementation that
+      has to fail. Both in the clause's own terms. This is the check-blindness
+      gate, and it is the one the campaign pays for most often when it is
+      skipped.
 - [ ] Every requirement is **decidable by inspection** and its acceptance is
       executable **as written** — command + expected result, or behavioral
       contract with **literal** contrasting input→output values, no
