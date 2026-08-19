@@ -1,7 +1,14 @@
 // Render the campaign's journal as a self-contained HTML post-mortem: stat
 // tiles, a Gantt timeline (one lane per ticket, dependency arrows, verify
-// overlays, gate markers), per-ticket cost bars, and a table. Zero model
-// cost; facts come from journal.jsonl + backlog.json. The raw journal is
+// overlays, gate markers), a where-the-time-went section, per-ticket cost
+// bars, and a table. Zero model cost; facts come from journal.jsonl +
+// backlog.json, plus — for the time section's inference-vs-suites split —
+// whatever worker/judge subagent transcripts are still discoverable under
+// ~/.claude/projects — or under the tree `--transcripts` names, which is how a
+// campaign that ran in a devcontainer is read from the host afterwards (they
+// may not be discoverable at all: codex workers leave none, and old campaigns
+// predate the id capture; the section states its coverage rather than letting
+// missing detail read as fast work). The raw journal is
 // embedded in the page (<script id="journal">), so the HTML is also the
 // campaign's durable event archive — deleting campaign/ loses nothing.
 //
@@ -27,6 +34,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { backlog } from './backlog.ts';
 import { journalEntries } from './journal.ts';
+import { campaignShape, parkWindows, ticketBreakdowns } from './time-breakdown.ts';
+import type { TicketBreakdown } from './time-breakdown.ts';
+import { analyzeTranscript, discoverAgents } from './transcripts.ts';
+import type { TranscriptAnalysis } from './transcripts.ts';
 
 // $/MTok output rate, checked 2026-07 — refresh when models rotate
 const OUTPUT_PRICE: Record<string, number> = { opus: 25, sonnet: 15, haiku: 5 };
@@ -35,7 +46,272 @@ const OUTPUT_PRICE: Record<string, number> = { opus: 25, sonnet: 15, haiku: 5 };
 const priceFor = (model: string): number =>
   model.startsWith('codex-') ? 0 : (OUTPUT_PRICE[model.replace(/^claude-/, '')] ?? OUTPUT_PRICE.opus!);
 
-export function writePostmortem(out: string): { tickets: number; events: number } {
+// ---- the campaign report ----------------------------------------------------
+// The coordinator journals its final report (kind `campaign-report`, markdown
+// body) and this page renders the last one as its opening section — the
+// report and the post-mortem are ONE artifact, so a claim in the prose sits on
+// the same page as the chart that backs it, and the report survives inside
+// the embedded raw journal like every other event.
+//
+// The renderer is a deliberate subset (headings, lists, tables, bold/italic,
+// inline and fenced code, links): enough for a report, small enough to audit.
+// Everything is HTML-escaped before any markup is introduced — the body is
+// model prose being written into a durable archive.
+
+export function mdToHtml(md: string): string {
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  // Code spans are lifted out before the other passes and restored after:
+  // their content is literal in markdown, so `a**b**c` must keep its
+  // asterisks rather than gain a <strong> inside the <code>.
+  const inline = (s: string) => {
+    const codes: string[] = [];
+    // NUL is the placeholder sentinel, stripped from the input first so the
+    // restore pass can only ever match what the lift pass planted.
+    return escapeHtml(s).replace(/\u0000/g, '')
+      .replace(/`([^`]+)`/g, (_, c: string) => `\u0000${codes.push(c) - 1}\u0000`)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https?:[^)\s]+|#[^)\s]+|[^)\s:]+)\)/g, '<a href="$2">$1</a>')
+      .replace(/\u0000(\d+)\u0000/g, (_, i: string) => `<code>${codes[+i]}</code>`);
+  };
+
+  const lines = md.split('\n');
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    if (/^```/.test(line)) {
+      const buf: string[] = [];
+      for (i++; i < lines.length && !/^```/.test(lines[i]!); i++) buf.push(lines[i]!);
+      i++;
+      out.push(`<pre><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    const h = /^(#{1,4})\s+(.*)/.exec(line);
+    if (h) {
+      // The page owns h1 (title) and h2 (card headings); report headings nest below.
+      const level = Math.min(h[1]!.length + 2, 6);
+      out.push(`<h${level}>${inline(h[2]!)}</h${level}>`);
+      i++;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      for (; i < lines.length && /^\s*[-*]\s+/.test(lines[i]!); i++)
+        items.push(`<li>${inline(lines[i]!.replace(/^\s*[-*]\s+/, ''))}</li>`);
+      out.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      const rows: string[][] = [];
+      for (; i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i]!); i++)
+        rows.push(lines[i]!.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim()));
+      const headed = rows.length > 1 && rows[1]!.every(c => /^:?-+:?$/.test(c));
+      const head = headed ? `<thead><tr>${rows[0]!.map(c => `<th>${inline(c)}</th>`).join('')}</tr></thead>` : '';
+      const body = (headed ? rows.slice(2) : rows)
+        .map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('');
+      out.push(`<table>${head}<tbody>${body}</tbody></table>`);
+      continue;
+    }
+    if (line.trim() === '') { i++; continue; }
+    const buf: string[] = [];
+    for (; i < lines.length && lines[i]!.trim() !== ''
+      && !/^(#{1,4}\s|```|\s*[-*]\s|\s*\|.*\|\s*$)/.test(lines[i]!); i++) buf.push(lines[i]!);
+    out.push(`<p>${inline(buf.join(' '))}</p>`);
+  }
+  return out.join('\n');
+}
+
+// ---- where the time went ----------------------------------------------------
+// The join the section renders: journal phase walls per attempt, refined by
+// worker/judge transcripts where they can still be found. Everything is
+// reduced to per-ticket minute segments HERE so the page script stays a dumb
+// renderer — which segments exist, and what absorbs the unattributable rest,
+// is report policy, not display code.
+
+// Stack orders are the CVD-validated hue orders from the palette, not a
+// preference — reordering them re-opens the adjacency validation.
+// `stall` and `blocked` are appended at the tail rather than slotted among the
+// work segments: they are non-work, and the hue run above them stays exactly as
+// validated. Neither borrows a work hue — blocked takes the fail red, stall a
+// dark neutral — so the two ways a campaign loses wall clock read as losses.
+const SPLIT_SEGS = ['impl', 'unit', 'itest', 'e2e', 'types', 'verify', 'review', 'stall', 'blocked', 'other'] as const;
+const PHASE_SEGS = ['worker', 'verify', 'review', 'land', 'stall', 'blocked'] as const;
+
+type Seg = { k: string; min: number };
+type TimeTicket = {
+  id: string;
+  attempts: number; // merit + infra failures; the ×N annotation on the bar
+  split: boolean;   // true = transcript-refined segments; false = journal phase walls
+  totalMin: number;
+  segs: Seg[];
+  ktok: number | null;
+  thinkPct: number | null;
+  workerWallMin: number | null;
+};
+type TimeData = {
+  shape: { maxInFlight: number; idleMin: number; heldMin: number; unreleasedParks: number };
+  coverage: 'full' | 'partial' | 'none';
+  analyzed: number;
+  closed: number;
+  rate: number | null; // median sustained output tok/s across analyzed workers
+  share: Seg[];
+  scatter: Array<{ id: string; wallMin: number; ktok: number }>;
+  tiers: Array<{ k: string; medianS: number; runs: number }>;
+  tickets: TimeTicket[];
+  telemetryGaps: number; // settled attempts that journaled no workerTokens
+};
+
+const minutes = (msv: number): number => Math.round(msv / 6000) / 10;
+const median = (xs: number[]): number | null => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, z) => a - z);
+  return s.length % 2 ? s[(s.length - 1) / 2]! : (s[s.length / 2 - 1]! + s[s.length / 2]!) / 2;
+};
+
+function deriveTime(journal: ReturnType<typeof journalEntries>, transcriptsRoot?: string): TimeData {
+  const breakdowns = ticketBreakdowns(journal);
+  const parks = parkWindows(journal);
+  const shape = campaignShape(breakdowns, parks);
+
+  const windows = breakdowns.map(t => ({
+    ticket: t.id,
+    startMs: new Date(t.spans[0]!.start).getTime(),
+    endMs: new Date(t.spans.at(-1)!.end).getTime(),
+    agentIds: {
+      worker: t.spans.map(s => s.telemetry?.agent).filter((x): x is string => !!x),
+      judge: t.spans.map(s => s.telemetry?.judgeAgent).filter((x): x is string => !!x),
+    },
+  }));
+  const analyses = new Map<string, TranscriptAnalysis[]>();
+  for (const d of discoverAgents(windows, transcriptsRoot)) {
+    const a = analyzeTranscript(d.file);
+    if (!a) continue;
+    const key = `${d.ticket}:${d.role}`;
+    analyses.set(key, [...(analyses.get(key) ?? []), a]);
+  }
+
+  const rates: number[] = [];
+  const tierRuns = new Map<string, number[]>();
+  for (const e of journal) {
+    const d = (e.data as any)?.durationMs;
+    if (e.kind === 'verify' && typeof d === 'number')
+      tierRuns.set('verify', [...(tierRuns.get('verify') ?? []), d]);
+  }
+
+  let telemetryGaps = 0;
+  const tickets: TimeTicket[] = breakdowns.map((t: TicketBreakdown) => {
+    const walls = { build: 0, verify: 0, review: 0, land: 0, blocked: 0 };
+    let spanWallMs = 0, verifyScriptMs = 0;
+    for (const s of t.spans) {
+      for (const k of ['build', 'verify', 'review', 'land', 'blocked'] as const) walls[k] += s.walls[k];
+      spanWallMs += new Date(s.end).getTime() - new Date(s.start).getTime();
+      verifyScriptMs += s.verifyScriptMs;
+      if ((s.outcome === 'close' || s.outcome === 'attempt') && s.telemetry?.workerTokens === undefined) telemetryGaps++;
+    }
+    const attempts = t.spans.filter(s => s.outcome === 'attempt').length;
+
+    // Coordinator latency, from the journal alone: the coordinator held the
+    // ticket in `build` for walls.build, and its own settle telemetry says the
+    // worker was only alive for workerSeconds. The difference is the loop's own
+    // dead time — slow to spawn on one side, slow to notice a finished worker
+    // on the other. Claimed only when EVERY settled attempt reported its
+    // seconds; one missing figure would read as a stall the size of an attempt,
+    // which is the mistake this bucket exists to stop the report from making.
+    // null is "the journal cannot say", which is NOT the same claim as zero —
+    // conflating them let a ticket with complete telemetry and no stall fall
+    // through to the transcript estimate and report one anyway.
+    const settledSpans = t.spans.filter(s => s.outcome === 'close' || s.outcome === 'attempt');
+    const secs = settledSpans.map(s => s.telemetry?.workerSeconds);
+    const stall: number | null = secs.length && secs.every((v): v is number => typeof v === 'number')
+      ? Math.max(0, walls.build - secs.reduce((a, b) => a + b, 0) * 1000)
+      : null;
+
+    const workers = analyses.get(`${t.id}:worker`) ?? [];
+    const judges = analyses.get(`${t.id}:judge`) ?? [];
+    if (!workers.length) {
+      const phase = {
+        worker: walls.build - (stall ?? 0), verify: walls.verify, review: walls.review,
+        land: walls.land, stall: stall ?? 0, blocked: walls.blocked,
+      };
+      const segs = PHASE_SEGS.map(k => ({ k, min: minutes(phase[k]) })).filter(s => s.min > 0);
+      return {
+        id: t.id, attempts, split: false, totalMin: minutes(spanWallMs), segs,
+        ktok: null, thinkPct: null, workerWallMin: null,
+      };
+    }
+
+    const sum = (f: (a: TranscriptAnalysis) => number) => workers.reduce((s, a) => s + f(a), 0);
+    const modelMs = sum(a => a.modelMs);
+    const tokens = sum(a => a.outputTokens);
+    const thinkEst = sum(a => a.thinkingTokensEst);
+    for (const a of workers) {
+      if (a.modelMs > 0 && a.outputTokens > 0) rates.push(a.outputTokens / (a.modelMs / 1000));
+      for (const r of a.toolRuns) tierRuns.set(r.cls, [...(tierRuns.get(r.cls) ?? []), r.ms]);
+    }
+    const judgeMs = judges.reduce((s, a) => s + a.wallMs, 0) || walls.review;
+    // Journaled seconds are the better witness where they exist — they are what
+    // the harness clocked, not what a transcript's first and last line imply —
+    // so the transcript wall is the fallback, not the primary.
+    const stallMs = stall ?? Math.max(0, walls.build - sum(a => a.wallMs));
+    const named: Record<(typeof SPLIT_SEGS)[number], number> = {
+      impl: modelMs,
+      unit: sum(a => a.toolMs.unit),
+      itest: sum(a => a.toolMs.integration),
+      e2e: sum(a => a.toolMs.e2e),
+      types: sum(a => a.toolMs.typecheck),
+      verify: verifyScriptMs || walls.verify,
+      review: judgeMs,
+      stall: stallMs,
+      blocked: walls.blocked,
+      other: 0,
+    };
+    // The remainder — coordinator bookkeeping, unclassified bash, db ops, the
+    // land — is shown as one gray segment and disclosed, never attributed.
+    named.other = Math.max(0, spanWallMs - Object.values(named).reduce((s, v) => s + v, 0));
+    return {
+      id: t.id, attempts, split: true, totalMin: minutes(spanWallMs),
+      segs: SPLIT_SEGS.map(k => ({ k, min: minutes(named[k]) })).filter(s => s.min > 0),
+      ktok: Math.round(tokens / 1000),
+      thinkPct: tokens ? Math.round((thinkEst / tokens) * 100) : null,
+      workerWallMin: minutes(sum(a => a.wallMs)),
+    };
+  });
+
+  const closedTickets = breakdowns.filter(t => t.spans.some(s => s.outcome === 'close'));
+  const analyzed = closedTickets.filter(t => analyses.has(`${t.id}:worker`)).length;
+  const coverage = analyzed === 0 ? 'none' : analyzed === closedTickets.length ? 'full' : 'partial';
+
+  // The share sums every key any ticket emitted: under partial coverage the
+  // unsplit tickets' worker/land walls sit beside the split tickets' buckets,
+  // because dropping either side would skew the campaign split toward the
+  // other while still presenting itself as campaign-wide.
+  const SHARE_ORDER = ['impl', 'unit', 'itest', 'e2e', 'types', 'verify', 'review', 'worker', 'land', 'stall', 'blocked', 'other'];
+  const share = SHARE_ORDER
+    .map(k => ({ k, min: Math.round(tickets.reduce((s, t) => s + (t.segs.find(x => x.k === k)?.min ?? 0), 0)) }))
+    .filter(s => s.min > 0);
+
+  return {
+    shape: {
+      maxInFlight: shape.maxInFlight, idleMin: minutes(shape.idleMs),
+      heldMin: minutes(shape.heldMs), unreleasedParks: parks.filter(p => !p.released).length,
+    },
+    coverage, analyzed, closed: closedTickets.length,
+    rate: median(rates) === null ? null : Math.round(median(rates)!),
+    share,
+    scatter: tickets.filter(t => t.split && t.ktok !== null && t.workerWallMin !== null)
+      .map(t => ({ id: t.id, wallMin: t.workerWallMin!, ktok: t.ktok! })),
+    tiers: [...tierRuns.entries()]
+      .map(([k, runs]) => ({ k, medianS: Math.round(median(runs)! / 1000), runs: runs.length }))
+      .filter(t => t.runs >= 2 && t.medianS > 0)
+      .sort((a, z) => a.medianS - z.medianS),
+    tickets,
+    telemetryGaps,
+  };
+}
+
+export function writePostmortem(out: string, transcriptsRoot?: string): { tickets: number; events: number } {
   const b = backlog();
   const journal = journalEntries();
   if (!journal.length) throw new Error('no journal events to render');
@@ -44,42 +320,47 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   const t1 = new Date(journal.at(-1)!.ts).getTime();
   const x = (ts: string) => (new Date(ts).getTime() - t0) / (t1 - t0);
 
-  // ---- derive per-ticket lifecycle from the journal ----
-  const tickets: Record<string, any> = {};
-  const forTicket = (id: string) => (tickets[id] ||= { id, spans: [], verifies: [], attempts: 0 });
+  // ---- per-ticket lifecycle: the same fold the time section uses ----
+  // One fold (ticketBreakdowns) serves the Gantt and the time section alike.
+  // The page used to keep its own inline fold here, and the two drifted: the
+  // inline one never settled a span on decompose and double-opened on the
+  // amend-typo re-stamp, so the Gantt could draw a ticket in flight for hours
+  // on the same page whose time section showed it settled in minutes.
+  const breakdowns = ticketBreakdowns(journal);
+  const verifiesByTicket = new Map<string, any[]>();
   for (const e of journal) {
-    if (!/^T\d+$/.test(e.subject || '')) continue;
-    const t = forTicket(e.subject!);
-    if (e.kind === 'status' && /→ in-flight/.test(e.body || '')) t.spans.push({ start: e.ts, end: null });
-    if (e.kind === 'attempt' || e.kind === 'close') {
-      const open = t.spans.find((s: any) => !s.end);
-      if (open) { open.end = e.ts; open.outcome = e.kind; open.data = e.data || null; }
-      if (e.kind === 'attempt') t.attempts++;
-      if (e.kind === 'close') { t.closedAt = e.ts; t.closeData = e.data || null; }
-    }
-    if (e.kind === 'verify') t.verifies.push({ ts: e.ts, ...e.data });
+    if (e.kind === 'verify' && /^T\d+$/.test(e.subject || ''))
+      verifiesByTicket.set(e.subject!, [...(verifiesByTicket.get(e.subject!) ?? []), { ts: e.ts, ...(e.data as any) }]);
   }
   // gate markers: any journaled gate event (campaign-gate-close, gate-red, gate-amendment)
   const gates = journal.filter(e => /gate/.test(e.kind)).map(e => ({ ts: e.ts, body: `${e.subject}: ${e.body}` }));
 
-  // a span never closed (crash, resume, or a campaign rendered mid-flight)
-  // still renders — it ends at the journal's last event, marked open
-  for (const t of Object.values(tickets)) for (const s of (t as any).spans) {
-    if (!s.end) { s.end = journal.at(-1)!.ts; s.outcome = 'open'; }
-  }
+  const rows = breakdowns.map(t => ({
+    id: t.id,
+    spans: t.spans,
+    verifies: verifiesByTicket.get(t.id) ?? [],
+    attempts: t.spans.filter(s => s.outcome === 'attempt').length,
+    closedAt: t.spans.find(s => s.outcome === 'close')?.end ?? null,
+    meta: b.tickets.find(bt => bt.id === t.id) || ({} as any),
+  }));
 
-  const rows = Object.values(tickets)
-    .map((t: any) => ({ ...t, meta: b.tickets.find(bt => bt.id === t.id) || ({} as any) }))
-    .filter((t: any) => t.spans.length)
-    .sort((a: any, z: any) => (a.spans[0].start < z.spans[0].start ? -1 : 1));
-
-  // The model that actually ran — recorded in worker telemetry at close/attempt
+  // The model that actually ran — recorded in worker telemetry at settle
   // (chain fallback and all), never a declared tag; tickets carry no model.
-  const runModel = (t: any): string =>
-    t.closeData?.model ?? t.spans.map((s: any) => s.data?.model).filter(Boolean).at(-1) ?? '';
+  const runModel = (t: (typeof rows)[number]): string =>
+    t.spans.map(s => s.telemetry?.model).filter(Boolean).at(-1) ?? '';
 
-  const estCost = (t: any) => {
-    const tokens = t.closeData?.workerTokens ?? t.spans.reduce((s: number, sp: any) => s + (sp.data?.workerTokens || 0), 0);
+  // Summed across attempts: retries were paid for too, and the close span's
+  // telemetry IS the close data, so the sum degrades to exactly the old
+  // close-only figure on campaigns that journaled telemetry only at close.
+  // Tokens and seconds sum over the same spans so the pair stays one scope —
+  // throughput derived from the archive must not mix all-attempt tokens with
+  // final-attempt seconds.
+  const totalTokens = (t: (typeof rows)[number]): number =>
+    t.spans.reduce((s, sp) => s + (sp.telemetry?.workerTokens || 0), 0);
+  const totalWorkerSeconds = (t: (typeof rows)[number]): number =>
+    t.spans.reduce((s, sp) => s + (sp.telemetry?.workerSeconds || 0), 0);
+  const estCost = (t: (typeof rows)[number]) => {
+    const tokens = totalTokens(t);
     if (!tokens) return null;
     return (tokens / 1e6) * priceFor(runModel(t));
   };
@@ -88,15 +369,15 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     project: b.project,
     span: { first: journal[0]!.ts, last: journal.at(-1)!.ts },
     wallMinutes: (t1 - t0) / 60000,
-    tickets: rows.map((t: any) => ({
+    tickets: rows.map(t => ({
       id: t.id, title: t.meta.title || '',
       depends_on: t.meta.depends_on || [], model: runModel(t),
-      attempts: t.attempts, closedAt: t.closedAt || null,
+      attempts: t.attempts, closedAt: t.closedAt,
       closeX: t.closedAt ? x(t.closedAt) : null,
-      tokens: t.closeData?.workerTokens ?? null,
-      workerSeconds: t.closeData?.workerSeconds ?? null,
+      tokens: totalTokens(t) || null,
+      workerSeconds: totalWorkerSeconds(t) || null,
       cost: estCost(t),
-      spans: t.spans.map((s: any) => ({
+      spans: t.spans.map(s => ({
         x0: x(s.start), x1: x(s.end), start: s.start, end: s.end,
         outcome: s.outcome, repair: /repair/i.test(t.meta.origin || ''),
       })),
@@ -106,7 +387,13 @@ export function writePostmortem(out: string): { tickets: number; events: number 
       })),
     })),
     gates: gates.map(g => ({ x: x(g.ts), ts: g.ts, body: g.body })),
+    time: deriveTime(journal, transcriptsRoot),
   };
+
+  // The coordinator's journaled final report — the page's opening section.
+  // Last one wins: a corrected report is re-journaled, never edited in place.
+  const reportEntry = [...journal].reverse().find(e => e.kind === 'campaign-report' && typeof ((e as any).body) === 'string');
+  const reportHtml = reportEntry ? mdToHtml(reportEntry.body!) : null;
 
   const totalCost = data.tickets.reduce((s, t) => s + (t.cost || 0), 0);
   // Priced against CLOSED tickets, not all of them: an open or parked ticket was
@@ -129,6 +416,8 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     --grid: #e1e0d9; --axisline: #c3c2b7; --ring: rgba(11,11,11,0.10);
     --c-build: #2a78d6; --c-repair: #1baf7a; --c-verify: #e87ba4;
     --c-gate: #eda100; --c-fail: #e34948;
+    --c-unit: #eb6834; --c-itest: #1baf7a; --c-e2e: #eda100;
+    --c-types: #4a3aa7; --c-review: #008300; --c-other: #898781; --c-stall: #5f5c57;
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
     color: var(--ink-1); background: var(--plane);
     margin: 0; padding: 24px; min-height: 100vh; box-sizing: border-box;
@@ -141,6 +430,8 @@ export function writePostmortem(out: string): { tickets: number; events: number 
       --grid: #2c2c2a; --axisline: #383835; --ring: rgba(255,255,255,0.10);
       --c-build: #3987e5; --c-repair: #199e70; --c-verify: #d55181;
       --c-gate: #c98500; --c-fail: #e66767;
+      --c-unit: #d95926; --c-itest: #199e70; --c-e2e: #c98500;
+      --c-types: #9085e9; --c-review: #008300; --c-other: #898781; --c-stall: #6f6c66;
     }
   }
   :root[data-theme="dark"] .viz-root {
@@ -150,6 +441,8 @@ export function writePostmortem(out: string): { tickets: number; events: number 
     --grid: #2c2c2a; --axisline: #383835; --ring: rgba(255,255,255,0.10);
     --c-build: #3987e5; --c-repair: #199e70; --c-verify: #d55181;
     --c-gate: #c98500; --c-fail: #e66767;
+    --c-unit: #d95926; --c-itest: #199e70; --c-e2e: #c98500;
+    --c-types: #9085e9; --c-review: #008300; --c-other: #898781; --c-stall: #6f6c66;
   }
   h1 { font-size: 20px; margin: 0 0 2px; }
   .sub { color: var(--ink-2); margin: 0 0 20px; }
@@ -177,6 +470,29 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   .bars .track { height: 16px; position: relative; }
   .bars .fill { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 0 4px 4px 0; }
   .bars .val { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .stack .row { display: grid; grid-template-columns: 72px 1fr 160px; align-items: center; gap: 10px; margin: 3px 0; }
+  .stack .id { font-weight: 600; font-size: 12px; }
+  .stack .id .att { color: var(--c-fail); font-weight: 600; }
+  .stack .track { display: flex; height: 16px; align-items: stretch; }
+  .stack .seg { border-radius: 3px; margin-right: 2px; min-width: 2px; }
+  .stack .seg:last-child { margin-right: 0; }
+  .stack .val { color: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .sharebar { display: flex; height: 24px; margin: 6px 0 4px; }
+  .sharebar .seg { border-radius: 3px; margin-right: 2px; position: relative; }
+  .sharebar .seg:last-child { margin-right: 0; }
+  .sharebar .seg .pct { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 600; color: #fff; text-shadow: 0 0 3px rgba(0,0,0,0.45); }
+  .notes { color: var(--ink-3); font-size: 12px; margin: 10px 0 0; }
+  .notes li { margin: 2px 0 2px 16px; }
+  .report h3 { font-size: 14px; margin: 14px 0 4px; }
+  .report h4 { font-size: 13px; margin: 12px 0 3px; }
+  .report h5, .report h6 { font-size: 12.5px; margin: 10px 0 2px; }
+  .report p, .report ul { margin: 6px 0; font-size: 13.5px; }
+  .report li { margin: 2px 0 2px 18px; }
+  .report code { background: var(--plane); border: 1px solid var(--grid); border-radius: 4px; padding: 0 4px; font-size: 12px; }
+  .report pre { background: var(--plane); border: 1px solid var(--grid); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+  .report pre code { border: 0; background: none; padding: 0; }
+  .report a { color: var(--c-build); }
   details summary { cursor: pointer; color: var(--ink-2); font-size: 13px; }
   table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 12.5px; }
   th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
@@ -187,6 +503,11 @@ export function writePostmortem(out: string): { tickets: number; events: number 
   <h1>ailoop post-mortem — ${data.project}</h1>
   <p class="sub">Rendered from journal.jsonl · worker costs estimated from journaled tokens · coordinator-session overhead not included</p>
   <div class="tiles" id="tiles"></div>
+  ${reportHtml ? `<div class="card report">
+    <h2>Campaign report</h2>
+    <p class="desc">Journaled by the coordinator at termination (${new Date(reportEntry!.ts).toISOString().slice(0, 16).replace('T', ' ')} UTC). The sections below carry the measurements behind it.</p>
+    ${reportHtml}
+  </div>` : ''}
   <div class="card">
     <h2>Campaign timeline</h2>
     <p class="desc">One lane per ticket, ordered by dispatch. A ticket's bar runs dispatch → judgment (build + verify + judge). Hover a span for detail; hover a ticket label to trace dependencies (upstream solid, downstream dashed).</p>
@@ -199,6 +520,21 @@ export function writePostmortem(out: string): { tickets: number; events: number 
       <span><span class="sw" style="background:var(--ink-3); border-radius:99px"></span>close (merged)</span>
     </div>
     <div class="gantt-scroll"><div id="gantt"></div></div>
+  </div>
+  <div class="card">
+    <h2>Where the time went</h2>
+    <p class="desc" id="time-desc"></p>
+    <div class="tiles" id="time-tiles"></div>
+    <div class="sharebar" id="time-share"></div>
+    <div class="legend" id="time-legend"></div>
+    <div class="stack" id="time-bars"></div>
+    <div id="time-scatter" style="overflow-x:auto"></div>
+    <div class="tiles" id="time-tiers"></div>
+    <ul class="notes" id="time-notes"></ul>
+    <details>
+      <summary>Table view — per-ticket minutes by bucket</summary>
+      <div id="time-table" style="overflow-x:auto"></div>
+    </details>
   </div>
   ${costCoverage === 'none' ? `<div class="card">
     <h2>Cost per ticket</h2>
@@ -294,7 +630,7 @@ D.tickets.forEach((t, i) => {
     const color = s.repair ? 'var(--c-repair)' : (s.outcome === 'attempt' ? 'var(--c-fail)' : 'var(--c-build)');
     const bw = Math.max(3, (s.x1 - s.x0) * PLOT_W);
     svg += '<rect class="hov" x="' + px(s.x0) + '" y="' + barY + '" width="' + bw + '" height="14" rx="4" fill="' + color + '"' +
-      ' data-tip="' + esc('<div class=t-head>' + t.id + (s.outcome === 'attempt' ? ' — failed attempt' : '') + (t.model ? ' · ' + t.model : '') + '</div>' +
+      ' data-tip="' + esc('<div class=t-head>' + t.id + (s.outcome === 'attempt' ? ' — failed attempt' : s.outcome === 'decomposed' ? ' — decomposed' : '') + (t.model ? ' · ' + t.model : '') + '</div>' +
         '<div>' + esc(t.title) + '</div>' +
         '<div class=t-sub>' + fmtT(s.start) + ' → ' + fmtT(s.end) + ' (' + mins(new Date(s.end) - new Date(s.start)) + ')' +
         (t.tokens ? ' · ' + Math.round(t.tokens / 1000) + 'k worker tokens' : '') +
@@ -363,6 +699,142 @@ costbars.innerHTML = sorted.map(t =>
   '<div class="val">' + (t.cost != null ? money(t.cost) + ' · ' : '') + mins(spanTotal(t)) + '</div></div>').join('');
 wireTips(costbars);
 }
+
+// ---- where the time went ----
+const TT = D.time;
+const SEG = {
+  impl:   ['model inference', 'var(--c-build)'],
+  unit:   ['unit', 'var(--c-unit)'],
+  itest:  ['integration', 'var(--c-itest)'],
+  e2e:    ['e2e', 'var(--c-e2e)'],
+  types:  ['typecheck · lint', 'var(--c-types)'],
+  verify: ['verify', 'var(--c-verify)'],
+  review: ['review', 'var(--c-review)'],
+  other:  ['other', 'var(--c-other)'],
+  worker: ['worker (unsplit)', 'var(--c-build)'],
+  land:   ['land', 'var(--c-other)'],
+  stall:  ['coordinator stall', 'var(--c-stall)'],
+  blocked:['blocked \\u00b7 parked', 'var(--c-fail)'],
+};
+const segLabel = k => SEG[k][0], segColor = k => SEG[k][1];
+const fmtMin = v => (v >= 100 ? Math.round(v) : +v.toFixed(1)) + ' min';
+
+document.getElementById('time-desc').textContent = TT.coverage === 'none'
+  ? 'From journal phase stamps alone: dispatch → verify → review → land per ticket. No worker '
+    + 'transcripts were discoverable for the closed tickets, so the worker bar is undivided — '
+    + 'codex workers leave no transcript here, and old sessions may have been cleaned.'
+  : 'Journal phase walls, refined by the ' + TT.analyzed + ' closed ticket'
+    + (TT.analyzed === 1 ? '\\u2019s' : 's\\u2019') + ' retained worker/judge transcripts into model '
+    + 'inference vs test suites vs checks.'
+    + (TT.coverage === 'partial'
+      ? ' Partial: ' + (TT.closed - TT.analyzed) + ' of ' + TT.closed
+        + ' closed tickets have no discoverable transcript and render phase walls only.'
+      : '');
+
+const settled = TT.tickets.filter(t => t.segs.length);
+const shareTotal = TT.share.reduce((s, x) => s + x.min, 0);
+const splitTickets = TT.tickets.filter(t => t.split && t.ktok != null);
+const avgKtok = splitTickets.length ? Math.round(splitTickets.reduce((s, t) => s + t.ktok, 0) / splitTickets.length) : null;
+const thinkPcts = splitTickets.map(t => t.thinkPct).filter(v => v != null);
+const avgThink = thinkPcts.length ? Math.round(thinkPcts.reduce((s, v) => s + v, 0) / thinkPcts.length) : null;
+const timeTiles = [
+  ['Dispatch shape', TT.shape.maxInFlight <= 1 ? 'serial' : '\\u2264' + TT.shape.maxInFlight + ' in flight',
+    fmtMin(TT.shape.idleMin) + ' idle between tickets'],
+  TT.shape.heldMin > 0 ? ['Held on a park', fmtMin(TT.shape.heldMin),
+    'wall with \\u22651 ticket parked'
+      + (TT.shape.unreleasedParks ? ' \\u00b7 ' + TT.shape.unreleasedParks + ' still parked' : '')] : null,
+  settled.length ? ['Avg ticket cycle', fmtMin(settled.reduce((s, t) => s + t.totalMin, 0) / settled.length),
+    TT.share.slice().sort((a, z) => z.min - a.min).slice(0, 3)
+      .map(s => segLabel(s.k).split(' ')[0] + ' ' + Math.round(100 * s.min / shareTotal) + '%').join(' \\u00b7 ')] : null,
+  TT.rate != null ? ['Sustained throughput', TT.rate + ' tok/s', 'median output tokens \\u00f7 model time'] : null,
+  avgKtok != null ? ['Output tokens / ticket', avgKtok + 'k',
+    avgThink != null ? '\\u2248' + avgThink + '% thinking (estimate)' : ''] : null,
+].filter(Boolean);
+document.getElementById('time-tiles').innerHTML = timeTiles.map(([l, v, n]) =>
+  '<div class="tile"><div class="label">' + l + '</div><div class="value">' + v + '</div><div class="note">' + n + '</div></div>').join('');
+
+document.getElementById('time-share').innerHTML = TT.share.map(s => {
+  const pct = 100 * s.min / shareTotal;
+  return '<div class="seg hov" style="flex:0 0 ' + pct + '%; background:' + segColor(s.k) + '"' +
+    ' data-tip="' + esc('<div class=t-head>' + segLabel(s.k) + '</div><div class=t-sub>' + fmtMin(s.min) + ' \\u00b7 ' + pct.toFixed(0) + '% of attributed wall</div>') + '">' +
+    (pct >= 9 ? '<span class="pct">' + pct.toFixed(0) + '%</span>' : '') + '</div>';
+}).join('');
+wireTips(document.getElementById('time-share'));
+
+const segKeys = [...new Set([].concat(TT.share.map(s => s.k), ...TT.tickets.map(t => t.segs.map(s => s.k))))];
+document.getElementById('time-legend').innerHTML = segKeys.map(k =>
+  '<span><span class="sw" style="background:' + segColor(k) + '"></span>' + segLabel(k) + '</span>').join('');
+
+const maxTotal = Math.max(...settled.map(t => t.totalMin), 1e-9);
+document.getElementById('time-bars').innerHTML = settled.slice().sort((a, z) => z.totalMin - a.totalMin).map(t =>
+  '<div class="row"><div class="id">' + t.id + (t.attempts ? ' <span class="att">\\u00d7' + (t.attempts + 1) + '</span>' : '') + '</div>' +
+  '<div class="track" style="width:' + (100 * t.totalMin / maxTotal) + '%">' +
+  t.segs.map(s => '<div class="seg hov" style="flex:' + s.min + ' 0 0; background:' + segColor(s.k) + '"' +
+    ' data-tip="' + esc('<div class=t-head>' + t.id + ' \\u00b7 ' + segLabel(s.k) + '</div><div class=t-sub>' + fmtMin(s.min) + ' of ' + fmtMin(t.totalMin) +
+      (t.split ? '' : ' (journal phase wall)') + '</div>') + '"></div>').join('') +
+  '</div><div class="val">' + fmtMin(t.totalMin) + (t.ktok != null ? ' \\u00b7 ' + t.ktok + 'k tok' : '') + '</div></div>').join('');
+wireTips(document.getElementById('time-bars'));
+
+if (TT.scatter.length >= 3 && TT.rate != null) {
+  const SW = 680, SHt = 320, PL = 52, PR = 16, PT = 16, PB = 38;
+  const maxW = Math.max(...TT.scatter.map(p => p.wallMin)) * 1.08;
+  const lineK = w => TT.rate * 60 * w / 1000; // ktok the model emits in w minutes of pure inference
+  const maxK = Math.max(...TT.scatter.map(p => p.ktok), lineK(maxW * 0.6)) * 1.12;
+  const sx = w => PL + (w / maxW) * (SW - PL - PR);
+  const sy = k => SHt - PB - (k / maxK) * (SHt - PT - PB);
+  let sc = '<svg width="' + SW + '" height="' + SHt + '" role="img" aria-label="Output tokens vs worker wall">';
+  const xstep = maxW > 120 ? 30 : maxW > 40 ? 10 : 5;
+  for (let w = 0; w <= maxW; w += xstep) {
+    sc += '<line x1="' + sx(w) + '" y1="' + PT + '" x2="' + sx(w) + '" y2="' + (SHt - PB) + '" stroke="var(--grid)"/>' +
+      '<text x="' + sx(w) + '" y="' + (SHt - PB + 14) + '" text-anchor="middle">' + w + '</text>';
+  }
+  const kstep = maxK > 200 ? 50 : maxK > 80 ? 20 : 10;
+  for (let k = 0; k <= maxK; k += kstep) {
+    sc += '<line x1="' + PL + '" y1="' + sy(k) + '" x2="' + (SW - PR) + '" y2="' + sy(k) + '" stroke="var(--grid)"/>' +
+      '<text x="' + (PL - 6) + '" y="' + (sy(k) + 4) + '" text-anchor="end">' + k + '</text>';
+  }
+  const wEnd = Math.min(maxW, maxK / (TT.rate * 60 / 1000));
+  sc += '<line x1="' + sx(0) + '" y1="' + sy(0) + '" x2="' + sx(wEnd) + '" y2="' + sy(lineK(wEnd)) + '"' +
+    ' stroke="var(--axisline)" stroke-width="1.5" stroke-dasharray="5 4"/>';
+  sc += '<text x="' + (sx(wEnd) - 4) + '" y="' + (sy(lineK(wEnd)) + 12) + '" text-anchor="end">' + TT.rate + ' tok/s \\u2014 on the line = inference-bound</text>';
+  for (const p of TT.scatter) {
+    sc += '<circle class="hov" cx="' + sx(p.wallMin) + '" cy="' + sy(p.ktok) + '" r="4.5" fill="var(--c-build)" stroke="var(--surface-1)" stroke-width="1.5"' +
+      ' data-tip="' + esc('<div class=t-head>' + p.id + '</div><div class=t-sub>' + fmtMin(p.wallMin) + ' worker wall \\u00b7 ' + p.ktok + 'k output tokens' +
+        (p.wallMin > p.ktok / (TT.rate * 60 / 1000) * 1.3 ? ' \\u00b7 suite-bound' : '') + '</div>') + '"/>';
+  }
+  sc += '<text x="' + ((PL + SW - PR) / 2) + '" y="' + (SHt - 4) + '" text-anchor="middle">worker wall (min) \\u2014 right of the line is suite-bound</text>';
+  sc += '<line x1="' + PL + '" y1="' + (SHt - PB) + '" x2="' + (SW - PR) + '" y2="' + (SHt - PB) + '" stroke="var(--axisline)"/>';
+  sc += '</svg>';
+  const scat = document.getElementById('time-scatter');
+  scat.innerHTML = sc;
+  wireTips(scat);
+}
+
+const TIER_LABEL = { typecheck: 'typecheck / lint', unit: 'unit run', integration: 'integration run', e2e: 'e2e run', db: 'db op', verify: 'verify (scripted)' };
+const tierTiles = TT.tiers.filter(t => TIER_LABEL[t.k]);
+if (tierTiles.length) {
+  document.getElementById('time-tiers').innerHTML = tierTiles.map(t =>
+    '<div class="tile"><div class="label">' + TIER_LABEL[t.k] + ', single run</div><div class="value">' +
+    (t.medianS >= 120 ? (t.medianS / 60).toFixed(1) + ' min' : t.medianS + ' s') +
+    '</div><div class="note">median of ' + t.runs + ' runs</div></div>').join('');
+}
+
+const timeNotes = [
+  TT.coverage !== 'none' ? '\\u201cother\\u201d is wall the transcripts cannot attribute \\u2014 coordinator bookkeeping between phases, unclassified bash, db/git ops, the land, and any retry attempt whose own transcript wasn\\u2019t found \\u2014 disclosed rather than attributed.' : null,
+  TT.coverage !== 'none' ? 'The thinking share is an estimate: billed output tokens minus visible characters at \\u22483.7 chars/token. Thinking text is stripped from saved transcripts, so it cannot be measured directly.' : null,
+  TT.coverage !== 'none' ? 'Review minutes use the judge transcript\\u2019s wall where one was found; otherwise the journal\\u2019s under-review window, which includes coordinator overhead around the judge.' : null,
+  TT.telemetryGaps ? TT.telemetryGaps + ' settled attempt' + (TT.telemetryGaps === 1 ? '' : 's') + ' journaled no workerTokens \\u2014 token totals cover the attempts that reported.' : null,
+].filter(Boolean);
+document.getElementById('time-notes').innerHTML = timeNotes.map(n => '<li>' + n + '</li>').join('');
+
+const allKeys = ['impl', 'unit', 'itest', 'e2e', 'types', 'verify', 'review', 'land', 'worker', 'other'].filter(k => segKeys.includes(k));
+document.getElementById('time-table').innerHTML = '<table><thead><tr><th>Ticket</th><th class="num">Attempts</th>' +
+  allKeys.map(k => '<th class="num">' + segLabel(k) + '</th>').join('') +
+  '<th class="num">Total</th><th class="num">Tokens</th></tr></thead><tbody>' +
+  settled.map(t => '<tr><td><b>' + t.id + '</b></td><td class="num">' + (t.attempts + 1) + '</td>' +
+    allKeys.map(k => '<td class="num">' + (t.segs.find(s => s.k === k) ? (+t.segs.find(s => s.k === k).min.toFixed(1)) : '\\u2014') + '</td>').join('') +
+    '<td class="num">' + (+t.totalMin.toFixed(1)) + '</td><td class="num">' + (t.ktok != null ? t.ktok + 'k' : '\\u2014') + '</td></tr>').join('') +
+  '</tbody></table>';
 
 document.getElementById('tablewrap').innerHTML = '<table><thead><tr>' +
   '<th>Ticket</th><th>Title</th><th>Deps</th><th>Model</th>' +

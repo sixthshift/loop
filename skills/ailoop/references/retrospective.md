@@ -67,33 +67,100 @@ forever.
 `.ailoop/learnings/` carries across campaigns verbatim, which is the only reason a
 later one can compare against an earlier one — never fork its shape.
 
-## 3. The post-mortem, before anything is deleted
+## 3. The report and the post-mortem — one artifact
+
+The human gets a single page: the post-mortem HTML, opening with your report
+and carrying, below it, the measurements the report cites. Getting there is
+four steps, in this order, because the report's numbers come from a page that
+must in turn embed the report:
+
+**1. Render, to read.**
 
 ```
 loop postmortem --out <spec-path-without-.md>.postmortem.html
 ```
 
-It embeds the raw journal, so the timeline, per-ticket costs and every journaled
-event survive the campaign directory's deletion. **If this fails, stop and report
-— do not delete `.ailoop/campaign/` without the archive.** There is no second
-chance.
+Its cost figures come from the `--data` telemetry you journaled at each settle
+— attempts included, since a retried ticket paid for every attempt; settles
+without it show duration only. The **where-the-time-went** section
+additionally reads whatever worker/judge transcripts your harness still
+retains under `~/.claude/projects/`, joined by the journaled agent ids
+(falling back to the `Build/Review <id>` dispatch labels), to split each
+ticket into model inference vs test suites vs checks. Render before any
+transcript cleanup; where transcripts are gone — codex workers never leave
+any — the section says so and degrades to journal phase walls rather than
+guessing.
 
-Its cost figures come from the `--data` telemetry you journaled at each close;
-tickets closed without it show duration only.
+Check the coverage line it prints. `none` on a campaign whose workers were
+claude agents means the join failed, not that the work was cheap — usually
+because the render is happening outside the container the campaign ran in, so
+the transcripts are in that container's tree rather than this host's. Copy that
+tree out and point at it:
 
-## 4. Final report
+```
+docker run --rm -v <project>_devcontainer_claude-config:/cc -v <dest>:/out \
+  alpine cp -r /cc/projects/-workspace/. /out/
+loop postmortem --out <path>.html --transcripts <dest>
+```
 
-To the human, computed from the journal and evidence files — never narrated from
-memory: what was built, requirement coverage clause by clause, gate evidence
-pointers, check amendments (typo-level self-served; meaning-level parked and how
-they were answered), gate replacements with the command each displaced, escaped
-bugs and which checks got strengthened, every park and how it resolved, and the
-recover log — each anomaly kind, how often it fired, and any kind that fired
-often enough to deserve a real arm in SKILL.md.
+Two buckets never depend on that join and are always present: **blocked**
+(park wall, carved out of whatever phase was stamped when the park landed) and
+**stall** (`build` wall minus the `workerSeconds` you journaled — the loop's own
+dead time, waiting to spawn or slow to notice a finished worker). Both are
+derived from the journal alone, so they survive a campaign whose transcripts
+were never written. `stall` is only claimed where every settled attempt
+reported its seconds; journal the settle telemetry faithfully or the section
+goes quiet about the loop's own latency.
+
+**2. Compose the report**, in markdown, computed from the journal, the
+evidence files, and the page you just rendered — never narrated from memory:
+what was built, requirement coverage clause by clause, gate evidence pointers,
+check amendments (typo-level self-served; meaning-level parked and how they
+were answered), gate replacements with the command each displaced, escaped
+bugs and which checks got strengthened, every park and how it resolved, and
+the recover log — each anomaly kind, how often it fired, and any kind that
+fired often enough to deserve a real arm in SKILL.md.
+
+**Where the time went** is a standard section, read off the rendered page's
+numbers, never re-derived by eye: the dispatch shape (achieved parallelism, the
+idle between tickets, and the wall held on a park), the average cycle and its
+split, the dominant cost bucket, and — as recommendations — only the levers
+this campaign's data actually supports. The recurring candidates, each
+checkable against the section: **park latency** when `blocked` is the dominant
+bucket or `held` covers much of the span; **coordinator latency** when `stall`
+is more than dispatch noise on any ticket; parallelism headroom when the run
+was serial and inference-bound; scoped checks during iteration when flat
+full-tier suites were re-run per touch; retry spend when attempts multiplied
+whole cycles; a checked-in runner script when generated bash rivals the code
+volume. Name the numbers behind whichever you claim.
+
+Read `held` against `idle`, never `idle` alone. Parallelism hides a park —
+other tickets keep landing, so `idle` stays near zero — right up until the
+backlog drains behind the parked one and the campaign stops. A run reporting
+minutes of idle and hours of held was blocked on its human for most of its
+life, and the lever is the park pipeline, not the judge or the suites.
 
 The harvest role's `report` field is the draft; you own its accuracy.
 
-## 5. Close the campaign
+**3. Journal it** — the report is a campaign event, and journaling it is what
+puts it inside the archive:
+
+```
+echo '{"body": "<the markdown>"}' | loop backlog note --kind campaign-report --subject campaign -
+```
+
+The stdin payload, not `--body`: report-sized markdown routed through a shell
+argument gets mangled by the shell's own vocabulary. To correct a report,
+journal a new one — the page renders the last.
+
+**4. Render again, to the same path.** This render is the artifact: it opens
+with the report and embeds the raw journal (report included), so the timeline,
+per-ticket costs and every journaled event survive the campaign directory's
+deletion. **If it fails, stop and report — do not delete `.ailoop/campaign/`
+without the archive.** There is no second chance. Hand the human the file
+path, with the parked decisions (if any) restated in the terminal.
+
+## 4. Close the campaign
 
 Journal the close (`--kind campaign-close`), flip the spec's frontmatter to
 `status: done` (aispec treats `done` specs as retired records — this flip is what
@@ -102,5 +169,6 @@ tells it the contract is spent), reap the closed tickets' branches
 bisection), then delete `.ailoop/campaign/`. Learnings remain, tracked; the
 journal survives inside the post-mortem HTML.
 
-The campaign is over when — and only when — the human has the report and the
-post-mortem, the spec reads `done`, and the campaign directory is gone.
+The campaign is over when — and only when — the human has the post-mortem with
+the report inside it, the spec reads `done`, and the campaign directory is
+gone.

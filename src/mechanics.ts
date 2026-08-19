@@ -267,8 +267,13 @@ export function registerMechanics(program: Command): void {
   mechanic('postmortem')
     .description('render the journal as a self-contained HTML archive — do this before campaign state is deleted')
     .requiredOption('--out <path>', 'where to write the HTML')
-    .action((opts: { out: string }) => {
-      try { emit(writePostmortem(opts.out)); } catch (e: any) { fail(e.message); }
+    // A campaign that ran in a devcontainer left its transcripts in the
+    // container's projects tree, not this host's — the time split is otherwise
+    // silently unavailable to a render done from outside. Point at that tree
+    // (a copy of `<vol>/projects/<slug>`) and the split comes back.
+    .option('--transcripts <dir>', 'projects dir holding the run\'s subagent transcripts (default: this host\'s ~/.claude/projects/<cwd>)')
+    .action((opts: { out: string; transcripts?: string }) => {
+      try { emit(writePostmortem(opts.out, opts.transcripts)); } catch (e: any) { fail(e.message); }
     });
 
   mechanic('learn')

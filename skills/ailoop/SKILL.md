@@ -269,6 +269,19 @@ so the next frontier knows the checkout is occupied. Then run the `worker`
 role at the repository root, on that branch, at the ladder rung its
 merit-attempt count earns.
 
+**Journal the worker and review subagent ids** in the settle `--data`
+(`agent`, `judgeAgent`). That id is the only join the post-mortem's time
+breakdown can trust: it is exact, and it survives any wording. Journaling
+`null` there — as campaigns have — throws the section onto a fallback that
+reads your prose.
+
+Name the worker subagent's description `Build <id> (worker)`, and the
+review's `Review <id> (judge)`, so that fallback lands. It parses the seat out
+of whatever you wrote (`Worker T012 …` and `Adversarial review T012` both
+resolve) and drops anything naming neither seat, but it is inference over a
+label, not a record — a description that never names the ticket costs that
+ticket its inference-vs-suites split, and no warning is issued.
+
 `--model` / `--rung` and the phase stamps below are the campaign's only outward
 sign of life. Nobody can see your session: `loop watch` renders in-flight tickets
 for a human from `backlog.json` alone, so an unstamped ticket reads as work that
@@ -312,6 +325,15 @@ ticket's branch survives, and only until the gate is green, for bisection. And
 `set-status <id> open` first. Both are the writer telling you the order, not
 obstacles to route around.
 
+And one record runs through every settle: the `attempt` or `close` that ends a
+dispatch carries its telemetry in `--data` —
+`{"workerTokens":N,"workerSeconds":S,"model":"…","agent":"<worker subagent
+id>","judgeAgent":"<review subagent id>"}`, whatever your harness reported.
+Per attempt, not only at the close: a retried ticket paid for every attempt,
+and the post-mortem prices and time-splits exactly what was journaled — a
+settle without it renders as duration only, and its transcript join falls
+back to the description labels above.
+
 The table below is the ordinary path, not an exhaustive one. A dispatch that ends
 some other way — the engine died mid-run, the operator killed it, it timed out, a
 `create` refused, something with no name at all — is yours to diagnose and
@@ -321,8 +343,8 @@ real and file the attempt under the right half of the taxonomy (invariants 1 and
 
 | Verdict | What you do |
 |---|---|
-| `close` | `phase merging`. `loop branch land <id>` — it returns the checkout to mainline and fast-forwards it onto the branch — then `loop backlog close <id> --evidence <path> --note "<decisive evidence>" --data '{"workerTokens":N,"workerSeconds":S}'` (the telemetry the post-mortem prices — close is the only moment it exists). The branch survives until the gate is green, for bisection. Serially the branch's base is mainline's tip, so there is no moved-mainline case inside the campaign and nothing to re-run after the land. A land refused as *dirty* is **recover** (`dirty-mainline`), then retry — the branch was judged closeable and must not burn an attempt on someone else's mess. A land that *cannot fast-forward* means something outside the campaign moved mainline: infra — `--infra` attempt, discard, rebuild against mainline as it now stands, merit budget untouched. |
-| `retry` | Discard the build, then `loop backlog attempt <id> --failed <names> --hypothesis "…" --fix "…" --data '{…}'` with the review's fields verbatim (`failing` if it gave one, else verify's, else `judge-rejected`). Re-dispatch a rung higher. |
+| `close` | `phase merging`. `loop branch land <id>` — it returns the checkout to mainline and fast-forwards it onto the branch — then `loop backlog close <id> --evidence <path> --note "<decisive evidence>" --data '{…}'` with the settle telemetry above (the close is the last moment it exists — nothing downstream can recover an unjournaled count). The branch survives until the gate is green, for bisection. Serially the branch's base is mainline's tip, so there is no moved-mainline case inside the campaign and nothing to re-run after the land. A land refused as *dirty* is **recover** (`dirty-mainline`), then retry — the branch was judged closeable and must not burn an attempt on someone else's mess. A land that *cannot fast-forward* means something outside the campaign moved mainline: infra — `--infra` attempt, discard, rebuild against mainline as it now stands, merit budget untouched. |
+| `retry` | Discard the build, then `loop backlog attempt <id> --failed <names> --hypothesis "…" --fix "…" --data '{…}'` with the review's fields verbatim (`failing` if it gave one, else verify's, else `judge-rejected`) and the settle telemetry above. Re-dispatch a rung higher. |
 | `gamed` | Discard the build. Then **sharpen before logging the attempt**: `set-status <id> open --note "check amendment"`, `loop backlog update <id> - --note "gamed: <hypothesis>"` piping `{"acceptanceChecks": <the review's complete sharpenChecks array>}` — complete, never a partial patch — then the `attempt` entry. The escaped-bug rule: a defect that passed a check must strengthen the check that let it through. This, with `sharpen` below, is what makes the checks sharper over a campaign instead of frozen at kickoff quality. |
 | `sharpen` | The build **stands** — the review affirmed the implementation as correct and demonstrated only that the checks cannot observe a locked clause. Keep it: the branch survives untouched, and serially nothing has moved under it — its `baseSha` still holds. Amend the checks exactly as `gamed` does, and log the attempt as **merit**: the ticket failed to prove itself, and the attempt wall is what bounds a ticket that keeps needing its checks grown. Re-dispatch a **fresh** session onto the surviving branch — `loop branch attach <id>`, then `set-status <id> in-flight --base-sha <the same baseSha> --model … --rung …`, rung per its merit count as usual — told that the build is inherited and judged correct and its job is to extend the proof, never rewrite the code. Settle the result like any other return (this section, from the top). Discarding protected three things and keeping the branch keeps all three: the base never moved (serial dispatch), the reader is cold (the new session, and review is always fresh-context), and the measurement runs under the sharpened checks (verify runs them on this branch). What it stops paying is the rebuild of correct code — a re-derivation can silently drop a subtlety no check covers. |
 | `flake-probe` | `phase probing`, then `loop verify --cmd "<probeCmd verbatim>" --repeat 5` on the **surviving** branch, still checked out — nothing is discarded yet. Journal the result. `real-red` → re-judge as `retry`/`gamed`. Any intermittent verdict (`flaky`, `flaky-under-full-run-only`) → park; there is no quarantine-and-close, and the original red still forbids a close. Invariant 4: one probe per ticket. A second request is the judge stalling — discard and park. |
@@ -452,10 +474,12 @@ so that it is never your recollection of having checked.
 
 Gate green, no gate park, nothing live → read `references/retrospective.md` and
 follow it: the `coverage` role grades the requirement-to-proof matrix (anything
-unproven becomes a ticket and the drive resumes), then the report, the `harvest`
-role into `.ailoop/learnings/` via `loop learn`, `loop postmortem` **before**
-anything is deleted, branches reaped, `.ailoop/campaign/` removed, the spec's
-frontmatter flipped to `status: done`.
+unproven becomes a ticket and the drive resumes), the `harvest` role into
+`.ailoop/learnings/` via `loop learn`, then the report and the post-mortem as
+**one artifact** — render, compose the report off the rendered numbers,
+journal it (`note --kind campaign-report`, body on stdin), render again —
+**before** anything is deleted, branches reaped, `.ailoop/campaign/` removed,
+the spec's frontmatter flipped to `status: done`.
 
 ## Resume (`.ailoop/campaign/` exists)
 
