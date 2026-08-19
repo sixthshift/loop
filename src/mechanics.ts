@@ -40,6 +40,8 @@ import { recoveryBudget } from './campaign/recovery-budget.ts';
 import { verify, flakeProbe } from './campaign/verify.ts';
 import { vet } from './campaign/vet.ts';
 import { runGate } from './campaign/gate-run.ts';
+import { bisect } from './campaign/bisect.ts';
+import { dispatch, writeSchema } from './campaign/dispatch.ts';
 import { snapshotTree, revertOutOfBounds } from './campaign/jurisdiction.ts';
 import type { TreeSnapshot } from './campaign/jurisdiction.ts';
 import { writePostmortem } from './campaign/postmortem.ts';
@@ -86,6 +88,16 @@ function withMainline(args: string[]): string[] {
 
 // Commands that take a JSON payload read it from stdin, so a coordinator can
 // pipe tickets in without staging a temp file it then has to clean up.
+// Ticket context is prose, and prose routed through a shell argument is mangled
+// by the shell's own vocabulary — the same reason the journal takes a report on
+// stdin rather than in `--body`.
+async function stdinText(): Promise<string> {
+  if (process.stdin.isTTY) return fail('--context - expects the context on stdin');
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString('utf8').trim();
+}
+
 async function stdinJson(): Promise<unknown> {
   if (process.stdin.isTTY) return undefined;
   const chunks: Buffer[] = [];
@@ -192,6 +204,33 @@ export function registerMechanics(program: Command): void {
   // rule that only a red gate's own recovery may do so lives here. And the fast
   // tier's rule is a measurement — every candidate must exit 0 on the mainline —
   // which is not something a coordinator can honestly attest to having done.
+  mechanic('dispatch')
+    .description("everything one worker dispatch needs, in one call: vet the base, cut the branch, stamp in-flight, resolve the ladder rung, render the prompt")
+    .requiredOption('--ticket <id>', 'the dispatchable ticket')
+    .requiredOption('--context <text>', 'the one variable no verb can derive: what THIS worker needs to know ("-" reads stdin)')
+    .option('--dir <path>', 'the checkout to measure in', '.')
+    .option('--accept-vacuous', 'proceed although some acceptance checks already pass on the base — only for a ticket that legitimately adds proof for shipped behaviour')
+    .option('--schema-out <file>', 'also write the worker output schema here, for codex --output-schema')
+    .action(async (opts: { ticket: string; context: string; dir: string; acceptVacuous?: boolean; schemaOut?: string }) => {
+      assertSkillSeat();
+      const context = opts.context === '-' ? await stdinText() : opts.context;
+      try {
+        const plan = await dispatch({ id: opts.ticket, context, dir: opts.dir, acceptVacuous: !!opts.acceptVacuous });
+        if (opts.schemaOut) writeSchema(plan.schema, opts.schemaOut);
+        emit(opts.schemaOut ? { ...plan, schemaPath: opts.schemaOut } : plan);
+      } catch (e: any) { fail(e.message); }
+    });
+
+  mechanic('bisect')
+    .description('find the earliest landing at which a command was already red — binary search over closed tickets\' branches, HEAD restored to mainline whatever happens')
+    .requiredOption('--cmd <cmd>', 'the failing check, verbatim')
+    .option('--dir <path>', 'the checkout to measure in', '.')
+    .action(async (opts: { cmd: string; dir: string }) => {
+      assertSkillSeat();
+      try { emit(await bisect({ cmd: opts.cmd, dir: opts.dir })); }
+      catch (e: any) { fail(e.message); }
+    });
+
   mechanic('gate-amend')
     .description("amend the campaign gate under the authority its anomaly grants (checks on stdin)")
     .requiredOption('--by <who>', 'the arm proposing the amendment, for the audit record')

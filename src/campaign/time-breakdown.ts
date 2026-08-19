@@ -42,7 +42,21 @@ export type AttemptTelemetry = {
   model?: string;
   agent?: string;
   judgeAgent?: string;
+  // The two edges of the worker's actual life, as ISO stamps. Without them the
+  // loop's own dead time is one undifferentiated residual — build wall minus
+  // what the worker claimed to spend — which says a gap exists and nothing
+  // about where. With them it splits three ways: the coordinator getting a
+  // worker started, the worker working, and the coordinator noticing it
+  // finished. Only the first and third are anyone's to fix.
+  spawnedAt?: string;
+  returnedAt?: string;
 };
+
+// The stall, resolved. `prep` and `notice` are the coordinator's own latency on
+// either side of the worker; `residual` is what is left of the build wall once
+// all three are accounted for, and a large one means the stamps disagree with
+// the wall rather than that time vanished.
+export type StallSplit = { prep: number; notice: number; residual: number };
 
 export type AttemptSpan = {
   n: number;
@@ -55,6 +69,19 @@ export type AttemptSpan = {
 };
 
 export type TicketBreakdown = { id: string; spans: AttemptSpan[] };
+
+// Split one span's build wall into the coordinator's two latencies and the
+// worker's own time. Null when the span did not journal both stamps: a partial
+// split would read as "no prep latency here" rather than as "not measured",
+// which is the mistake the whole stall bucket exists to stop the report making.
+export function stallSplit(span: AttemptSpan): StallSplit | null {
+  const { spawnedAt, returnedAt } = span.telemetry ?? {};
+  if (!spawnedAt || !returnedAt) return null;
+  const prep = Math.max(0, ms(spawnedAt) - ms(span.start));
+  const worked = Math.max(0, ms(returnedAt) - ms(spawnedAt));
+  const notice = Math.max(0, span.walls.build - prep - worked);
+  return { prep, notice, residual: Math.max(0, span.walls.build - prep - worked - notice) };
+}
 
 const ms = (ts: string): number => new Date(ts).getTime();
 
@@ -106,6 +133,8 @@ const pickTelemetry = (data: any): AttemptTelemetry | null => {
   if (typeof data.model === 'string') out.model = data.model;
   if (typeof data.agent === 'string') out.agent = data.agent;
   if (typeof data.judgeAgent === 'string') out.judgeAgent = data.judgeAgent;
+  if (typeof data.spawnedAt === 'string') out.spawnedAt = data.spawnedAt;
+  if (typeof data.returnedAt === 'string') out.returnedAt = data.returnedAt;
   return Object.keys(out).length ? out : null;
 };
 

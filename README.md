@@ -108,6 +108,8 @@ loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
 loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage, sweep due
 loop vet --ticket T004    # pre-dispatch: which acceptance checks already pass on the base
 loop gate-run             # run the campaign gate on the merged tree and stamp its verdict
+loop bisect --cmd "..."   # which landing first broke a check; HEAD restored whatever happens
+loop dispatch --ticket T4 --context -   # vet, cut, stamp, resolve the rung, render the prompt
 loop verify --ticket … --base …    # the measurement; --cmd … for a flake probe
 loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)

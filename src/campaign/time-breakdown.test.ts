@@ -8,7 +8,8 @@
 
 import { describe, expect, test } from 'bun:test';
 import type { JournalEntry } from './journal.ts';
-import { campaignShape, parkWindows, ticketBreakdowns } from './time-breakdown.ts';
+import { campaignShape, parkWindows, stallSplit, ticketBreakdowns } from './time-breakdown.ts';
+import type { AttemptSpan } from './time-breakdown.ts';
 
 const T0 = Date.parse('2026-08-10T10:00:00Z');
 const at = (min: number): string => new Date(T0 + min * 60_000).toISOString();
@@ -179,5 +180,47 @@ describe('parks', () => {
       e(16, 'status', 'T003', '→ in-flight'),
       e(20, 'close', 'T003', 'closed'),
     ])).toEqual([]);
+  });
+});
+
+// Splitting the stall. The bucket used to be one residual — build wall minus
+// what the worker claimed — which established that a gap existed and nothing
+// about whose it was.
+describe('stallSplit', () => {
+  const span = (over: Partial<AttemptSpan> = {}): AttemptSpan => ({
+    n: 1, start: '2026-01-01T00:00:00.000Z', end: '2026-01-01T01:00:00.000Z', outcome: 'close',
+    walls: { build: 600_000, verify: 0, review: 0, land: 0, blocked: 0 },
+    verifyScriptMs: 0, telemetry: null, ...over,
+  });
+
+  test('both stamps split the build wall into prep, work and notice', () => {
+    const s = stallSplit(span({
+      telemetry: { spawnedAt: '2026-01-01T00:01:00.000Z', returnedAt: '2026-01-01T00:08:00.000Z' },
+    }));
+    // 10 min wall − 1 min getting it started − 7 min working = 2 min noticing.
+    expect(s).toEqual({ prep: 60_000, notice: 120_000, residual: 0 });
+  });
+
+  // Half a split would read as "no prep latency here" rather than "not
+  // measured", which is exactly the false reassurance the bucket exists to stop.
+  test('one stamp alone measures nothing', () => {
+    expect(stallSplit(span({ telemetry: { spawnedAt: '2026-01-01T00:01:00.000Z' } }))).toBe(null);
+    expect(stallSplit(span({ telemetry: { returnedAt: '2026-01-01T00:08:00.000Z' } }))).toBe(null);
+    expect(stallSplit(span())).toBe(null);
+  });
+
+  test('a worker that outran its build wall reports no negative latency', () => {
+    const s = stallSplit(span({
+      walls: { build: 60_000, verify: 0, review: 0, land: 0, blocked: 0 },
+      telemetry: { spawnedAt: '2026-01-01T00:00:00.000Z', returnedAt: '2026-01-01T00:10:00.000Z' },
+    }));
+    expect(s).toEqual({ prep: 0, notice: 0, residual: 0 });
+  });
+
+  test('an instant dispatch and an instant notice leave the wall to the worker', () => {
+    const s = stallSplit(span({
+      telemetry: { spawnedAt: '2026-01-01T00:00:00.000Z', returnedAt: '2026-01-01T00:10:00.000Z' },
+    }));
+    expect(s).toEqual({ prep: 0, notice: 0, residual: 0 });
   });
 });

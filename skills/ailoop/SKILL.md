@@ -147,6 +147,8 @@ side — read it and fix the call, never route around it.
 | `loop fastcheck-amend --by … --note …` | the fast tier, admitting only candidates that exit 0 at the repo root. It runs them — you never attest to having done that yourself. |
 | `loop branch create\|attach\|discard\|land\|delete` | the serial checkout lifecycle. `create <id>` cuts `ailoop/<id>` from mainline and checks it out, refusing an off-mainline or unclean tree (it names the litter — resolve it, never route around it). `attach <id>` checks a surviving branch back out for resume. `discard` erases worker litter and returns the checkout to mainline, keeping the branch. `land <id>` returns to mainline and fast-forwards it onto the branch; a non-ff result is interference, infra. `delete <id>` reaps a branch once the gate is green. |
 | `loop vet --ticket <id>` | the pre-dispatch vacuity measurement: runs the ticket's `acceptanceChecks` at the root on the base and reports which already pass. A check green before the work exists cannot be observing the work. It never refuses — a check-only ticket claiming a delivered clause is legitimately green — so the finding is yours to rule on, but it is a measurement, not your recollection of having thought about it. |
+| `loop dispatch --ticket <id> --context -` | one worker dispatch, whole: vets the acceptance checks against the base, cuts the branch, stamps in-flight, resolves the ladder rung from merit attempts, and returns the rendered prompt and schema. It refuses a vacuous check unless `--accept-vacuous`. `--context` is the one variable it will not invent, because it is the only one that is a judgement. |
+| `loop bisect --cmd "<check>"` | which landing broke it: a binary search over closed tickets' branches in close order, returning `firstRed` and `lastGreen`. It restores HEAD to mainline in a `finally` — that obligation used to sit in prose at the end of a manual loop, and forgetting it aims every later measurement at the wrong tree without failing anything. |
 | `loop gate-run` | the campaign gate, run rather than reported: every `gate` check on the merged tree, evidence written, verdict stamped by the verb. Refuses off-mainline HEAD and a dirty checkout, because a verdict about the wrong tree reads exactly like a verdict about the right one. An empty gate tier greens by vacancy and says so in the record. |
 | `loop verify --ticket <id> --base <sha>` | the measurement, run at the root on the checked-out branch: dirty-tree refusal, every fastCheck + the ticket's acceptanceChecks, the diff scope-checked against declared `modules`, evidence and patch written. `--cmd "<c>" [--repeat 5]` is the flake probe. |
 | `loop prompt <role> [--vars -]` / `loop schema <role> [--engine codex]` / `loop models [<role>]` | the judgment layer: role prompt, its output contract, its resolved model chain. Roles: `kickoff decompose critic worker review sweep recover coverage harvest`. |
@@ -281,42 +283,55 @@ find a different one or park, rather than applying it a third time.
 
 ### 2.1 Dispatch
 
-For the dispatchable ticket, **`loop vet --ticket <id>` first**, while HEAD is
-still on mainline — it measures the base, so it cannot run once a branch is cut.
-Any name it returns under `vacuous` is a check that passes before the work
-exists, which means it is observing something other than the work. Two readings,
-and they are yours to separate:
-
-- The check is blind — the common case. Sharpen it before dispatch
-  (`loop backlog update <id> -` with the complete `acceptanceChecks` array), and
-  you have spent one check run instead of a build, a verify, a review and a merit
-  attempt discovering the same thing from a judge.
-- The clause is genuinely already delivered, and this is the check-only ticket
-  that claims it. Then green on the base is correct and expected. Journal that
-  reading (`note --kind vet`) so the closing evidence is not read later as a
-  ticket that proved nothing, and pass those names to the worker as
-  `alreadyGreen` — it is told to run every check itself, and without the list it
-  would cite a check that was green before it started as proof that it is done.
-
-An empty `vacuous` is the healthy result and is journaled either way — it is what
-makes the later green mean something. Then `loop branch create <id>` (returns
-`branch` and `baseSha`; a refusal names what blocks it — an off-mainline HEAD or
-litter in the tree — and is resolved, never routed around), then
+For the dispatchable ticket, one call:
 
 ```sh
-loop backlog set-status <id> in-flight --base-sha <baseSha> \
-  --model <the rung's model> --rung <n>
+echo "<what THIS worker needs to know>" | loop dispatch --ticket <id> --context - \
+  --schema-out .ailoop/campaign/worker.schema.json
 ```
 
-so the next frontier knows the checkout is occupied. Then run the `worker`
-role at the repository root, on that branch, at the ladder rung its
-merit-attempt count earns.
+It vets the acceptance checks against the base, cuts the branch, stamps the
+ticket in-flight, resolves the ladder rung from the ticket's *merit* attempts,
+and returns `{branch, baseSha, rung, vet, prompt, schema}` — the prompt already
+filled with every variable derivable from state. Spawn the worker on
+`rung.engine` with `rung.cliModel`, and that is the dispatch.
+
+The steps did not go away; the *thinking between them* did. Seven verbs meant up
+to seven turns of yours per ticket, and past campaigns spent four times the
+entire review budget on that gap alone.
+
+**`--context` is the one thing the verb refuses to invent**, because it is the
+only variable that is a judgement: which landmines bear on this ticket, what the
+delivered dependency actually looks like, whether the last attempt's hypothesis
+helps or just anchors the next worker to it. Pipe it on stdin — prose through a
+shell argument is mangled by the shell's own vocabulary.
+
+**A vacuous check refuses the dispatch.** If `vet` finds an acceptance check that
+already passes on the base, `dispatch` stops rather than proceeding, because a
+check green before the work exists is observing something else. Two readings and
+they are yours:
+
+- The check is blind — the common case. Sharpen it (`loop backlog update <id> -`
+  with the complete array) and dispatch again. You have spent one check run
+  instead of a build, a verify, a review and a merit attempt.
+- The clause is genuinely already delivered and this is the check-only ticket
+  claiming it. Then pass `--accept-vacuous`, and the worker is told which checks
+  cannot confirm its work.
 
 **Journal the worker and review subagent ids** in the settle `--data`
-(`agent`, `judgeAgent`). That id is the only join the post-mortem's time
-breakdown can trust: it is exact, and it survives any wording. Journaling
-`null` there — as campaigns have — throws the section onto a fallback that
-reads your prose.
+(`agent`, `judgeAgent`), **and the two stamps around the worker's life**:
+`spawnedAt` when you started it and `returnedAt` when its reply arrived, both
+ISO. The ids are the only join the post-mortem's time breakdown can trust — exact,
+and they survive any wording; journaling `null` there, as campaigns have, throws
+the section onto a fallback that reads your prose.
+
+The stamps answer a different question, and without them it has no answer at all.
+The loop's own dead time is otherwise one residual — the build wall minus what the
+worker claimed to spend — which establishes that a gap exists and nothing about
+whose it is. With both stamps it splits three ways: **prep** (you getting a worker
+started), the worker working, and **notice** (you seeing that it finished). Only
+the first and third are anyone's to fix, and in past campaigns that residual was
+four times the entire review budget.
 
 Name the worker subagent's description `Build <id> (worker)`, and the
 review's `Review <id> (judge)`, so that fallback lands. It parses the seat out
@@ -325,8 +340,8 @@ resolve) and drops anything naming neither seat, but it is inference over a
 label, not a record — a description that never names the ticket costs that
 ticket its inference-vs-suites split, and no warning is issued.
 
-`--model` / `--rung` and the phase stamps below are the campaign's only outward
-sign of life. Nobody can see your session: `loop watch` renders in-flight tickets
+The `--model` / `--rung` stamp `dispatch` writes, and the phase stamps below, are
+the campaign's only outward sign of life. Nobody can see your session: `loop watch` renders in-flight tickets
 for a human from `backlog.json` alone, so an unstamped ticket reads as work that
 has been sitting in `in-flight` doing nothing since dispatch. Stamp the phase as
 you move through 2.2 — one write, no payload:
@@ -343,8 +358,21 @@ The worker builds, **adds tests for any new behavior**, runs the checks, commits
 on its branch, and reports `done` / `tooBig` (a proposed split, never a
 half-build) / `blocked`. Its report is testimony, not evidence.
 
-While the worker runs, prep: sharpen soon-to-unblock tickets, keep the journal
-current. Write prep into files as it lands — context prep dies at compaction.
+**Spawn the worker in the background, then prep the next ticket while it runs.**
+This is the cheapest wall-clock win in the loop and it is routinely skipped. A
+worker is minutes of building; awaiting it idly makes your prep for the *next*
+ticket serial with it, and that prep is the `prep` half of the stall the
+post-mortem measures. Done in the shadow of a running worker it costs nothing,
+and the next dispatch is one call with its `--context` already written.
+
+What is safe to do while a worker holds the checkout: compose the next ticket's
+`--context`, sharpen soon-to-unblock tickets through `loop backlog update`, read
+the journal, keep learnings current. What is **not**: anything needing mainline or
+the tree — `vet`, `gate-run`, `bisect`, a branch cut. HEAD is on the worker's
+branch and the verbs will refuse, correctly.
+
+Write prep into files as it lands — context prep dies at compaction, and a
+campaign long enough to benefit from prep is long enough to be compacted.
 
 ### 2.2 Settle a returned ticket
 
@@ -517,10 +545,19 @@ must run again. **Read `gateGreen` off the frontier rather than remembering**; a
 remembered green carried past new work is the easiest false report in the loop, and
 the arithmetic that catches it is one field away.
 
-Red is an escaped bug, and you never patch the tree yourself. Bisect first —
-every closed ticket's branch is still there: check each out at the root, run
-the failing checks, and **finish with HEAD back on mainline**, because every
-measurement and the jurisdiction snapshot assume it. Then **recover**
+Red is an escaped bug, and you never patch the tree yourself. Bisect first:
+
+```sh
+loop bisect --cmd "<the failing check, verbatim>"
+```
+
+Every closed ticket's branch is still there and a landing is a fast-forward, so
+`ailoop/<id>` is the mainline as it stood when that ticket landed. The verb binary
+-searches them in close order and returns `firstRed` — the earliest landing at
+which the check was already failing — and restores HEAD to mainline however the
+run ends, including on a throw. `firstRed: null` is a finding rather than a
+failure: no single branch carries the fault, so it is the merged tree or the
+command itself. Then **recover**
 (`campaign-gate-red` — that exact kind, since it is also
 what grants the replacement authority below) with the evidence and the branches. It
 decides which of two things this is: a real escaped defect (a repair ticket whose
