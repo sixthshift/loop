@@ -39,11 +39,19 @@ export function engineFor(model: string): { bin: string; cliModel: string; name:
 // Is the engine this model names installed on the box? Probed once per binary
 // and cached. Auth is not checked here — a present-but-unauthed CLI fails at
 // spawn/run, which the coordinator reads as a transient failure and skips past.
+//
+// `env` is passed explicitly and is not decoration: spawnSync snapshots the
+// environment at process start, so without it this probe answers "was the binary
+// on the PATH when the program launched" while claiming to answer "is it on the
+// box". Those differ for anything that resolves its tools at runtime, and the
+// wrong answer here is silent — an unavailable rung is skipped, so a chain that
+// should have dispatched simply reports that no engine exists.
 const installed = new Map<string, boolean>();
 export function available(model: string): boolean {
   let bin: string;
   try { bin = engineFor(model).bin; } catch { return false; }
-  if (!installed.has(bin)) installed.set(bin, spawnSync('which', [bin], { stdio: 'ignore' }).status === 0);
+  if (!installed.has(bin))
+    installed.set(bin, spawnSync('which', [bin], { stdio: 'ignore', env: process.env }).status === 0);
   return installed.get(bin)!;
 }
 

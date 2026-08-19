@@ -13,6 +13,29 @@ import type { Check } from './agents/schemas.ts';
 
 const git = (cmd: string) => execSync(`git ${cmd}`, { stdio: 'pipe' }).toString();
 
+// The ladder rung is only resolvable when an engine CLI is on the box, and a
+// clean CI runner has neither — `available()` shells out to `which`. Without
+// stubs these cases assert the happy path on a machine-dependent precondition
+// and fail everywhere the developer's own laptop is not. Stubs rather than a
+// seam in `dispatch`: the refusal it makes without an engine is correct
+// behaviour worth keeping under test, and the awkwardness was the fixture's.
+//
+// The probe caches per binary for the life of the process, so these only have to
+// exist for the first call — but every fixture plants them anyway, because a
+// test that passes only when it runs second is worse than one that never passes.
+function withEnginesOnPath(dir: string): () => void {
+  const bin = path.join(dir, 'fake-bin');
+  fs.mkdirSync(bin, { recursive: true });
+  for (const engine of ['claude', 'codex']) {
+    const file = path.join(bin, engine);
+    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(file, 0o755);
+  }
+  const prior = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${prior}`;
+  return () => { process.env.PATH = prior; };
+}
+
 async function inRepo(
   over: { acceptanceChecks?: Check[]; satisfies?: string[]; status?: string; attempts?: unknown[] },
   body: () => Promise<void>,
@@ -20,6 +43,7 @@ async function inRepo(
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-dispatch-'));
   const repo = fs.realpathSync(dir);
   const cwd = process.cwd();
+  const restorePath = withEnginesOnPath(repo);
   process.chdir(repo);
   try {
     git('init -q -b main .');
@@ -44,6 +68,7 @@ async function inRepo(
     await body();
   } finally {
     process.chdir(cwd);
+    restorePath();
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
