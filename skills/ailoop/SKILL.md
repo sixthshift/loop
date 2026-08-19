@@ -195,6 +195,24 @@ toolchain priors are *hypotheses to re-probe*, cheat shapes and landmines are
 *observations, not rules*. A worker's `modules` goes in as a comma-joined string,
 not an array.
 
+Three of a worker's vars are copied from somewhere else rather than composed, and
+each has one right source:
+
+- `outOfScope` — the campaign's list **verbatim**. The worker is judged against
+  those tripwires, so it gets the same list the reviewer holds, never a summary of
+  the ones you judged relevant.
+- `satisfies` — the `{id, clause}` pairs from `backlog.json`'s `requirements` for
+  the ids this ticket claims, quoted exactly. It is a consistency check, not an
+  instruction: the clause is usually broader than the ticket, and the worker is
+  told to block rather than reconcile a genuine contradiction. A ticket claiming
+  nothing (a repair, a check-only ticket) gets `(this ticket claims no
+  requirement directly)`.
+- `alreadyGreen` — the `vacuous` names from this ticket's `loop vet` run, which
+  is why the vet happens before `branch create`. Empty is the normal case and the
+  sentinel is `(none — every acceptance check was red on the base)`. A name only
+  belongs here once you have ruled it legitimately green; a check you decided was
+  blind gets sharpened before dispatch, and never reaches the worker at all.
+
 *What* to put in a var is a different question and it is yours — which landmines
 are relevant to this ticket, how much journal a sweep needs, whether an attempt log
 helps or just anchors the next worker to the last failure. A script in this seat
@@ -272,7 +290,9 @@ and they are yours to separate:
 - The clause is genuinely already delivered, and this is the check-only ticket
   that claims it. Then green on the base is correct and expected. Journal that
   reading (`note --kind vet`) so the closing evidence is not read later as a
-  ticket that proved nothing.
+  ticket that proved nothing, and pass those names to the worker as
+  `alreadyGreen` — it is told to run every check itself, and without the list it
+  would cite a check that was green before it started as proof that it is done.
 
 An empty `vacuous` is the healthy result and is journaled either way — it is what
 makes the later green mean something. Then `loop branch create <id>` (returns

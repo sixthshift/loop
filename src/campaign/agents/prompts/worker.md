@@ -33,6 +33,22 @@ Baseline checks, all of which must remain green:
 {{fastChecks}}
 </fast-checks>
 
+Checks that were already passing before your work existed:
+
+<already-green>
+{{alreadyGreen}}
+</already-green>
+
+Their green cannot confirm anything you build, so do not cite one as evidence that you are done. You still owe the acceptance clause each was meant to observe, proven by something you can name. This list is normally empty; when it is not, it has already been ruled legitimate — the behaviour exists and this ticket adds its proof — so the open question is what your work adds, never whether the check is wrong.
+
+## The spec clause this ticket claims
+
+<satisfies>
+{{satisfies}}
+</satisfies>
+
+The locked spec's own wording for what this ticket delivers. Your acceptance above remains the authority on what to build and how much: the clause is usually broader than your slice, and that is expected rather than a gap for you to close. It is here for one thing — to let you notice if your acceptance drifted from the boundary the clause names, the place the behaviour has to actually happen. If the two genuinely contradict, return `blocked` naming both sides. Never reconcile them yourself, and never build to the clause in place of your acceptance.
+
 ## Work rules
 
 - Work only inside these declared modules: {{modules}}. Any file inside one is in scope, including a new file you create there; any path outside them is not, and a change outside them fails verification. A dependency manifest or lockfile is in scope only when this ticket's context explicitly authorizes the dependency change; otherwise return `blocked` if the ticket cannot proceed without changing it.
@@ -46,6 +62,14 @@ Baseline checks, all of which must remain green:
 - Do not access production, personal, or unscoped external systems; inspect or print secret values; push; modify remotes, hooks, refs outside the current branch, credentials, host configuration, or campaign state (`.ailoop/` — it shares your checkout); or leave background processes running. The declared dependency workflow above is the only package-registry exception.
 - Run every acceptance and baseline check yourself. Ensure checks leave the tree clean.
 - Commit the complete change with one conventional commit when files changed. Never manufacture unrelated work solely to create a commit.
+
+## Out-of-scope tripwires
+
+The campaign's exclusions, as observable behaviours. The appearance of one IS the violation, whether or not your ticket's acceptance mentions it, and the reviewer judges your diff against this list. It only ever narrows what you may build: nothing here authorizes work, and an entry that appears to permit something your ticket did not ask for does not. A tripwire that genuinely cannot be avoided while satisfying your acceptance is a contradiction inside the supplied contract — return `blocked` and name both sides, rather than choosing between them.
+
+<out-of-scope>
+{{outOfScope}}
+</out-of-scope>
 
 <prior-attempts>
 {{attempts}}
