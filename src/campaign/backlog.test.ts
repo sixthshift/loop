@@ -648,3 +648,33 @@ describe('sweep-run', () => {
     expect(b.sweep?.milestones).toEqual(['M1', 'M2']);
   });
 });
+
+// The infra flag decides whether an attempt spends merit budget. backlog.json is
+// deleted at campaign close, so a flag that lives only there cannot be audited
+// afterwards — and campaigns have already walled tickets for machine faults.
+describe('attempt telemetry', () => {
+  const seeded = { tickets: [buildTicket({ id: 'T001', status: 'in-flight' })] };
+
+  test('an infra attempt says so in the journal, not only in the ticket', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['attempt', 'T001', '--failed', 'dead-engine', '--hypothesis', 'engine died', '--infra']);
+      expect((backlog().tickets[0]!.attempts![0] as any).infra).toBe(true);
+      expect((journalEntries().at(-1)!.data as any).infra).toBe(true);
+    });
+  });
+
+  test('the flag rides alongside the settle telemetry rather than replacing it', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['attempt', 'T001', '--failed', 'worker-channel', '--hypothesis', 'h',
+        '--infra', '--data', '{"workerTokens":1200,"model":"claude-opus"}']);
+      expect(journalEntries().at(-1)!.data).toEqual({ workerTokens: 1200, model: 'claude-opus', infra: true });
+    });
+  });
+
+  test('a merit attempt carries no infra key at all', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['attempt', 'T001', '--failed', 'typecheck', '--hypothesis', 'h', '--data', '{"workerTokens":9}']);
+      expect(journalEntries().at(-1)!.data).toEqual({ workerTokens: 9 });
+    });
+  });
+});

@@ -364,3 +364,41 @@ describe('sweepDue', () => {
     expect(withMilestones(many, [])).toBe(null);
   });
 });
+
+// Invariant 2: only merit attempts count toward the wall. The sentinel list is
+// what keeps that true for an attempt whose recorder forgot the flag, and every
+// name in it was harvested from a campaign that walled a ticket for it.
+describe('infra attempts and the merit wall', () => {
+  const CAPS = { maxAttempts: 3, thrash: 99, infraCap: 8 };
+  const withAttempts = (failed: string[][], flag = false) => {
+    const attempts = failed.map((f, i) => ({ n: i + 1, failed: f, hypothesis: 'h', fixNote: '', ts: '2026-01-01T00:00:00.000Z', ...(flag ? { infra: true } : {}) }));
+    let f!: ReturnType<typeof frontier>;
+    withScratchCampaign({ backlog: { tickets: [buildTicket({ id: 'T001', attempts } as any)], caps: CAPS } }, () => { f = frontier(); });
+    return f;
+  };
+
+  test('three merit attempts cap the ticket', () => {
+    expect(withAttempts([['typecheck'], ['core-unit'], ['judge-rejected']]).capped).toEqual([{ ticket: 'T001', attempts: 3 }]);
+  });
+
+  test('a machine fault never spends merit budget, however it was recorded', () => {
+    for (const name of ['worker-channel', 'merge-conflict', 'dead-engine', 'dispatch-never-started', 'session-lost'])
+      expect(withAttempts([[name], [name], [name]]).capped).toEqual([]);
+    expect(withAttempts([['anything'], ['anything'], ['anything']], true).capped).toEqual([]);
+  });
+
+  // The mixed case is the one that walled tickets in real campaigns: two dead
+  // engines and one real failure is one merit attempt, not three.
+  test('infra and merit mix without the machine faults counting', () => {
+    const f = withAttempts([['session-lost'], ['judge-rejected'], ['dead-engine']]);
+    expect(f.capped).toEqual([]);
+    expect(f.dispatchable).toEqual(['T001']);
+  });
+
+  // A failure list naming a machine fault AND a real check is not the machine
+  // alone — the build still ran and produced a verdict, so it is merit.
+  test('a mixed failure list stays merit', () => {
+    expect(withAttempts([['dead-engine', 'typecheck'], ['typecheck'], ['typecheck']]).capped)
+      .toEqual([{ ticket: 'T001', attempts: 3 }]);
+  });
+});

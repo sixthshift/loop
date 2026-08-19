@@ -162,7 +162,15 @@ function findCycles(b: Backlog, byId: Map<string, Ticket>): string[][] {
 // existed (or by any path that forgets it): a `failed` list that is exactly one
 // of these is the machine failing, not the ticket. New attempts carry `infra`
 // directly; this keeps the verdict stable across pre-flag backlogs.
-const INFRA_SENTINELS = new Set(['worker-channel', 'merge-conflict']);
+//
+// The list beyond the original two is harvested from campaigns that ran without
+// the flag set: `dead-engine`, `dispatch-never-started` and `session-lost` all
+// appeared as the sole `failed` name on attempts that then counted toward a
+// merit wall. A ticket walling for an engine that died is invariant 2's exact
+// failure — it parks for something it never did.
+const INFRA_SENTINELS = new Set([
+  'worker-channel', 'merge-conflict', 'dead-engine', 'dispatch-never-started', 'session-lost',
+]);
 export const isInfraAttempt = (a: { infra?: boolean; failed?: string[] | string }): boolean => {
   if (a.infra) return true;
   const f = Array.isArray(a.failed) ? a.failed : a.failed ? [a.failed] : [];

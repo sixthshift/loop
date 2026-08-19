@@ -13,8 +13,10 @@ import type { Check, Milestone, Requirement, TicketDraft } from './agents/schema
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
 // `open` is the single pre-dispatch state: a proposed, still-editable ticket
-// that becomes dispatchable once its deps close. (There is no separate vetting
-// step — the ticket review carries the whole adversarial load, post-build.)
+// that becomes dispatchable once its deps close. There is deliberately no
+// `vetted` state to earn: the critic pass and `loop vet` read a ticket's CHECKS
+// before dispatch, and neither is an approval a ticket carries — judging the
+// built diff is still the post-build review's alone.
 // `parked` is set only when a decision is deferred to the human; the campaign keeps
 // driving everything else and drains when nothing autonomous is left.
 export type TicketStatus = 'open' | 'in-flight' | 'closed' | 'parked' | 'decomposed';
@@ -560,7 +562,15 @@ export function backlogWrite(args: string[], input?: unknown): string {
       (t.attempts ??= []).push(entry as any);
       if (t.status === 'in-flight') transition(t, 'open'); // back in the queue for re-dispatch
       save(b);
-      journal('attempt', t.id, `attempt ${entry.n} failed [${entry.failed.join(', ')}]: ${entry.hypothesis}`, parseData());
+      // `infra` rides the journal beside the telemetry, not only in the ticket.
+      // It decides whether this attempt spends merit budget and climbs the model
+      // ladder, and backlog.json is deleted at campaign close — a budget-deciding
+      // fact that survives only in deleted state cannot be audited afterwards,
+      // and campaigns have already walled tickets for faults that were the
+      // machine's.
+      const settleData = parseData();
+      journal('attempt', t.id, `attempt ${entry.n} failed [${entry.failed.join(', ')}]: ${entry.hypothesis}`,
+        opts.infra ? { ...(settleData as object ?? {}), infra: true } : settleData);
       return `${t.id} attempt ${entry.n} logged`;
     }
     case 'close': {
