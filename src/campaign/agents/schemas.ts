@@ -47,8 +47,15 @@ export type KickoffVerdict = {
   outOfScope: string[];
   requirements: Requirement[];
   milestones: Milestone[];
+  caps: Caps | null;
   notes: string;
 };
+
+// How much the campaign may spend on one ticket before the answer is the
+// human's. Declared by the spec rather than defaulted, because the question a
+// cost bound asks — "it has failed three times, may it try again?" — has no
+// right answer the loop can derive, and every firing of it costs a park.
+export type Caps = { maxAttempts: number; thrash: number; infraCap?: number };
 
 export type DecomposeVerdict = { tickets: TicketDraft[] };
 
@@ -220,9 +227,19 @@ export const KICKOFF = {
     outOfScope: { type: 'array', items: { type: 'string' } },
     requirements: { type: 'array', items: REQUIREMENT },
     milestones: { type: 'array', items: MILESTONE },
+    caps: {
+      type: ['object', 'null'],
+      properties: {
+        maxAttempts: { type: 'number' },
+        thrash: { type: 'number' },
+        infraCap: { type: 'number' },
+      },
+      required: ['maxAttempts', 'thrash'],
+      additionalProperties: false,
+    },
     notes: { type: 'string' },
   },
-  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones', 'notes'],
+  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones', 'caps', 'notes'],
   additionalProperties: false,
 };
 

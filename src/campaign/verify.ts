@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { shAsync, SH_TIMEOUT } from './state.ts';
 import { RUN } from './paths.ts';
-import { backlog, ticket } from './backlog.ts';
+import { backlog, backlogWrite, ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
 import { isInside, isManifest, normalizeModule } from './footprint.ts';
 
@@ -86,9 +86,21 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   return { pass, failing, scopeOverflow, evidence, diff };
 }
 
+// Naming a ticket is what makes this THE ticket's probe rather than a diagnostic
+// run, so it is also what spends invariant 4's one allowance. The second is
+// refused here: a judge asking for another probe on a fixed diff and fixed
+// evidence is stalling, and the coordinator that would have to remember the
+// first has had its context compacted since. An unlabelled probe (recover
+// diagnosing an environment) spends nothing, which is the escape hatch.
 export async function flakeProbe(
   { cmd, dir, repeat = 5, id }: { cmd: string; dir: string; repeat?: number; id?: string },
 ): Promise<FlakeVerdict> {
+  if (id) {
+    const spent = ticket(id).amendments?.probe ?? 0;
+    if (spent >= 1)
+      throw new Error(`${id} already spent its flake probe — a second request on the same ticket is the judge stalling, which parks: discard and park`);
+    backlogWrite(['probe-spent', id]);
+  }
   const evid = evidenceDir();
   let passes = 0;
   const outputs: string[] = [];

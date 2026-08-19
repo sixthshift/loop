@@ -31,7 +31,7 @@ echo '{"spec":"<spec text>","specPath":"<path>","learnings":"<see below>"}' \
 Run it against `loop models`' kickoff chain, with Bash and permissions bypassed —
 it must actually *run* candidate check commands to trust them, not guess them
 from the manifest. It returns `{blockers, fastChecks, gate, outOfScope,
-requirements, milestones, notes}` per `loop schema kickoff`.
+requirements, milestones, caps, notes}` per `loop schema kickoff`.
 
 **`blockers` non-empty → stop.** Report each item and what it needs, write
 nothing, and leave no campaign residue. A spec whose "done" doesn't reduce to
@@ -50,6 +50,14 @@ arrives. An empty list means the spec declared none — the campaign then reflec
 only at termination, so say so in the pre-flight report rather than letting the
 human discover it from a silent journal.
 
+**Spend policy.** `caps` is the spec's declared attempt budget, or `null` when it
+declared none — seed it either way. It is what decides how many times a ticket may
+fail on its own merits before the frontier walls it and the answer becomes the
+human's, so a campaign running on defaults nobody chose will park for permission
+it could have been granted in advance. `null` leaves the conservative defaults in
+force, which is a fine outcome and a different one from a spec that thought about
+it.
+
 **Fast vs gate tier.** Fast = seconds-to-a-minute, runs on every ticket verify.
 Gate = the slow suite (e2e, anything needing a live server), runs once on the
 merged tree when every ticket has drained. A ticket that ships a new gate-tier
@@ -60,7 +68,7 @@ test still runs *that test* at its own verify — it is that ticket's acceptance
 ```
 loop backlog init --project <slug> --coordinator skill \
   --spec-path <path> --spec-sha <sha>
-loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"requirements":[…],"milestones":[…]}'
+loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"requirements":[…],"milestones":[…],"caps":…}'
 ```
 
 `--coordinator skill` is the default and the only reachable seat; pass it

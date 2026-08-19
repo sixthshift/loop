@@ -181,6 +181,30 @@ spec_version: 1          # bumped by change orders after lock
 - **Expected-red gates**, if any: `<command>` — red at kickoff because <the
   behavior this campaign builds that will turn it green>.
 
+## Spend policy
+
+<!-- OPTIONAL. How many times a ticket may fail on its own merits before the
+     loop stops and asks you. Omit and conservative defaults apply
+     (3 attempts, 2 thrash).
+
+     This is here because a cost bound is not an ambiguity — no amount of
+     sharpening the requirements removes it. The loop reaches a ticket's third
+     failure and has to ask "may it try again?", and that question has no
+     answer derivable from the spec unless you wrote one down. Campaigns have
+     lost whole nights to exactly this: the contract said "past N turns, ask
+     the human", the loop asked correctly, and then waited until morning for a
+     one-word yes.
+
+     Deciding it once, here, converts those overnight stalls into a policy the
+     loop can act on. Raise it for exploratory work where retries are cheap and
+     you would say yes anyway; lower it when a failing ticket is a signal you
+     want to see early. What you may NOT put here is anything that weakens what
+     counts as done — this bounds how often the loop tries, never what it must
+     prove. -->
+
+- Attempts per ticket before it parks: <N, default 3>
+- Repeat-failure (thrash) window: <N, default 2>
+
 ## Known limits
 
 <!-- Non-normative, and explicitly so. Anything the human has knowingly made

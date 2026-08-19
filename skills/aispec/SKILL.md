@@ -87,7 +87,16 @@ a spec missing any of them bounces:
    coherence: the sweep's question at a milestone is "do these pieces compose?",
    so one worth declaring is a slice where that question has a real answer. One
    per requirement asks it of nothing; one at the end asks it too late.
-7. **Environment preconditions** — keys, services, runtimes the checks need;
+7. **Spend policy — optional, and the cheapest park you will ever remove.** How
+   many attempts a ticket gets before the loop stops and asks you (`caps`).
+   Omit it and conservative defaults apply. It belongs in the spec because a
+   cost bound is not an ambiguity: sharpening a requirement cannot answer "it
+   has failed three times, may it try again?", so the loop must ask, and a
+   question asked at 2am is answered at 9am. Deciding it once converts those
+   overnight stalls into a policy. It bounds how often the loop tries, never
+   what it must prove — a spend policy that touches what counts as done is a
+   weakened check wearing a budget's name.
+8. **Environment preconditions** — keys, services, runtimes the checks need;
    kickoff probes these and a missing one is a refuse-to-start. Two
    machine-facing lists belong here too: **shared mutable state the checks
    touch** (a dev DB they reset, a fixed port — tickets run one at a time, so
@@ -379,9 +388,24 @@ it is their contract:
       applies post-build: **gaming** — "how could a builder satisfy this while
       disappointing the human?" — and **blindness** — "assume an honest
       builder: what real defect can this acceptance structurally not see?"
+      Then a third lens over the set rather than the clause: **coherence** —
+      *"which two of these cannot both hold?"* Read every requirement against
+      every other, and against Locked decisions and Out of scope. Two clauses
+      that contradict are invisible to a per-clause review, because each is
+      impeccable alone; the loop finds them only when a worker is caught between
+      them mid-campaign, and the resulting park is a meaning-level spec question
+      that nothing autonomous may answer. One campaign lost eleven hours to a
+      pair of requirements whose preview semantics disagreed. The pairs worth
+      the most attention are the ones sharing an artifact, a lifecycle stage, or
+      a piece of state.
       You wrote the wording; you cannot also be the one who checks it for
-      blind spots. Every cheat or blind spot found = sharpen now, while
-      rewording is cheap.
+      blind spots. Every cheat, blind spot, or contradiction found = resolve now,
+      while rewording is cheap.
+- [ ] **The spend policy is a decision, not a default** — either the spec states
+      how many attempts a ticket gets before it parks, or you have confirmed with
+      the human that the defaults are what they want. Half the long parks in past
+      campaigns were the loop correctly asking permission to retry; that question
+      is free to answer in advance and expensive to answer overnight.
 - [ ] **Ordering constraints stated as dependencies** — each with a reason a
       decomposer can act on, gathered in one section, and confirmed with the
       human as the right de-risk order; any constraint citing a shared artifact

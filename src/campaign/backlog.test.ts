@@ -678,3 +678,80 @@ describe('attempt telemetry', () => {
     });
   });
 });
+
+// Invariant 4's two per-ticket allowances. Both used to be enforced only by a
+// coordinator's memory, which is compacted mid-campaign — and a budget that
+// silently stops existing looks exactly like a budget with room left.
+describe('per-ticket amendment budgets', () => {
+  const open = { tickets: [buildTicket({ id: 'T001', status: 'open' })] };
+  const amend = (flag = true) => backlogWrite(
+    ['update', 'T001', '-', ...(flag ? ['--typo-amendment'] : []), '--note', 'n'],
+    [{ acceptanceChecks: [{ name: 'u', cmd: 'true' }] }]);
+
+  test('the first typo amendment is spent and recorded', () => {
+    withScratchCampaign({ backlog: open }, () => {
+      amend();
+      expect(backlog().tickets[0]!.amendments?.typo).toBe(1);
+    });
+  });
+
+  test('the second is refused — it is a meaning-level change wearing a smaller word', () => {
+    withScratchCampaign({ backlog: open }, () => {
+      amend();
+      expect(() => amend()).toThrow(/already spent its typo amendment/);
+      expect(backlog().tickets[0]!.amendments?.typo).toBe(1);
+    });
+  });
+
+  // The gamed/sharpen path amends checks too and must stay unbounded: those
+  // cost an attempt and a re-dispatch, which is the bound.
+  test('an ordinary check amendment spends nothing', () => {
+    withScratchCampaign({ backlog: open }, () => {
+      amend(false); amend(false);
+      expect(backlog().tickets[0]!.amendments).toBeUndefined();
+    });
+  });
+
+  test('a flake probe is spent once and refused twice', () => {
+    withScratchCampaign({ backlog: open }, () => {
+      backlogWrite(['probe-spent', 'T001']);
+      expect(backlog().tickets[0]!.amendments?.probe).toBe(1);
+      expect(() => backlogWrite(['probe-spent', 'T001'])).toThrow(/already spent its flake probe/);
+    });
+  });
+
+  test('the two budgets are independent', () => {
+    withScratchCampaign({ backlog: open }, () => {
+      backlogWrite(['probe-spent', 'T001']);
+      amend();
+      expect(backlog().tickets[0]!.amendments).toEqual({ probe: 1, typo: 1 });
+    });
+  });
+});
+
+// The spend policy the spec declares. It decides how many times a ticket may
+// fail before the answer becomes the human's, so a nonsense value does not fail
+// loudly — it produces a campaign that walls everything, or one that never walls
+// at all, and both read as the loop simply behaving oddly.
+describe('seeded caps', () => {
+  const seedCfg = (cfg: unknown) => backlogWrite(['seed', '-'], [cfg]);
+
+  test('a declared policy replaces the defaults', () => {
+    const b = afterWrites({ tickets: [] }, () => { seedCfg({ caps: { maxAttempts: 5, thrash: 3 } }); });
+    expect(b.caps).toEqual({ maxAttempts: 5, thrash: 3 });
+  });
+
+  // `null` is what kickoff returns for a spec that declared nothing, and it must
+  // leave the defaults standing rather than blanking them.
+  test('a null policy leaves the campaign defaults in force', () => {
+    const b = afterWrites({ tickets: [], caps: { maxAttempts: 3, thrash: 2 } }, () => { seedCfg({ caps: null }); });
+    expect(b.caps).toEqual({ maxAttempts: 3, thrash: 2 });
+  });
+
+  test('a cap below one would wall every ticket on its first attempt', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => seedCfg({ caps: { maxAttempts: 0, thrash: 2 } })).toThrow(/maxAttempts must be a positive integer/);
+      expect(() => seedCfg({ caps: { maxAttempts: 3, thrash: 1.5 } })).toThrow(/thrash must be a positive integer/);
+    });
+  });
+});

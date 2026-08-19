@@ -58,6 +58,14 @@ export type Ticket = TicketDraft & {
   // A parked ticket is a durable handoff to the human. Its reason belongs with
   // that state; the journal mirrors it for audit but is not needed to resume.
   parkReason?: string;
+  // Invariant 4's two per-ticket allowances, counted rather than remembered.
+  // One typo-level check amendment and one flake probe: past that it is not a
+  // typo and not a flake, it is the judge negotiating its way to green, and the
+  // whole escaped-bug rule exists to stop exactly that. Both used to live only
+  // in a coordinator's context, which is compacted mid-campaign — a budget kept
+  // in a conversation is a budget that quietly stops existing, and it looks
+  // identical to one with room left.
+  amendments?: { typo?: number; probe?: number };
 };
 
 // The campaign gate's live state — what its last run decided, and whether it is
@@ -332,10 +340,10 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (b.tickets.length && !opts.amend) refuse('config is seeded before the first ticket exists — after that, re-run with --amend --note "why" (a journaled amendment)');
       if (opts.amend && !opts.note) refuse('--amend requires --note — the rationale is the record');
       const cfg = readInput(pos[0]);
-      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?, requirements?, milestones?}');
+      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?, requirements?, milestones?, caps?}');
       const c0 = cfg[0];
       const errs: string[] = [];
-      const KEYS = ['fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones'] as const;
+      const KEYS = ['fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones', 'caps'] as const;
       for (const k of Object.keys(c0)) if (!(KEYS as readonly string[]).includes(k)) errs.push(`unknown key ${k} (seed takes ${KEYS.join(', ')})`);
       (c0.fastChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`fastCheck missing name or cmd: ${JSON.stringify(c)}`); });
       (c0.gate || []).forEach((g: any) => { if (!g.name || !g.cmd) errs.push(`gate command missing name or cmd: ${JSON.stringify(g)}`); });
@@ -365,8 +373,18 @@ export function backlogWrite(args: string[], input?: unknown): string {
         else for (const r of m.delivers)
           if (!knownReqs.has(r)) errs.push(`milestone ${m.id} delivers unknown requirement ${r}`);
       });
+      // A cap of zero would wall every ticket on its first attempt, and a
+      // fractional one compares against an integer count forever — both read as
+      // a campaign that simply never dispatches.
+      if (c0.caps !== undefined && c0.caps !== null) {
+        for (const k of ['maxAttempts', 'thrash'] as const)
+          if (!Number.isInteger(c0.caps[k]) || c0.caps[k] < 1)
+            errs.push(`caps.${k} must be a positive integer, got ${JSON.stringify(c0.caps[k])}`);
+        if (c0.caps.infraCap !== undefined && (!Number.isInteger(c0.caps.infraCap) || c0.caps.infraCap < 1))
+          errs.push(`caps.infraCap must be a positive integer, got ${JSON.stringify(c0.caps.infraCap)}`);
+      }
       if (errs.length) refuse(errs.join('\n'));
-      for (const k of KEYS) if (c0[k] !== undefined) (b as any)[k] = c0[k];
+      for (const k of KEYS) if (c0[k] !== undefined && c0[k] !== null) (b as any)[k] = c0[k];
       save(b);
       journal(opts.amend ? 'amend-config' : 'seed', 'campaign',
         `${opts.amend ? 'amended' : 'seeded'} ${Object.keys(c0).join(', ')}${opts.note ? ` — ${opts.note}` : ''}`);
@@ -391,8 +409,19 @@ export function backlogWrite(args: string[], input?: unknown): string {
       // gamed-sharpen path keeps a serial gamer's attempts on the record.
       const reset = opts['reset-attempts'] === true;
       if (reset) t.attempts = [];
+      // A typo amendment is the one check edit that costs no attempt and no
+      // re-dispatch, so it is the cheapest possible route to green and the one
+      // most worth bounding. The second is refused here rather than left to the
+      // coordinator to remember: a meaning-level change wearing a smaller word
+      // is exactly what a second "typo" on the same ticket is.
+      if (opts['typo-amendment']) {
+        const spent = t.amendments?.typo ?? 0;
+        if (spent >= 1)
+          refuse(`${t.id} already spent its typo amendment — a second letter-level fix on one ticket is a meaning-level change, which is the human's: park it`);
+        (t.amendments ??= {}).typo = spent + 1;
+      }
       save(b);
-      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${reset ? '; attempts reset (contract changed)' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
+      journal('update', t.id, `fields [${Object.keys(patch).join(', ')}]${reset ? '; attempts reset (contract changed)' : ''}${opts['typo-amendment'] ? '; typo amendment spent' : ''}${opts.note ? ` — ${opts.note}` : ''}`);
       return `${t.id} updated`;
     }
     case 'add': {
@@ -626,6 +655,19 @@ export function backlogWrite(args: string[], input?: unknown): string {
         { key: opts.key, count: prior.count + 1 });
       return `recovery ${opts.key} → ${prior.count + 1}`;
     }
+    // Written only by the flake probe itself, which is the one place that can
+    // attest the run happened. Separate from `update` because a probe spends the
+    // allowance without touching the ticket's contract at all.
+    case 'probe-spent': {
+      const b = load();
+      const t = findTicket(b, pos[0]);
+      const spent = t.amendments?.probe ?? 0;
+      if (spent >= 1) refuse(`${t.id} already spent its flake probe`);
+      (t.amendments ??= {}).probe = spent + 1;
+      save(b);
+      journal('flake-probe', t.id, 'flake probe spent — invariant 4 allows one per ticket');
+      return `${t.id} probe spent`;
+    }
     case 'sweep-run': {
       const b = load();
       if (!opts.body) refuse('sweep-run requires --body (the summary is the rolling memory)');
@@ -671,7 +713,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
       return 'journaled';
     }
     default:
-      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`);
+      return refuse(`unknown command: ${cmd}. Commands: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution probe-spent sweep-run note`);
   }
 }
 
