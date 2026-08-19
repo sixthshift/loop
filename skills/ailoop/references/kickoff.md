@@ -31,7 +31,7 @@ echo '{"spec":"<spec text>","specPath":"<path>","learnings":"<see below>"}' \
 Run it against `loop models`' kickoff chain, with Bash and permissions bypassed —
 it must actually *run* candidate check commands to trust them, not guess them
 from the manifest. It returns `{blockers, fastChecks, gate, outOfScope,
-requirements, notes}` per `loop schema kickoff`.
+requirements, milestones, notes}` per `loop schema kickoff`.
 
 **`blockers` non-empty → stop.** Report each item and what it needs, write
 nothing, and leave no campaign residue. A spec whose "done" doesn't reduce to
@@ -41,6 +41,14 @@ so is before any state exists.
 For `learnings`, pass `.ailoop/learnings/checks.json` if present, prefixed with a
 line saying these are priors to **re-probe, not facts** — a stale command that
 still looks plausible is worse than no prior at all.
+
+**Milestones.** The spec's checkpoints, and the campaign's only mid-drive sweep
+trigger. Seed whatever kickoff returned without editing: the ids are what a sweep
+spends, and the writer refuses a milestone citing a clause outside the
+enumeration, so a mismatch surfaces here rather than as a checkpoint that never
+arrives. An empty list means the spec declared none — the campaign then reflects
+only at termination, so say so in the pre-flight report rather than letting the
+human discover it from a silent journal.
 
 **Fast vs gate tier.** Fast = seconds-to-a-minute, runs on every ticket verify.
 Gate = the slow suite (e2e, anything needing a live server), runs once on the
@@ -52,7 +60,7 @@ test still runs *that test* at its own verify — it is that ticket's acceptance
 ```
 loop backlog init --project <slug> --coordinator skill \
   --spec-path <path> --spec-sha <sha>
-loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"requirements":[…]}'
+loop backlog seed - <<< '{"fastChecks":[…],"gate":[…],"outOfScope":[…],"requirements":[…],"milestones":[…]}'
 ```
 
 `--coordinator skill` is the default and the only reachable seat; pass it
@@ -132,8 +140,9 @@ worker, and the post-build review carries the whole adversarial load.
 
 One message to the human: ticket count, the campaign gate's checks, the
 requirement enumeration **printed in full with the ticket claiming each clause**,
-`coverage.unmapped` from the first `loop frontier` read, and anything about the
-spec that surprised you. Journal the same summary (`--kind preflight`) — this is
+the milestones with the clauses each delivers (or that the spec declared none, so
+there will be no mid-drive sweep at all), `coverage.unmapped` from the first
+`loop frontier` read, and anything about the spec that surprised you. Journal the same summary (`--kind preflight`) — this is
 the last point before the loop runs unattended, and the screen does not survive.
 
 Then start the drive **in the same turn as this report** — the report is not a

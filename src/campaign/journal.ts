@@ -5,7 +5,7 @@
 //
 // The log is audit-only: what happened, narrated for a human, reflective agents,
 // and the post-mortem. No caller reconstructs current ticket state, the locked
-// contract, recovery budgets, sweep cadence, or gate freshness by folding these
+// contract, recovery budgets, swept milestones, or gate freshness by folding these
 // entries — those facts live on backlog.json. Audit consumers may lose context
 // if the log is damaged; the coordinator's next state transition does not.
 

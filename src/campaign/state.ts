@@ -47,6 +47,13 @@ export type Frontier = {
   // only reading of "how much of the spec is actually done" available while the
   // campaign is still running.
   coverage: { requirements: number; unmapped: string[]; proven: string[] };
+  // The milestone that has been reached and not yet swept, or null. Reaching one
+  // — every clause it delivers now proven — is the campaign's reflective pass
+  // falling due, because it is a moment the product actually had. There is no
+  // count-based fallback: a spec declares its checkpoints or the campaign
+  // reflects only at termination, and an interval that knows nothing about the
+  // product is not worth the read it costs.
+  sweepDue: string | null;
 };
 
 

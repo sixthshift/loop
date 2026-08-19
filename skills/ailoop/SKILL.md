@@ -95,9 +95,10 @@ If `loop` is missing, say so and stop — there is no fallback path, by design.
 | **Modules** | The *directories* a ticket lives in. Not a file list: you can predict the directory from the spec, never the file the implementation turns out to need. |
 | **Frontier** | The derived facts you branch on — computed by `loop frontier`, never stored, never eyeballed. Carries `gateGreen`: whether the slow suite's verdict still describes the tree as it stands. |
 | **Requirements** | The spec's normative clauses, enumerated once at kickoff as `R1`, `R2`, … Tickets claim them; coverage is a join, not a verdict. |
+| **Milestone** | A checkpoint the spec declared over those clauses — reached when every clause it delivers is proven. It gates nothing and orders nothing; reaching one is what triggers a sweep, and it is the only thing that does. |
 | **Verify** | `loop verify` re-runs the checks and the scope check. Exit codes and git. No model. |
 | **Review** | The single adversarial gate: a fresh agent, cold read of the diff. It rules; you apply. |
-| **Sweep** | Campaign-level reflection every 5 closes — the cross-ticket pattern no per-ticket verdict can see. |
+| **Sweep** | Campaign-level reflection, at each milestone — the cross-ticket pattern no per-ticket verdict can see, plus whether the slice the milestone claims actually composes. |
 | **Recover** | The universal else: one full-tool agent per anomaly. Fixes the campaign definition or the environment, never product code. |
 | **Park** | Defer ONE decision to the human without stopping. The loop keeps driving everything else and drains only when nothing autonomous is left. |
 | **Journal** | `journal.jsonl` — append-only audit record. Never replayed into state. |
@@ -135,7 +136,7 @@ side — read it and fix the call, never route around it.
 | Verb | What it owns |
 |---|---|
 | `loop backlog <cmd> …` | **the sole writer.** `init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`. JSON payloads on stdin. It validates the ticket schema, enforces legal transitions, and journals every mutation. |
-| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`. Three guarantees you never re-derive: deps-closed is what makes a ticket ready, `dispatchable` is at most one ticket and empty while anything is in flight, and a green gate goes stale the moment the ticket or closed count moves. |
+| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`, `sweepDue`. Four guarantees you never re-derive: deps-closed is what makes a ticket ready, `dispatchable` is at most one ticket and empty while anything is in flight, a green gate goes stale the moment the ticket or closed count moves, and `sweepDue` names the milestone owed a reflective pass — reached when every clause it delivers is proven, which is a join you never do by eye. |
 | `loop renumber` | id allocation for proposed drafts (stdin → stdout), rewiring edges between them. Every prompt that asks an agent for tickets promises this — use it, never renumber by eye. |
 | `loop recovery-budget --kind … [--ticket …]` | whether a recover may be spent on this anomaly: the scoped key, what it has spent, and the prior fixes a park cites. The scoping rule is not yours to infer. |
 | `loop gate-amend --by … --note … --anomaly …` | the gate under the authority its anomaly grants. Replacing a live command is granted by `campaign-gate-red` alone; every other kind may only add, and the refusal is journaled. |
@@ -356,29 +357,45 @@ real and file the attempt under the right half of the taxonomy (invariants 1 and
 
 ### 2.3 Sweep
 
-Check the cadence at the top of each pass: 5 or more closes since
-`backlog.json`'s `sweep.closed` (and at least 3 journal entries — there is no
-pattern to see in two). Then run the `sweep` role on the journal **since the last
-sweep**, with every prior sweep's summary as `sweepSummaries` (`(none recorded)`
-on the first): the summaries are the rolling memory, which is what keeps each
-sweep's read bounded instead of re-reading the whole history every five closes.
-Both live in the journal — a `sweep` entry's body is its summary, so the delta
-is everything after the last one. The sweep is the only arm not scoped to one
-ticket, so it sees what no per-ticket verdict can: a systemic landmine, a
-decomposition wrong at the seams, a check the campaign keeps re-sharpening. It
-proposes; you apply through `loop backlog`, and a proposal the writer refuses is
-journaled rather than dropped.
+Read `frontier`'s `sweepDue` at the top of each pass: the id of a milestone the
+campaign has reached and not yet swept, or `null`. That is the whole trigger and
+you never count to it yourself — a milestone is reached when every clause it
+delivers is *proven*, a join over the coverage arithmetic, not a tally of closes.
+There is no interval fallback: a campaign sweeps at its checkpoints and at
+termination, and nowhere else. A spec that declared no milestones therefore never
+sweeps mid-drive, which is the spec's choice showing through rather than a fault
+to work around.
 
-Record it with `loop backlog sweep-run --closed <n> --body "<summary>"`, where
-`<n>` is the closed count **when the sweep started**, not when it returned —
-tickets settle while a minutes-long read is in flight, and stamping the later
-count silently skips the closes the sweep never saw. Sweep may add a gate check
-but never replace one, and never releases a park latch: widening coverage while
-the campaign waits on a human must not answer the human's question for them.
+Run the `sweep` role on the journal **since the last sweep**, with every prior
+sweep's summary as `sweepSummaries` (`(none recorded)` on the first): the
+summaries are the rolling memory, which is what keeps each read bounded instead
+of re-reading the whole history. Both live in the journal — a `sweep` entry's
+body is its summary, so the delta is everything after the last one. Fill
+`trigger` with the milestone's id, name and the clauses it delivered (`M2 "auth
+works end to end" — delivers R1, R3, R4`), or, for a sweep you chose to run
+off-trigger, what you noticed that prompted it. That var decides which question
+the role asks, so a milestone reported as anything else silently buys the weaker
+pass.
 
-You are also allowed to sweep off-cadence. Noticing mid-campaign that three
-tickets failed the same way is the thing this seat is *for*; the cadence is a floor
-for the times you don't, not a permission slip to wait.
+The sweep is the only arm not scoped to one ticket, so it sees what no per-ticket
+verdict can: a systemic landmine, a decomposition wrong at the seams, a check the
+campaign keeps re-sharpening. At a milestone it also reads the slice as one
+thing — the spec claimed a coherent piece of the product now exists, and
+per-ticket proof cannot establish that. It proposes; you apply through `loop
+backlog`, and a proposal the writer refuses is journaled rather than dropped.
+
+Record it with `loop backlog sweep-run --milestone <id> --body "<summary>"`.
+`--milestone` is what *spends* the trigger: reaching a milestone is permanent, so
+an unspent one stays due on every later pass forever. Pass it whenever `sweepDue`
+named one, and only then — a sweep you ran off-trigger takes `--body` alone,
+joining the rolling memory without consuming a checkpoint it did not answer.
+Sweep may add a gate check but never replace one, and never releases a park
+latch: widening coverage while the campaign waits on a human must not answer the
+human's question for them.
+
+Sweeping off-trigger is yours to choose. Noticing mid-campaign that three tickets
+failed the same way is the thing this seat is *for*; the milestone is the floor
+for the times you don't, not a permission slip to wait for one.
 
 ### 2.4 Recover — the universal else
 

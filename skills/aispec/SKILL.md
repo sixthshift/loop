@@ -72,7 +72,18 @@ a spec missing any of them bounces:
    and `gate` (the merged-tree integration/e2e set). A `gate` check may be red at
    kickoff *only* when it ran correctly and the failure is specifically behavior
    this campaign will build.
-6. **Environment preconditions** — keys, services, runtimes the checks need;
+6. **Milestones — the campaign's only mid-drive checkpoint.** Named checkpoints
+   citing requirement headings; kickoff translates the citations into `R` ids.
+   They order nothing and gate nothing — dependencies still sequence the
+   campaign, the slow suite still runs once at the end. What a milestone decides
+   is *when the campaign reflects*: ailoop's sweep, its only cross-ticket pass,
+   runs on reaching one and on nothing else. A spec that declares none gets no
+   mid-drive sweep at all — every cross-ticket pattern then waits for
+   termination, which is exactly when it is too late to act on. Size them by
+   coherence: the sweep's question at a milestone is "do these pieces compose?",
+   so one worth declaring is a slice where that question has a real answer. One
+   per requirement asks it of nothing; one at the end asks it too late.
+7. **Environment preconditions** — keys, services, runtimes the checks need;
    kickoff probes these and a missing one is a refuse-to-start. Two
    machine-facing lists belong here too: **shared mutable state the checks
    touch** (a dev DB they reset, a fixed port — tickets run one at a time, so
@@ -113,11 +124,14 @@ needs that the gate never checks:
   be built from. A placeholder makes it invent the fixture, and invented
   fixtures are where gameable existence checks come from.
 
-**There are no phases.** Neither coordinator has a phase concept: dependencies
-sequence the backlog, and the slow suite is one campaign-level gate that runs once
-on the merged tree when every ticket has drained. Write phases into a spec and
-they are flattened away silently, taking your de-risk ordering with them. Express
-ordering the way the loop actually models it — see below.
+**Phases were two jobs wearing one word, and the loop only ever kept one.**
+Dependencies sequence the backlog, and the slow suite is one campaign-level gate
+that runs once on the merged tree when every ticket has drained — so a `## Phase
+2` heading is flattened away silently, taking your de-risk ordering with it. What
+survived is the other job: **milestones**, checkpoints that mark when a slice is
+*done* rather than deciding what runs first. Split your phases along that seam —
+the ordering into constraints (below), the checkpoints into Milestones (further
+below) — and nothing is lost.
 
 ### Ordering is dependencies, not phases
 
@@ -135,6 +149,37 @@ none is buried in prose. A reason that names a shared artifact obliges Locked
 decisions to pin that artifact's shape: the constraint orders the work, and the
 pinned shape is what keeps the two sides compatible while they are built
 apart.
+
+### Milestones are checkpoints, not phases
+
+The half of "phase" the loop does model. A milestone names a moment — the point
+at which a coherent slice of the product exists — by citing the requirement
+headings that make it up. It has no gate, no ordering power, and no tickets of
+its own; two milestones can be in flight at once, and reaching one blocks
+nothing.
+
+What it decides is *when the campaign thinks*. ailoop's sweep is the only pass
+that sees across tickets rather than into one, and reaching a milestone is the
+only thing that triggers it — there is no interval fallback. At a milestone it
+asks the question no per-ticket reviewer can: the spec claimed this slice now
+exists, **does it?** Two tickets that read the same artifact differently, a
+boundary each side proved from its own end, a clause proven somewhere other than
+where the clause says it happens — all pass every per-ticket verify, and the
+merged-tree gate that would catch them runs once, at the very end, at the most
+expensive detection point in the loop. A milestone moves that reading earlier;
+declaring none moves every one of those findings to termination.
+
+So the sizing rule follows from the question: declare a milestone where "do these
+pieces compose?" has a real answer. A slice a person could use; a slice the next
+one is built on. One milestone per requirement asks it of nothing; one at the end
+asks it too late.
+
+Elicit them by asking what the human would demo first, and what they would want
+to stop and look at before building further. Those are milestones. What they
+answer about *what must be built first* is an ordering constraint instead. Every
+spec has this structure even when the human has not named it — a product with no
+interior seam at all is rare enough that its absence is worth one direct
+question, not a default.
 
 ### Unverifiable requirements are blockers — keep them out of the normative set
 
@@ -262,6 +307,12 @@ it is their contract:
       contract shapes under Locked decisions, scheduler-lock candidates under
       Environment. Loud defaults count; absence doesn't — decompose is
       read-only and gets no human.
+- [ ] **Milestones are declared, cite only requirement headings, and are sized
+      by coherence** — each names a slice where "do these pieces compose?" has a
+      real answer, and every citation resolves to a heading in Requirements.
+      Locking with none is a decision, not an omission: it means the campaign
+      runs to termination with no cross-ticket reflection, so confirm it with the
+      human rather than letting an unwritten section make the choice.
 - [ ] **No unverifiable requirement sits in the normative set** — anything the
       human has knowingly made unprovable lives under `## Known limits`, not in
       the requirements list, or kickoff refuses to start.

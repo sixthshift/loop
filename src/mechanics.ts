@@ -120,7 +120,7 @@ export function registerMechanics(program: Command): void {
     });
 
   mechanic('frontier')
-    .description('the derived scheduler facts: problems, ready, dispatchable, walls, gate freshness, coverage')
+    .description('the derived scheduler facts: problems, ready, dispatchable, walls, gate freshness, coverage, sweep due')
     .action(() => { emit(frontier()); });
 
   mechanic('recovery-budget')

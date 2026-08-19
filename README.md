@@ -105,7 +105,7 @@ corrupting the parse:
 
 ```sh
 loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
-loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage
+loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage, sweep due
 loop verify --ticket … --base …    # the measurement; --cmd … for a flake probe
 loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
@@ -241,13 +241,20 @@ When the worker returns:
   something outside the campaign moved mainline: an *infra* failure, not a
   merit one — the ticket rebuilds without burning its attempt budget.
 
-Every 5 closes, a **sweep** agent reads the journal since the last sweep plus
-every prior sweep's summary — the summaries are the rolling memory, which keeps
-each read bounded instead of quadratic over the campaign — and names the
-cross-ticket pattern no per-ticket verdict can see: a systemic landmine, a
-decomposition wrong at the seams, a check the campaign keeps re-sharpening. It
-is the only arm not scoped to a single ticket, so it runs on the strong tier;
-its output is still proposals the coordinator applies.
+At each **milestone** — a checkpoint the spec declared over its requirements,
+reached when every clause it delivers is proven — a **sweep** agent reads the
+journal since the last sweep plus every prior sweep's summary (the summaries are
+the rolling memory, which keeps each read bounded instead of quadratic over the
+campaign) and names the cross-ticket pattern no per-ticket verdict can see: a
+systemic landmine, a decomposition wrong at the seams, a check the campaign keeps
+re-sharpening. At a milestone it also asks whether the slice the spec claims now
+exists actually composes — drifted readings of a shared artifact, a boundary each
+side proved only from its own end — which per-ticket proof cannot establish and
+the merged-tree gate would not catch until the end of the campaign. Milestones
+order nothing and gate nothing, and reaching one is the only thing that triggers
+a sweep — a campaign whose spec declares none reflects only at termination. The
+sweep is the only arm not scoped to a single ticket, so it runs on the strong
+tier; its output is still proposals the coordinator applies.
 
 **3 · Campaign gate.** When all ticket work drains, the slow suite (e2e, anything
 needing a live server) runs **once**, on the whole merged tree. Red is treated as
@@ -434,7 +441,8 @@ In the target repo, gitignored automatically at kickoff:
 ```
 .ailoop/campaign/          deleted on successful completion
   backlog.json             AUTHORITATIVE snapshot — contract, tickets, gates,
-                           recovery budgets, sweep cadence; validated transitions
+                           recovery budgets, milestones + sweep state; validated
+                           transitions
   journal.jsonl            append-only audit record; never replayed into state
   evidence/                per-ticket check logs and diff patches
   live/                    one file per running check, published by the verb that
@@ -558,6 +566,7 @@ instructions because a plausible wrong answer to each is invisible downstream:
 | | why not the model |
 |---|---|
 | `frontier.gateGreen` | a remembered green carried past new work is the easiest false "done" in the loop |
+| `frontier.sweep` | reaching a milestone is permanent, so a trigger the coordinator counts by eye either fires forever or never — and a sweep that never fires is a campaign with no reflective pass at all, which nothing downstream reports |
 | `renumber` | a draft's edge onto its sibling silently becomes an edge onto whatever live ticket holds that number now |
 | `recovery-budget` | guess the scoping rule loose and the budget never trips, which looks exactly like a budget with room left |
 | `gate-amend` | no comparison of two shell strings proves a replacement is a tightening, so the authority comes from the anomaly |

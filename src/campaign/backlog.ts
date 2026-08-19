@@ -8,7 +8,7 @@ import path from 'node:path';
 import { RUN } from './paths.ts';
 import { appendJournal } from './journal.ts';
 import { moduleErrors } from './footprint.ts';
-import type { Check, Requirement, TicketDraft } from './agents/schemas.ts';
+import type { Check, Milestone, Requirement, TicketDraft } from './agents/schemas.ts';
 
 // A backlog ticket is the agent-proposed draft plus the runtime fields the
 // sole writer stamps onto it over its life.
@@ -111,13 +111,21 @@ export type Backlog = {
   // between the two — which is why the sole writer refuses a claim on an id
   // that isn't here.
   requirements?: Requirement[];
+  // Named checkpoints over those requirement ids, declared by the spec. They
+  // sequence nothing and gate nothing — `depends_on` still orders the campaign
+  // and the gate still runs once at the end. What a milestone marks is a moment
+  // worth reflecting at: reaching one is the sweep's trigger, in place of a
+  // ticket count that says nothing about the product.
+  milestones?: Milestone[];
   caps?: { maxAttempts: number; thrash: number; infraCap?: number };
   // Recovery budgets affect whether the next anomaly is retried or parked, so
   // they are durable state rather than a count reconstructed from audit events.
   recoveries?: Record<string, { count: number; summaries: string[] }>;
-  // Closed-ticket count at the last sweep. Cadence survives resume without
-  // asking the journal to reconstruct scheduler state.
-  sweep?: { closed: number };
+  // Which checkpoints have already been swept. Reaching a milestone is permanent,
+  // so the record of having spent it is the only thing that stops it standing
+  // due forever — and it has to be durable state rather than something the
+  // coordinator remembers, since a campaign outlives any one session's context.
+  sweep?: { milestones: string[] };
 };
 
 export const requirementIds = (b: Backlog): Set<string> =>
@@ -312,7 +320,6 @@ export function backlogWrite(args: string[], input?: unknown): string {
         gate: [],
         outOfScope: [],
         recoveries: {},
-        sweep: { closed: 0 },
         tickets: [],
       });
       journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (coordinator: ${seat}, mainline: ${mainline})`);
@@ -323,10 +330,10 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (b.tickets.length && !opts.amend) refuse('config is seeded before the first ticket exists — after that, re-run with --amend --note "why" (a journaled amendment)');
       if (opts.amend && !opts.note) refuse('--amend requires --note — the rationale is the record');
       const cfg = readInput(pos[0]);
-      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?, requirements?}');
+      if (cfg.length !== 1) refuse('seed takes a single config object {fastChecks?, gate?, outOfScope?, requirements?, milestones?}');
       const c0 = cfg[0];
       const errs: string[] = [];
-      const KEYS = ['fastChecks', 'gate', 'outOfScope', 'requirements'] as const;
+      const KEYS = ['fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones'] as const;
       for (const k of Object.keys(c0)) if (!(KEYS as readonly string[]).includes(k)) errs.push(`unknown key ${k} (seed takes ${KEYS.join(', ')})`);
       (c0.fastChecks || []).forEach((c: any) => { if (!c.name || !c.cmd) errs.push(`fastCheck missing name or cmd: ${JSON.stringify(c)}`); });
       (c0.gate || []).forEach((g: any) => { if (!g.name || !g.cmd) errs.push(`gate command missing name or cmd: ${JSON.stringify(g)}`); });
@@ -338,6 +345,23 @@ export function backlogWrite(args: string[], input?: unknown): string {
         if (!r?.id || typeof r.id !== 'string' || !r.clause) errs.push(`requirement needs id and clause: ${JSON.stringify(r)}`);
         else if (reqIds.has(r.id)) errs.push(`duplicate requirement id: ${r.id}`);
         else reqIds.add(r.id);
+      });
+      // A milestone is reached when every clause it delivers is proven, so a
+      // `delivers` id outside the enumeration is a checkpoint that can never
+      // arrive — and the failure would be silent, since an unreachable milestone
+      // and a milestone with work left look identical from the frontier. An
+      // amendment that carries milestones without re-sending the enumeration is
+      // checked against the one already in force.
+      const knownReqs = c0.requirements !== undefined ? reqIds : requirementIds(b);
+      const msIds = new Set<string>();
+      (c0.milestones || []).forEach((m: any) => {
+        if (!m?.id || typeof m.id !== 'string' || !m.name) errs.push(`milestone needs id and name: ${JSON.stringify(m)}`);
+        else if (msIds.has(m.id)) errs.push(`duplicate milestone id: ${m.id}`);
+        else msIds.add(m.id);
+        if (!Array.isArray(m?.delivers) || !m.delivers.length)
+          errs.push(`milestone ${m?.id} delivers nothing — a checkpoint over no clause can never be reached`);
+        else for (const r of m.delivers)
+          if (!knownReqs.has(r)) errs.push(`milestone ${m.id} delivers unknown requirement ${r}`);
       });
       if (errs.length) refuse(errs.join('\n'));
       for (const k of KEYS) if (c0[k] !== undefined) (b as any)[k] = c0[k];
@@ -594,17 +618,24 @@ export function backlogWrite(args: string[], input?: unknown): string {
     }
     case 'sweep-run': {
       const b = load();
-      if (!opts.body || opts.closed === undefined) refuse('sweep-run requires --closed --body');
-      const closed = Number(opts.closed);
-      const current = b.tickets.filter(t => t.status === 'closed').length;
-      if (!Number.isInteger(closed) || closed < 0 || closed > current)
-        refuse(`--closed must be an integer between 0 and the current closed count (${current})`);
-      if (closed < (b.sweep?.closed ?? 0))
-        refuse(`--closed cannot move the sweep baseline backwards from ${b.sweep?.closed}`);
-      b.sweep = { closed };
-      save(b);
-      journal('sweep', 'campaign', opts.body as string, { closed });
-      return `sweep recorded at ${closed} closed`;
+      if (!opts.body) refuse('sweep-run requires --body (the summary is the rolling memory)');
+      // Spending the milestone is what stops it re-triggering, since nothing
+      // else could distinguish "swept it" from "about to sweep it again,
+      // forever". Omitted for a sweep the coordinator ran off-trigger: that is a
+      // reflection worth keeping in the rolling memory, but it answers no
+      // checkpoint and must not consume one.
+      const spent = [...(b.sweep?.milestones ?? [])];
+      const ms = opts.milestone as string | undefined;
+      if (ms) {
+        if (!(b.milestones ?? []).some(m => m.id === ms))
+          refuse(`no milestone ${ms} — declared: [${(b.milestones ?? []).map(m => m.id).join(', ') || 'none'}]`);
+        if (spent.includes(ms)) refuse(`milestone ${ms} was already swept`);
+        spent.push(ms);
+        b.sweep = { milestones: spent };
+        save(b);
+      }
+      journal('sweep', 'campaign', opts.body as string, ms ? { milestone: ms } : undefined);
+      return ms ? `sweep recorded — milestone ${ms}` : 'sweep recorded (off-trigger)';
     }
     case 'note': {
       if (!fs.existsSync(JOURNAL) && !fs.existsSync(BACKLOG)) refuse('no campaign here');

@@ -459,18 +459,6 @@ describe('persistent coordinator state', () => {
     });
   });
 
-  test('a sweep records the snapshot it inspected, not later closes', () => {
-    const b = afterWrites({
-      tickets: [
-        buildTicket({ id: 'T001', status: 'closed' }),
-        buildTicket({ id: 'T002', status: 'closed' }),
-      ],
-    }, () => {
-      backlogWrite(['sweep-run', '--closed', '1', '--body', 'no cross-ticket pattern']);
-    });
-    expect(b.sweep).toEqual({ closed: 1 });
-  });
-
   test('a parked ticket carries the human-facing reason in backlog state', () => {
     const b = afterWrites({
       tickets: [buildTicket({ id: 'T001' })],
@@ -550,5 +538,113 @@ describe('note', () => {
       expect(() => backlogWrite(['note', '--kind', 'campaign-report', '--subject', 'campaign', '# Report…']))
         .toThrow(/REFUSED.*not as a bare positional/);
     });
+  });
+});
+
+// Milestones are the spec's checkpoints over the requirement enumeration. The
+// writer's whole job here is that one can never be silently unreachable: the
+// frontier cannot tell a checkpoint that will never arrive from one with work
+// left, so the only place to catch it is the seed that admits it.
+describe('milestones', () => {
+  const REQS = [{ id: 'R1', clause: 'a' }, { id: 'R2', clause: 'b' }];
+  const seedCfg = (cfg: unknown) => backlogWrite(['seed', '-'], [cfg]);
+
+  test('a milestone citing the same seed\'s requirements is admitted', () => {
+    const b = afterWrites({ tickets: [] }, () => {
+      seedCfg({ requirements: REQS, milestones: [{ id: 'M1', name: 'auth', delivers: ['R1', 'R2'] }] });
+    });
+    expect(b.milestones).toEqual([{ id: 'M1', name: 'auth', delivers: ['R1', 'R2'] }]);
+  });
+
+  test('a clause outside the enumeration is refused — the checkpoint could never arrive', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => seedCfg({ requirements: REQS, milestones: [{ id: 'M1', name: 'auth', delivers: ['R9'] }] }))
+        .toThrow(/M1 delivers unknown requirement R9/);
+    });
+  });
+
+  test('a milestone over no clause is refused', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => seedCfg({ requirements: REQS, milestones: [{ id: 'M1', name: 'auth', delivers: [] }] }))
+        .toThrow(/delivers nothing/);
+    });
+  });
+
+  test('duplicate ids are refused — the id is what the sweep spends', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => seedCfg({
+        requirements: REQS,
+        milestones: [{ id: 'M1', name: 'a', delivers: ['R1'] }, { id: 'M1', name: 'b', delivers: ['R2'] }],
+      })).toThrow(/duplicate milestone id: M1/);
+    });
+  });
+
+  // An amendment that carries only milestones has no enumeration in its payload,
+  // so the check falls back to the one already in force rather than rejecting
+  // every id for not being in an empty set.
+  test('an amendment checks against the enumeration already seeded', () => {
+    const b = afterWrites({ tickets: [], requirements: REQS }, () => {
+      backlogWrite(['seed', '-', '--amend', '--note', 'late checkpoint'],
+        [{ milestones: [{ id: 'M1', name: 'auth', delivers: ['R1'] }] }]);
+    });
+    expect(b.milestones?.[0]?.id).toBe('M1');
+    expect(b.requirements).toEqual(REQS);
+  });
+});
+
+describe('sweep-run', () => {
+  const MS = [{ id: 'M1', name: 'auth', delivers: ['R1'] }];
+  const seeded = { tickets: [buildTicket({ id: 'T001', status: 'closed' })], milestones: MS };
+
+  test('spending a milestone records it', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['sweep-run', '--milestone', 'M1', '--body', 'the slice holds']);
+      expect(backlog().sweep).toEqual({ milestones: ['M1'] });
+      // Which checkpoint a sweep answered is the post-mortem's only reading of
+      // where the campaign's reflection actually landed.
+      expect(journalEntries().at(-1)?.data).toEqual({ milestone: 'M1' });
+    });
+  });
+
+  // An off-trigger sweep is a reflection worth keeping in the rolling memory,
+  // but it answers no checkpoint and must not consume one.
+  test('an off-trigger sweep journals without spending anything', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['sweep-run', '--body', 'three tickets failed the same way']);
+      expect(backlog().sweep).toBeUndefined();
+      expect(journalEntries().at(-1)?.data).toBeUndefined();
+    });
+  });
+
+  test('the summary is mandatory — it is the rolling memory', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      expect(() => backlogWrite(['sweep-run', '--milestone', 'M1'])).toThrow(/requires --body/);
+    });
+  });
+
+  test('a milestone is spent once — a second spend is refused', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      backlogWrite(['sweep-run', '--milestone', 'M1', '--body', 'first']);
+      expect(() => backlogWrite(['sweep-run', '--milestone', 'M1', '--body', 'again']))
+        .toThrow(/M1 was already swept/);
+    });
+  });
+
+  test('an undeclared milestone is refused', () => {
+    withScratchCampaign({ backlog: seeded }, () => {
+      expect(() => backlogWrite(['sweep-run', '--milestone', 'M9', '--body', 'b']))
+        .toThrow(/no milestone M9/);
+    });
+  });
+
+  test('spending a second milestone keeps the first', () => {
+    const b = afterWrites({
+      tickets: [buildTicket({ id: 'T001', status: 'closed' })],
+      milestones: [...MS, { id: 'M2', name: 'data', delivers: ['R2'] }],
+    }, () => {
+      backlogWrite(['sweep-run', '--milestone', 'M1', '--body', 'a']);
+      backlogWrite(['sweep-run', '--milestone', 'M2', '--body', 'b']);
+    });
+    expect(b.sweep?.milestones).toEqual(['M1', 'M2']);
   });
 });

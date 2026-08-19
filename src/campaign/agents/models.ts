@@ -46,7 +46,7 @@
 //                 outputs, weakened/deleted tests, special-cased inputs,
 //                 out-of-scope features): close / retry / gamed / sharpen /
 //                 flake-probe / amend / escalate. The sole post-work authority.
-//   sweep       — campaign-level reflection on a cadence: reads the whole
+//   sweep       — campaign-level reflection at each milestone: reads the whole
 //                 journal and names the pattern no per-ticket verdict can see
 //                 — a systemic landmine, a mis-decomposition, a check the
 //                 campaign keeps re-sharpening. Proposes; never applies.

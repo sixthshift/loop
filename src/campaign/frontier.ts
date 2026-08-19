@@ -49,8 +49,29 @@ export function frontier(): Frontier {
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
+  const cov = coverage(b);
   return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, idle, complete, counts,
-    gateGreen: gateGreen(), coverage: coverage(b) };
+    gateGreen: gateGreen(), coverage: cov, sweepDue: sweepDue(b, cov) };
+}
+
+// --- sweep: the milestone owed a reflective pass ----------------------------
+// A milestone is reached when every clause it delivers is proven — strictly
+// stronger than "its tickets closed", since `proven` also requires that some
+// ticket claimed each clause at all. So a milestone cannot arrive over a gap in
+// its own coverage, which is the point: the checkpoint is the spec's statement
+// that a slice of the product now exists, and an unclaimed clause inside it
+// means the slice does not, however many tickets landed nearby.
+//
+// Reaching one is permanent — proven clauses never un-prove — so the trigger is
+// cleared by being spent (`sweep-run --milestone`) rather than by the next
+// close. Only the earliest unspent one is reported: two arriving together are
+// two moments, and collapsing them into one sweep would drop the older one's
+// summary from the rolling memory.
+function sweepDue(b: Backlog, cov: Frontier['coverage']): string | null {
+  const proven = new Set(cov.proven);
+  const spent = new Set(b.sweep?.milestones ?? []);
+  const reached = (b.milestones ?? []).find(m => !spent.has(m.id) && m.delivers.every(r => proven.has(r)));
+  return reached?.id ?? null;
 }
 
 // --- coverage: the spec-side reading of progress ----------------------------

@@ -305,3 +305,62 @@ describe('idle', () => {
     expect(f.idle).toBe(false);
   });
 });
+
+// The sweep trigger. A milestone is the spec's own claim that a coherent slice
+// of the product now exists — the moment worth reflecting at, and the only one:
+// there is no count-based fallback to paper over a spec that named none.
+describe('sweepDue', () => {
+  const REQS = [{ id: 'R1', clause: 'a' }, { id: 'R2', clause: 'b' }, { id: 'R3', clause: 'c' }];
+  const M1 = { id: 'M1', name: 'auth works', delivers: ['R1', 'R2'] };
+  const M2 = { id: 'M2', name: 'data layer', delivers: ['R3'] };
+
+  const withMilestones = (
+    tickets: Ticket[],
+    milestones: { id: string; name: string; delivers: string[] }[],
+    sweep?: { milestones: string[] },
+  ) => {
+    let f!: ReturnType<typeof frontier>;
+    withScratchCampaign(
+      { backlog: { tickets, requirements: REQS, milestones, caps: NO_WALLS, ...(sweep ? { sweep } : {}) } },
+      () => { f = frontier(); });
+    return f.sweepDue;
+  };
+
+  const closed = (id: string, satisfies: string[]) => buildTicket({ id, satisfies, status: 'closed' });
+
+  test('a milestone whose every clause is proven is due', () => {
+    expect(withMilestones([closed('T001', ['R1']), closed('T002', ['R2'])], [M1, M2])).toBe('M1');
+  });
+
+  test('one clause short is not a checkpoint, however many tickets landed', () => {
+    expect(withMilestones([
+      closed('T001', ['R1']),
+      buildTicket({ id: 'T002', satisfies: ['R2'] }),
+      closed('T003', ['R3']),
+    ], [M1])).toBe(null);
+  });
+
+  // Reaching a milestone is permanent — proven clauses never un-prove — so the
+  // spend is the only thing that can stop it triggering on every later pass.
+  test('a swept milestone does not re-trigger', () => {
+    const tickets = [closed('T001', ['R1']), closed('T002', ['R2'])];
+    expect(withMilestones(tickets, [M1], { milestones: ['M1'] })).toBe(null);
+  });
+
+  test('the earliest unspent milestone is reported — two arriving together are two moments', () => {
+    const tickets = [closed('T001', ['R1']), closed('T002', ['R2']), closed('T003', ['R3'])];
+    expect(withMilestones(tickets, [M1, M2])).toBe('M1');
+    expect(withMilestones(tickets, [M1, M2], { milestones: ['M1'] })).toBe('M2');
+  });
+
+  // Stronger than "its tickets closed": the milestone cannot arrive over a gap
+  // in its own coverage, because a slice with an unclaimed clause is not a slice.
+  test('an unclaimed clause holds the milestone back, with no ticket to point at', () => {
+    expect(withMilestones([closed('T001', ['R1'])], [M1])).toBe(null);
+  });
+
+  test('a spec that declared no milestones never falls due — closes alone are not a moment', () => {
+    const many = ['T001', 'T002', 'T003', 'T004', 'T005'].map(id => closed(id, ['R1']));
+    expect(withMilestones(many, [])).toBe(null);
+  });
+});

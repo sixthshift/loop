@@ -54,9 +54,11 @@ spec_version: 1          # bumped by change orders after lock
 
 ## Requirements
 
-<!-- The flat list of every normative in-scope clause. NO PHASES — either
-     coordinator drives one campaign-level gate, and phase headings are flattened
-     away silently, taking your ordering with them (state ordering below instead).
+<!-- The flat list of every normative in-scope clause. NO PHASE HEADINGS — the
+     loop drives one campaign-level gate and sequences work by dependency, so a
+     `## Phase 2` heading is flattened away silently, taking your ordering with
+     it. Ordering goes in Ordering constraints; checkpoints go in Milestones.
+     Both cite these clauses rather than grouping them.
 
      Kickoff enumerates these as R1, R2, … exactly once; tickets then carry
      `satisfies: [R…]`, progress is counted against them, and the final coverage
@@ -96,11 +98,42 @@ spec_version: 1          # bumped by change orders after lock
 
 ...
 
+## Milestones
+
+<!-- Observational only: a milestone gates nothing, orders nothing, and carries
+     no checks. It names the moment a coherent slice of the product exists — and
+     that moment is the ONLY thing that runs ailoop's sweep, its one
+     cross-ticket reflective pass. Declare none and the campaign gets no
+     mid-drive sweep at all: every systemic pattern waits for termination,
+     which is after the work it would have redirected.
+
+     Cite requirement headings, never restate or re-group them: kickoff
+     translates each citation into the `R` id it enumerated, and a citation it
+     cannot resolve is refused rather than guessed. A milestone is reached only
+     when EVERY clause it names is delivered by closed tickets — including
+     clauses no ticket claimed, which hold it back on purpose: a slice with an
+     unclaimed clause is not a slice.
+
+     Size them by coherence, not by count. The question the sweep asks at one is
+     "do these pieces compose?", so a milestone worth declaring is one where
+     that question has a real answer — a slice that a person could use, or that
+     the next slice is built on. A milestone per requirement makes the sweep
+     ask it of nothing; one milestone at the end makes it ask too late. Leave
+     Leaving the section empty is a real choice with a real cost, not a
+     default — make it deliberately. -->
+
+- **M1 — <what exists once this lands, in product terms>**
+  delivers: <requirement heading>, <requirement heading>
+- **M2 — <the next coherent slice>**
+  delivers: <requirement heading>
+
 ## Ordering constraints
 
 <!-- The loop sequences work through per-ticket `depends_on` edges derived at
      decompose time, so ordering is conveyed by stating the constraint AGAINST
-     the work — never by grouping requirements under a heading. Give each one a
+     the work — never by grouping requirements under a heading, and never by
+     Milestones above: a milestone marks when work is DONE, it does not order
+     what runs first, and two milestones can be in flight at once. Give each one a
      reason a decomposer can act on: a shared file, an inverted baseline, a
      schema both sides read. Keep them all here so none is buried in prose.
      A reason that names a shared artifact obliges Locked decisions to pin

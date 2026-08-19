@@ -31,12 +31,22 @@ export type TicketPatch = Partial<Omit<TicketDraft, 'id' | 'origin' | 'satisfies
 // life — tickets, the frontier, and coverage all join on it.
 export type Requirement = { id: string; clause: string };
 
+// A named checkpoint over requirement ids — the spec's own account of where a
+// coherent slice of the product lands. Purely observational: it never gates
+// dispatch and carries no checks of its own. Its whole job is to give the sweep
+// a moment worth reflecting at, in place of a ticket count that means nothing
+// about the product. `delivers` cites requirement ids, so milestones are a view
+// over the enumeration rather than a second grouping of it — which is what keeps
+// dependencies the only thing sequencing the campaign.
+export type Milestone = { id: string; name: string; delivers: string[] };
+
 export type KickoffVerdict = {
   blockers: { item: string; needed: string }[];
   fastChecks: Check[];
   gate: Check[];
   outOfScope: string[];
   requirements: Requirement[];
+  milestones: Milestone[];
   notes: string;
 };
 
@@ -133,6 +143,20 @@ const REQUIREMENT = {
   additionalProperties: false,
 };
 
+// The JSON-schema mirror of `Milestone`. `delivers` holds requirement ids; the
+// writer refuses one that is not in the same seed's enumeration, so a milestone
+// can never be reached by citing a clause nobody enumerated.
+const MILESTONE = {
+  type: 'object',
+  properties: {
+    id: { type: 'string' },
+    name: { type: 'string' },
+    delivers: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['id', 'name', 'delivers'],
+  additionalProperties: false,
+};
+
 export const TICKET = {
   type: 'object',
   properties: {
@@ -185,9 +209,10 @@ export const KICKOFF = {
     gate: { type: 'array', items: CHECK },
     outOfScope: { type: 'array', items: { type: 'string' } },
     requirements: { type: 'array', items: REQUIREMENT },
+    milestones: { type: 'array', items: MILESTONE },
     notes: { type: 'string' },
   },
-  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'requirements', 'notes'],
+  required: ['blockers', 'fastChecks', 'gate', 'outOfScope', 'requirements', 'milestones', 'notes'],
   additionalProperties: false,
 };
 
