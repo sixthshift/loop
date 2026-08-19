@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import { describe, expect, test } from 'bun:test';
 import { backlog, backlogWrite, wantsStdinPayload } from './backlog.ts';
 import type { Backlog } from './backlog.ts';
+import { journalEntries } from './journal.ts';
 import { buildTicket, withScratchCampaign } from './scratch-campaign.ts';
 
 const afterWrites = (seed: Partial<Backlog>, writes: () => void): Backlog => {
@@ -520,5 +521,34 @@ describe('wantsStdinPayload', () => {
 
   test("an option's value is never mistaken for the marker", () => {
     expect(wantsStdinPayload(['set-status', 'T001', 'open', '--note', '-'])).toBe(false);
+  });
+});
+
+describe('note', () => {
+  // The campaign report arrives as a stdin payload: document-sized markdown
+  // routed through a shell argument gets mangled by the shell's own vocabulary
+  // ($, backticks), invisibly to everything downstream.
+  test('a stdin payload carries a document-sized body verbatim', () => {
+    const body = '# Report\n\nSpent `$COST` on **T001** | table | row |';
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      backlogWrite(['note', '--kind', 'campaign-report', '--subject', 'campaign', '-'], { body });
+      expect(journalEntries().at(-1)).toMatchObject({ kind: 'campaign-report', subject: 'campaign', body });
+    });
+  });
+
+  test('a payload and --body together are refused, and the payload must be {body}', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => backlogWrite(['note', '--kind', 'k', '--subject', 's', '--body', 'b', '-'], { body: 'x' }))
+        .toThrow(/not both/);
+      expect(() => backlogWrite(['note', '--kind', 'k', '--subject', 's', '-'], { text: 'x' }))
+        .toThrow(/single \{"body"/);
+    });
+  });
+
+  test('a body passed as a bare positional is refused with guidance, not a raw fs error', () => {
+    withScratchCampaign({ backlog: { tickets: [] } }, () => {
+      expect(() => backlogWrite(['note', '--kind', 'campaign-report', '--subject', 'campaign', '# Report…']))
+        .toThrow(/REFUSED.*not as a bare positional/);
+    });
   });
 });

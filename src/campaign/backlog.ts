@@ -608,8 +608,25 @@ export function backlogWrite(args: string[], input?: unknown): string {
     }
     case 'note': {
       if (!fs.existsSync(JOURNAL) && !fs.existsSync(BACKLOG)) refuse('no campaign here');
-      if (!opts.kind || !opts.subject || !opts.body) refuse('note requires --kind --subject --body');
-      journal(opts.kind as string, opts.subject as string, opts.body as string, parseData());
+      // The body arrives as a flag for a one-liner, or as a stdin payload for
+      // document-sized bodies — the campaign report is markdown, and prose
+      // routed through a shell argument gets mangled by the shell's own
+      // vocabulary ($, backticks) in ways nothing downstream can detect.
+      let body = opts.body as string | undefined;
+      if (pos[0] !== undefined) {
+        if (body !== undefined) refuse('note takes --body or a stdin payload, not both');
+        // A bare-positional body is the natural misuse the payload path
+        // invites; refuse it by name rather than letting readInput die on the
+        // prose as a nonexistent file path.
+        if (pos[0] !== '-' && !fs.existsSync(pos[0]!))
+          refuse('note body arrives as --body "<one-liner>" or as a {"body": "…"} payload (stdin via `-`, or a JSON file path) — not as a bare positional');
+        const payload = readInput(pos[0]);
+        if (payload.length !== 1 || typeof payload[0]?.body !== 'string')
+          refuse('note payload is a single {"body": "…"} object');
+        body = payload[0].body;
+      }
+      if (!opts.kind || !opts.subject || !body) refuse('note requires --kind --subject and a body (--body or stdin payload)');
+      journal(opts.kind as string, opts.subject as string, body, parseData());
       return 'journaled';
     }
     default:
