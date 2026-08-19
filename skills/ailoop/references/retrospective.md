@@ -32,7 +32,8 @@ echo '{"spec":…,"requirements":{"list":[…],"requirements":N,"unmapped":[…]
 
 `{done: false, missing: [...]}` → renumber those tickets against the current
 backlog, `loop backlog add -`, journal `--kind coverage-gap`, and **the drive
-resumes**. The gate it re-opens must go green again. Both findings are harvest
+resumes**. The gate it re-opens must go green again — a fresh `loop gate-run`,
+never the stale verdict re-read. Both findings are harvest
 candidates: the decomposition missed it once and could again.
 
 ## 2. Harvest → learnings

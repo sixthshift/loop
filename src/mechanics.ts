@@ -39,6 +39,7 @@ import { amendFastChecks } from './campaign/fastcheck.ts';
 import { recoveryBudget } from './campaign/recovery-budget.ts';
 import { verify, flakeProbe } from './campaign/verify.ts';
 import { vet } from './campaign/vet.ts';
+import { runGate } from './campaign/gate-run.ts';
 import { snapshotTree, revertOutOfBounds } from './campaign/jurisdiction.ts';
 import type { TreeSnapshot } from './campaign/jurisdiction.ts';
 import { writePostmortem } from './campaign/postmortem.ts';
@@ -103,7 +104,7 @@ export function registerMechanics(program: Command): void {
   const mechanic = (name: string): Command => program.command(name);
 
   mechanic('backlog')
-    .description('the sole writer: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note')
+    .description('the sole writer: init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution probe-spent sweep-run note')
     .argument('<args...>', 'the writer command and its flags; JSON payloads arrive on stdin')
     // passThroughOptions keeps commander's hands off the writer's own flags — the
     // writer parses them itself, and its vocabulary must not need mirroring here
@@ -153,7 +154,11 @@ export function registerMechanics(program: Command): void {
     .option('--repeat <n>', 'flake-probe repetitions', '5')
     .action(async (opts: { ticket?: string; dir: string; base?: string; cmd?: string; repeat: string }) => {
       if (opts.cmd) {
-        emit(await flakeProbe({ cmd: opts.cmd, dir: opts.dir, repeat: Number(opts.repeat), id: opts.ticket }));
+        // A spent probe budget throws, and an unhandled rejection here would
+        // reach the coordinator as a crash trace rather than as the refusal it
+        // is — the one shape the seat is told to read and act on.
+        try { emit(await flakeProbe({ cmd: opts.cmd, dir: opts.dir, repeat: Number(opts.repeat), id: opts.ticket })); }
+        catch (e: any) { fail(e.message); }
         return;
       }
       if (!opts.ticket || !opts.base) fail('verify requires --ticket and --base (or --cmd for a flake probe)');
@@ -168,6 +173,15 @@ export function registerMechanics(program: Command): void {
     .action(async (opts: { ticket: string; dir: string }) => {
       assertSkillSeat();
       try { emit(await vet({ id: opts.ticket, dir: opts.dir })); }
+      catch (e: any) { fail(e.message); }
+    });
+
+  mechanic('gate-run')
+    .description('run the campaign gate on the merged tree and stamp its own verdict — refuses off-mainline or a dirty tree')
+    .option('--dir <path>', 'the checkout to measure in', '.')
+    .action(async (opts: { dir: string }) => {
+      assertSkillSeat();
+      try { emit(await runGate({ dir: opts.dir })); }
       catch (e: any) { fail(e.message); }
     });
 

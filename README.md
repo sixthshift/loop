@@ -107,6 +107,7 @@ corrupting the parse:
 loop backlog <cmd> …      # the sole writer (JSON payloads on stdin)
 loop frontier             # derived scheduler facts: ready, dispatchable, walls, gate freshness, coverage, sweep due
 loop vet --ticket T004    # pre-dispatch: which acceptance checks already pass on the base
+loop gate-run             # run the campaign gate on the merged tree and stamp its verdict
 loop verify --ticket … --base …    # the measurement; --cmd … for a flake probe
 loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
@@ -261,8 +262,11 @@ a sweep — a campaign whose spec declares none reflects only at termination. Th
 sweep is the only arm not scoped to a single ticket, so it runs on the strong
 tier; its output is still proposals the coordinator applies.
 
-**3 · Campaign gate.** When all ticket work drains, the slow suite (e2e, anything
-needing a live server) runs **once**, on the whole merged tree. Red is treated as
+**3 · Campaign gate.** When all ticket work drains, `loop gate-run` runs the slow
+suite (e2e, anything needing a live server) **once**, on the whole merged tree —
+the verb runs the commands and stamps the verdict, refusing an off-mainline HEAD
+or a dirty checkout, so the claim that ends a campaign is measured rather than
+reported. Red is treated as
 an escaped bug: recover either spawns a repair ticket, corrects a mis-scoped
 gate, or parks it for the human.
 
@@ -580,6 +584,7 @@ instructions because a plausible wrong answer to each is invisible downstream:
 | `fastcheck-amend` | "I ran it at the repo root and it passed" is a claim; the verb runs it |
 | `verify` | a worker's report is testimony. Exit codes and `git diff` are evidence |
 | `vet` | "this check would fail before the work exists" is a claim about a command nobody ran; the verb runs it |
+| `gate-run` | the claim that ends a campaign. Reported rather than run, a green gate is the one false "done" nothing downstream disagrees with — and a run from a ticket branch reads exactly like a run from mainline |
 
 The coordinator also never fills a judgment role itself — review, sweep, coverage
 and recover are all spawned with fresh context, because the seat that dispatched

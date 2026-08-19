@@ -72,7 +72,10 @@ no check goes red, no verb refuses, and the report still reads fine.
    includes narrowing it by accepting a second "typo" on the same ticket. One
    typo amendment and one flake probe per ticket: past that it is not a typo and
    not a flake, it is the judge negotiating its way to green, and the whole
-   escaped-bug rule exists to stop exactly that.
+   escaped-bug rule exists to stop exactly that. Both are now *counted* — declare
+   the typo amendment with `--typo-amendment` and let the probe carry `--ticket`,
+   and the second of either is refused rather than left to your memory, which is
+   compacted mid-campaign.
 5. **Nothing is done on your word.** A closed ticket carries verify evidence a
    script wrote; a green gate carries its own run against the current counts.
    You never supply either from your own reading.
@@ -144,6 +147,7 @@ side — read it and fix the call, never route around it.
 | `loop fastcheck-amend --by … --note …` | the fast tier, admitting only candidates that exit 0 at the repo root. It runs them — you never attest to having done that yourself. |
 | `loop branch create\|attach\|discard\|land\|delete` | the serial checkout lifecycle. `create <id>` cuts `ailoop/<id>` from mainline and checks it out, refusing an off-mainline or unclean tree (it names the litter — resolve it, never route around it). `attach <id>` checks a surviving branch back out for resume. `discard` erases worker litter and returns the checkout to mainline, keeping the branch. `land <id>` returns to mainline and fast-forwards it onto the branch; a non-ff result is interference, infra. `delete <id>` reaps a branch once the gate is green. |
 | `loop vet --ticket <id>` | the pre-dispatch vacuity measurement: runs the ticket's `acceptanceChecks` at the root on the base and reports which already pass. A check green before the work exists cannot be observing the work. It never refuses — a check-only ticket claiming a delivered clause is legitimately green — so the finding is yours to rule on, but it is a measurement, not your recollection of having thought about it. |
+| `loop gate-run` | the campaign gate, run rather than reported: every `gate` check on the merged tree, evidence written, verdict stamped by the verb. Refuses off-mainline HEAD and a dirty checkout, because a verdict about the wrong tree reads exactly like a verdict about the right one. An empty gate tier greens by vacancy and says so in the record. |
 | `loop verify --ticket <id> --base <sha>` | the measurement, run at the root on the checked-out branch: dirty-tree refusal, every fastCheck + the ticket's acceptanceChecks, the diff scope-checked against declared `modules`, evidence and patch written. `--cmd "<c>" [--repeat 5]` is the flake probe. |
 | `loop prompt <role> [--vars -]` / `loop schema <role> [--engine codex]` / `loop models [<role>]` | the judgment layer: role prompt, its output contract, its resolved model chain. Roles: `kickoff decompose critic worker review sweep recover coverage harvest`. |
 | `loop jurisdiction snapshot --out F` / `revert --in F` | recover's enforced product-code boundary. |
@@ -386,8 +390,8 @@ real and file the attempt under the right half of the taxonomy (invariants 1 and
 | `retry` | Discard the build, then `loop backlog attempt <id> --failed <names> --hypothesis "…" --fix "…" --data '{…}'` with the review's fields verbatim (`failing` if it gave one, else verify's, else `judge-rejected`) and the settle telemetry above. Re-dispatch a rung higher. |
 | `gamed` | Discard the build. Then **sharpen before logging the attempt**: `set-status <id> open --note "check amendment"`, `loop backlog update <id> - --note "gamed: <hypothesis>"` piping `{"acceptanceChecks": <the review's complete sharpenChecks array>}` — complete, never a partial patch — then the `attempt` entry. The escaped-bug rule: a defect that passed a check must strengthen the check that let it through. This, with `sharpen` below, is what makes the checks sharper over a campaign instead of frozen at kickoff quality. |
 | `sharpen` | The build **stands** — the review affirmed the implementation as correct and demonstrated only that the checks cannot observe a locked clause. Keep it: the branch survives untouched, and serially nothing has moved under it — its `baseSha` still holds. Amend the checks exactly as `gamed` does, and log the attempt as **merit**: the ticket failed to prove itself, and the attempt wall is what bounds a ticket that keeps needing its checks grown. Re-dispatch a **fresh** session onto the surviving branch — `loop branch attach <id>`, then `set-status <id> in-flight --base-sha <the same baseSha> --model … --rung …`, rung per its merit count as usual — told that the build is inherited and judged correct and its job is to extend the proof, never rewrite the code. Settle the result like any other return (this section, from the top). Discarding protected three things and keeping the branch keeps all three: the base never moved (serial dispatch), the reader is cold (the new session, and review is always fresh-context), and the measurement runs under the sharpened checks (verify runs them on this branch). What it stops paying is the rebuild of correct code — a re-derivation can silently drop a subtlety no check covers. |
-| `flake-probe` | `phase probing`, then `loop verify --cmd "<probeCmd verbatim>" --repeat 5` on the **surviving** branch, still checked out — nothing is discarded yet. Journal the result. `real-red` → re-judge as `retry`/`gamed`. Any intermittent verdict (`flaky`, `flaky-under-full-run-only`) → park; there is no quarantine-and-close, and the original red still forbids a close. Invariant 4: one probe per ticket. A second request is the judge stalling — discard and park. |
-| `amend-typo` | **No re-dispatch and no attempt** — the build stands and only the check was wrong. `set-status <id> open --note "check amendment"` → `loop backlog update <id> - --note "typo-level amendment: …"` piping the complete `fixedChecks` as `acceptanceChecks` → `set-status <id> in-flight` → **re-verify the same branch** and hand the fresh result back to a new review. Invariant 4: one per ticket, letter-level. A second one on the same ticket is the judge narrowing its way to green, so it parks as a meaning-level amendment — and so does anything meaning-level the first time. |
+| `flake-probe` | `phase probing`, then `loop verify --cmd "<probeCmd verbatim>" --repeat 5` on the **surviving** branch, still checked out — nothing is discarded yet. Journal the result. `real-red` → re-judge as `retry`/`gamed`. Any intermittent verdict (`flaky`, `flaky-under-full-run-only`) → park; there is no quarantine-and-close, and the original red still forbids a close. Invariant 4: one probe per ticket, spent by naming `--ticket`; a second is refused. That refusal is the verdict — the judge is stalling, so discard and park. An unlabelled `--cmd` probe spends nothing, which is how recover diagnoses an environment without consuming a ticket's allowance. |
+| `amend-typo` | **No re-dispatch and no attempt** — the build stands and only the check was wrong. `set-status <id> open --note "check amendment"` → `loop backlog update <id> - --typo-amendment --note "typo-level amendment: …"` piping the complete `fixedChecks` as `acceptanceChecks` → `set-status <id> in-flight` → **re-verify the same branch** and hand the fresh result back to a new review. Invariant 4: one per ticket, letter-level — the flag spends it, and the writer refuses the second rather than trusting you to recall the first. A refusal here is the answer, not an obstacle: park it as a meaning-level amendment, and so does anything meaning-level the first time. |
 | `escalate` | Discard the build, then **recover** (`judge-escalate`) — except the four decisions below, which park directly. Whatever recover returns, invariant 1 still binds: if the ticket is still in-flight when you're done, put it somewhere real. |
 | Review won't settle | Two full rounds with no terminal verdict means the review can't rule on this build. Discard and **recover** (`judge-no-converge`). Do not keep re-asking: a judge that won't converge on a fixed diff and fixed evidence will not converge on the third ask either. |
 | `tooBig` (worker) | Pipe its `proposedTickets` through **`loop renumber`** first — the worker chose ids blind to what has landed since, and its edges between siblings have to follow them — then `loop backlog decompose <id> -` with the result. The writer rewires the parent's dependents onto all children, so narrow those edges after. Children are born open. Expected and healthy. A `tooBig` with no proposed children is **recover** (`toobig-without-split`). |
@@ -487,10 +491,24 @@ loop that didn't finish, and never a stop over work it could still have done.
 
 When frontier reports `complete: true` and nothing is still settling, the slow
 suite runs **once**, on the whole merged tree, owning the checkout alone
-(invariant 3). Confirm HEAD is on mainline first — a settled campaign leaves
-it there, a stale in-flight does not, and a gate run on a ticket branch is a
-verdict about the wrong tree. Then run each `gate` check, then `loop backlog
-gate-run green|red --note "<which checks ran>"`.
+(invariant 3):
+
+```sh
+loop gate-run
+```
+
+That is the whole step. The verb runs every `gate` check itself, writes the
+evidence, and stamps its own verdict — you never run the commands and report what
+you saw. Invariant 5 covers this claim like every other: a green gate carries its
+own run, and the run is the verb's. It refuses off-mainline (a settled campaign
+leaves HEAD there, a stale in-flight does not, and a run from a ticket branch is a
+verdict about the wrong tree) and refuses a dirty checkout (the gate measures what
+landed, not what is lying in the tree). Both refusals are the mechanism telling
+you the campaign is not where you thought — resolve, never route around.
+
+The writer's `backlog gate-run` still exists beneath it and still takes a bare
+verdict on trust. Reaching past the mechanic to stamp one yourself is the single
+easiest false "done" in the loop, and nothing downstream disagrees with it.
 
 A green run only covers the tree it measured, and `gate-run` stamps the ticket and
 closed counts alongside the verdict for exactly that reason. If either count moves

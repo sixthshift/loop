@@ -15,3 +15,9 @@ export const RUN = '.ailoop/campaign';
 // Cross-campaign memory: survives termination, git-tracked, capped. Written by
 // the harvest at the end of a campaign and read at the next one's kickoff.
 export const LEARNINGS = '.ailoop/learnings';
+
+// Where a measurement leaves what it read: per-ticket check logs and diff
+// patches, and the campaign gate's own run. One constant rather than one per
+// measuring module, because a reader looking for "what did this campaign
+// actually observe" must not have to know which verb wrote it.
+export const EVIDENCE = `${RUN}/evidence`;

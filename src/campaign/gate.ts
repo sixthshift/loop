@@ -1,7 +1,7 @@
 // Amending the campaign gate — the one agent-proposed mutation that edits the
-// criteria deciding whether the product is correct. gate-run.ts owns execution;
-// this file owns the derived green policy plus who may change the gate and how
-// the change is recorded.
+// criteria deciding whether the product is correct. gate-run.ts owns running the
+// tier and stamping the verdict; this file owns the derived green policy plus who
+// may change the gate and how the change is recorded.
 //
 // The sole writer's `gate` command upserts by name, so one action shape carries
 // two different acts. A name not yet in force only ADDS coverage — a green
