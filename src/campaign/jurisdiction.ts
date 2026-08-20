@@ -29,7 +29,7 @@
 
 import path from 'node:path';
 import { sh } from './state.ts';
-import { mainline } from './backlog.ts';
+import { assertOnMainline, currentRef } from './checkout.ts';
 import { isManifest } from './footprint.ts';
 
 export type TreeSnapshot = { ref: string; sha: string; dirt: string[] };
@@ -46,10 +46,7 @@ const CAMPAIGN = '.ailoop/';
 const DIFF_CAP = 20_000; // the repair ticket carries this; a worker needs the shape, not every hunk
 
 export function snapshotTree(): TreeSnapshot {
-  const main = mainline();
-  const at = currentRef();
-  if (at !== main)
-    throw new Error(`jurisdiction snapshot: HEAD is on ${at || '(detached)'}, not ${main} — recover is trusted with the mainline checkout only`);
+  const main = assertOnMainline('jurisdiction snapshot', 'recover is trusted with the mainline checkout only');
   return { ref: main, sha: headSha(), dirt: porcelain() };
 }
 
@@ -136,8 +133,6 @@ export const breachedModules = (paths: string[]): string[] =>
   [...new Set(paths.map(p => path.posix.dirname(p) || '.'))];
 
 const headSha = (): string => sh('git rev-parse HEAD').stdout.trim();
-
-const currentRef = (): string => sh('git symbolic-ref --short -q HEAD').stdout.trim(); // '' when detached
 
 const porcelain = (): string[] => sh('git status --porcelain').stdout.split('\n').filter(l => l.trim());
 

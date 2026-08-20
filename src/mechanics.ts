@@ -33,7 +33,7 @@
 import fs from 'node:fs';
 import type { Command } from 'commander';
 import { backlog, backlogWrite, campaignExists, renumber, wantsStdinPayload } from './campaign/backlog.ts';
-import { sh } from './campaign/state.ts';
+import { currentRef } from './campaign/checkout.ts';
 import { frontier } from './campaign/frontier.ts';
 import type { Check, TicketDraft } from './campaign/agents/schemas.ts';
 import { amendGate, gateAuthority, GATE_RED } from './campaign/gate.ts';
@@ -83,7 +83,7 @@ function assertSkillSeat(): void {
 // branch has nothing for ticket branches to land back onto.
 function withMainline(args: string[]): string[] {
   if (args[0] !== 'init' || args.includes('--mainline')) return args;
-  const head = sh('git symbolic-ref --short -q HEAD').stdout.trim();
+  const head = currentRef();
   if (!head) return fail('init: HEAD is detached — check out the branch the campaign should build on');
   return [...args, '--mainline', head];
 }

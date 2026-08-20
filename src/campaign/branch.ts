@@ -16,6 +16,7 @@
 // the checkout returns to mainline as each ticket settles.
 
 import { sh } from './state.ts';
+import { currentRef, dirtyLines } from './checkout.ts';
 import { mainline } from './backlog.ts';
 
 export type MergeResult = { ok: true } | { ok: false; dirty: boolean; conflict: string };
@@ -25,14 +26,10 @@ export type CreateResult =
 
 const branchOf = (id: string) => `ailoop/${id}`;
 
-const currentRef = (): string => sh('git symbolic-ref --short -q HEAD').stdout.trim(); // '' when detached
-
-// Everything in the tree that git history doesn't explain, minus the
-// campaign's own state — the same exclusion verify's dirty refusal makes.
-const litter = (): string[] =>
-  sh('git status --porcelain').stdout.split('\n')
-    .filter(l => l.trim() && !l.slice(3).startsWith('.ailoop/'))
-    .map(l => l.slice(3));
+// Litter is the dirty reading as paths rather than as a refusal message: `create`
+// names what is in the way so the operator can clear it, which is why this
+// refuses as a value instead of throwing like the measuring verbs.
+const litter = (): string[] => dirtyLines().map(l => l.slice(3));
 
 export function createBranch(id: string): CreateResult {
   const main = mainline();

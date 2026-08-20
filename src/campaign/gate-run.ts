@@ -27,8 +27,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { backlog, backlogWrite, mainline } from './backlog.ts';
-import { sh, shAsync, SH_TIMEOUT } from './state.ts';
+import { backlog, backlogWrite } from './backlog.ts';
+import { assertOnMainline, dirtyText } from './checkout.ts';
+import { shAsync, SH_TIMEOUT } from './state.ts';
 import { EVIDENCE } from './paths.ts';
 
 export type GateRunResult = {
@@ -40,13 +41,9 @@ export type GateRunResult = {
 };
 
 export async function runGate({ dir = '.' }: { dir?: string } = {}): Promise<GateRunResult> {
-  const main = mainline();
-  const at = sh('git symbolic-ref --short -q HEAD').stdout.trim();
-  if (at !== main)
-    throw new Error(`gate-run: HEAD is on ${at || '(detached)'}, not ${main} — the gate measures the merged tree, and a run from a ticket branch is a verdict about the wrong one`);
+  assertOnMainline('gate-run', 'the gate measures the merged tree, and a run from a ticket branch is a verdict about the wrong one');
 
-  const dirty = (await shAsync('git status --porcelain', dir)).stdout.split('\n')
-    .filter(l => l.trim() && !l.slice(3).startsWith('.ailoop/')).join('\n').trim();
+  const dirty = dirtyText(dir);
   if (dirty)
     throw new Error(`gate-run: the checkout is dirty, so the gate would measure work no review has read:\n${dirty}`);
 

@@ -27,8 +27,9 @@
 // exposure kickoff's baseline probe has, and it is why the amendment lands in
 // the journal under its own kind rather than inside a `recovered` note.
 
-import { backlog, backlogWrite, mainline } from './backlog.ts';
-import { sh, shAsync } from './state.ts';
+import { backlog, backlogWrite } from './backlog.ts';
+import { assertOnMainline } from './checkout.ts';
+import { shAsync } from './state.ts';
 import type { Check } from './agents/schemas.ts';
 
 export type FastCheckEdit = {
@@ -63,10 +64,7 @@ export async function amendFastChecks(
   proposed: Check[],
   opts: { by: string; note: string },
 ): Promise<string> {
-  const main = mainline();
-  const at = sh('git symbolic-ref --short -q HEAD').stdout.trim();
-  if (at !== main)
-    throw new Error(`fastcheck-amend: HEAD is on ${at || '(detached)'}, not ${main} — a candidate proven green here would be measured against a ticket's half-built tree, not the baseline`);
+  assertOnMainline('fastcheck-amend', "a candidate proven green here would be measured against a ticket's half-built tree, not the baseline");
 
   const { added, replaced } = classifyFastCheckEdit(proposed);
   const candidates = [...added, ...replaced.map(r => r.check)];

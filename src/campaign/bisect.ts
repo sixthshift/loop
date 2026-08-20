@@ -22,7 +22,8 @@
 // them.
 
 import { sh, shAsync } from './state.ts';
-import { backlog, mainline } from './backlog.ts';
+import { assertOnMainline, dirtyText } from './checkout.ts';
+import { backlog } from './backlog.ts';
 import { journalEntries, appendJournal } from './journal.ts';
 
 export type BisectStep = { ticket: string; branch: string; status: number | null; ms: number };
@@ -56,12 +57,8 @@ const branchExists = (branch: string): boolean =>
   sh(`git rev-parse --verify -q refs/heads/${branch}`).status === 0;
 
 export async function bisect({ cmd, dir = '.' }: { cmd: string; dir?: string }): Promise<BisectResult> {
-  const main = mainline();
-  const at = sh('git symbolic-ref --short -q HEAD').stdout.trim();
-  if (at !== main)
-    throw new Error(`bisect: HEAD is on ${at || '(detached)'}, not ${main} — start from the tree the gate measured`);
-  const dirty = sh('git status --porcelain').stdout.split('\n')
-    .filter(l => l.trim() && !l.slice(3).startsWith('.ailoop/')).join('\n').trim();
+  const main = assertOnMainline('bisect', 'start from the tree the gate measured');
+  const dirty = dirtyText();
   if (dirty) throw new Error(`bisect: the checkout is dirty and every step checks out a branch:\n${dirty}`);
 
   const order = landOrder();

@@ -14,6 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { shAsync, SH_TIMEOUT } from './state.ts';
+import { dirtyText } from './checkout.ts';
 import { RUN } from './paths.ts';
 import { backlog, backlogWrite, ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
@@ -33,9 +34,9 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   const t = ticket(id);
 
   // 1. dirty-tree refusal — only committed work verifies (our own .ailoop/ aside).
-  const dirty = (await shAsync('git status --porcelain', dir)).stdout.split('\n')
-    .filter(l => l.trim() && !l.slice(3).startsWith('.ailoop/')).join('\n').trim();
-  if (dirty) return { pass: false, failing: ['dirty-tree'], scopeOverflow: [], evidence: '', diff: '' };
+  //    Reported as a failing check rather than thrown: an uncommitted worker is a
+  //    verdict about the ticket, not a misuse of the verb.
+  if (dirtyText(dir)) return { pass: false, failing: ['dirty-tree'], scopeOverflow: [], evidence: '', diff: '' };
 
   // 2. run every fast check + the ticket's acceptance checks in the checkout.
   const startedAt = Date.now();
