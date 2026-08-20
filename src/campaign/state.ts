@@ -1,15 +1,18 @@
-// Campaign-level runtime infrastructure: shell execution, the repository-scoped
-// coordinator lock, learnings, and spec hashing. The paths themselves are in
-// paths.ts — a leaf, because this module depends on live.ts and live.ts needs a
-// path, which is a cycle if the constants live here.
+// Campaign-level runtime infrastructure: shell execution, sync and async, plus
+// the Frontier type the derived facts are returned as. The paths themselves are
+// in paths.ts — a leaf, because this module depends on live.ts and live.ts needs
+// a path, which is a cycle if the constants live here.
 // Durable campaign decisions live in backlog.json; journal.jsonl is the audit
 // trail around them.
+//
+// This file used to also hold a repository-scoped coordinator lock. It is gone
+// rather than merely unused: the seat is a model in a conversation, which cannot
+// hold a pidfile across separate verb invocations, so no verb ever took it (see
+// mechanics.ts). Exclusivity while recover runs is now the coordinator's to keep
+// — stated as invariant 3 in the skill, and unenforced here, which is a scar
+// worth reading as one rather than a lock that looks like coverage.
 
-import fs from 'node:fs';
-import path from 'node:path';
-import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
-import { LEARNINGS } from './paths.ts';
 import { liveStart, livePid, liveData, liveEnd } from './live.ts';
 
 export type ShResult = { status: number | null; stdout: string; stderr: string };
@@ -56,11 +59,6 @@ export type Frontier = {
   sweepDue: string | null;
 };
 
-
-// The identity a campaign runs under, established at kickoff and re-checked
-// (by spec sha) on every resume.
-export type CampaignContext = { specPath: string; spec: string };
-
 export function sh(cmd: string, cwd = '.'): ShResult {
   return spawnSync('bash', ['-lc', cmd], { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
@@ -106,93 +104,4 @@ export function shAsync(cmd: string, cwd = '.', opts: { label?: string; ticketId
     child.on('close', status => finish(status));
     child.on('error', e => { stderr += String(e); finish(127); });
   });
-}
-
-
-// The lock belongs to the target repository, not to campaign state: it must
-// exist before kickoff creates backlog.json, and a refused kickoff must still
-// leave no campaign residue. `wx` is the exclusion primitive — checking then
-// writing is a race in which two coordinators can both pass the check.
-const lockFile = (): string => {
-  const common = sh('git rev-parse --git-common-dir');
-  if (common.status !== 0) throw new Error('loop must run from a git repository');
-  return path.join(path.resolve(common.stdout.trim()), 'ailoop', 'coordinator.pid');
-};
-
-export class LockHeldError extends Error {
-  pid: number | null;
-  constructor(pid: number | null) {
-    super(pid
-      ? `another coordinator (pid ${pid}) is already driving this repository`
-      : 'another coordinator is already driving this repository');
-    this.pid = pid;
-  }
-}
-
-let heldLock: string | null = null;
-
-export function acquireLock(): void {
-  const file = lockFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
-      heldLock = file;
-      process.once('exit', releaseLock);
-      return;
-    } catch (e: any) {
-      if (e.code !== 'EEXIST') throw e;
-      const pid = readLockPid(file);
-      if (pid === process.pid) { heldLock = file; return; }
-      if (pid !== null && processAlive(pid)) throw new LockHeldError(pid);
-      // A dead owner left the pidfile behind. Remove it, then retry the
-      // exclusive create; that retry decides ownership if another coordinator
-      // reached the same point.
-      try { fs.unlinkSync(file); } catch (unlink: any) {
-        if (unlink.code !== 'ENOENT') throw unlink;
-      }
-    }
-  }
-  throw new LockHeldError(readLockPid(file));
-}
-
-export function releaseLock(): void {
-  const file = heldLock;
-  heldLock = null;
-  if (!file) return;
-  try {
-    if (readLockPid(file) === process.pid) fs.unlinkSync(file);
-  } catch { /* already released */ }
-}
-
-const readLockPid = (file: string): number | null => {
-  try {
-    const pid = parseInt(fs.readFileSync(file, 'utf8'), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
-  }
-};
-
-const processAlive = (pid: number): boolean => {
-  try { process.kill(pid, 0); return true; }
-  catch (error: any) {
-    // EPERM still proves the process exists; a shared repository must not let
-    // one user reclaim another user's live coordinator.
-    return error.code === 'EPERM';
-  }
-};
-
-export function specSha(specPath: string): string {
-  return crypto.createHash('sha256').update(fs.readFileSync(specPath)).digest('hex');
-}
-
-export function readLearnings(): Record<string, string> | null {
-  if (!fs.existsSync(LEARNINGS)) return null;
-  const facets: Record<string, string> = {};
-  for (const f of fs.readdirSync(LEARNINGS)) {
-    facets[f] = fs.readFileSync(path.join(LEARNINGS, f), 'utf8');
-  }
-  return Object.keys(facets).length ? facets : null;
 }

@@ -645,9 +645,11 @@ data exists is design-by-prior; so is building more mechanics.
   partially priced (labelled, with the count), and unpriced (the section says so)
   rather than rendering absent spend as free work.
 - **The codex null-strip has no verb.** `loop schema --engine codex` serves the
-  write half of codex's strict-mode adaptation; the read half (`stripNulls` in
-  `campaign/agents/engines.ts`) is exported but unreachable, so a coordinator
-  running codex may see a `null` where Claude gives an absent key.
+  write half of codex's strict-mode adaptation — every optional key made required,
+  so codex returns the absent ones as `null`. Nothing strips them on the way back,
+  so a coordinator running codex may hand the writer a `null` where Claude gives an
+  absent key. The read half is documented at `strictify` in
+  `campaign/agents/engines.ts` and not yet built.
 - **Gate bisection is delegated, not scripted.** On a red campaign gate, recover
   gets the evidence and every branch (all kept until the gate is green) and
   decides. The bisection surface is the whole campaign, not a phase — that's the

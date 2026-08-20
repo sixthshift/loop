@@ -20,10 +20,12 @@
 // Two properties follow from the seat being a conversation rather than a
 // process, and neither is a preference:
 //
-//   • No coordinator lock. A model in the seat cannot hold `coordinator.pid`
-//     across separate verb invocations, so these verbs never take it. Nothing
-//     stops two coordinators from opening one campaign except the producer stamp
-//     (see assertSkillSeat) and the fact that a human is watching.
+//   • No coordinator lock. A model in the seat cannot hold a pidfile across
+//     separate verb invocations, so no verb ever took one — and the lock that sat
+//     unused in state.ts is now gone rather than standing there looking like
+//     coverage. Nothing stops two coordinators from opening one campaign except
+//     the producer stamp (see assertSkillSeat) and the fact that a human is
+//     watching.
 //   • stdout carries a result, never narration. The caller parses stdout, so
 //     commentary goes to stderr — see runtime/narrate.ts, where that is now
 //     structural rather than a mode.

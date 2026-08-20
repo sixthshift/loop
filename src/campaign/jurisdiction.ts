@@ -102,7 +102,8 @@ export function revertOutOfBounds(before: TreeSnapshot): Breach {
 
   if (committed.length) {
     // A commit can't be undone path-by-path without authoring another commit in
-    // recover's name, and the lock means no one else's work sits on top. The
+    // recover's name, and nothing else runs while recover does (invariant 3), so
+    // no one else's work sits on top of the one being reset away. The
     // reset takes any allowed manifest change in the same commit down with it —
     // a mixed commit is itself out of bounds, and the diff above preserves it.
     //

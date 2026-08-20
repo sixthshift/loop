@@ -16,9 +16,8 @@
 //   • available  — is that CLI on the box. Decides which rung of a chain is
 //     reachable, so a coordinator that guessed would dispatch into a missing
 //     binary and read the failure as the agent's.
-//   • strictify / stripNulls — codex's --output-schema is OpenAI strict mode,
-//     which rejects the optional keys our canonical schemas carry. Both halves of
-//     that adaptation live here.
+//   • strictify  — codex's --output-schema is OpenAI strict mode, which rejects
+//     the optional keys our canonical schemas carry.
 
 import { spawnSync } from 'node:child_process';
 
@@ -67,6 +66,14 @@ export function available(model: string): boolean {
 // Served to the coordinator as `loop schema <role> --engine codex` (mechanics.ts)
 // rather than described in prose, because re-deriving this from a paragraph is
 // how a seat ends up shipping a schema codex 400s on.
+//
+// KNOWN LIMIT — only the write half of the adaptation exists. Making every
+// optional key required means codex returns the absent ones as null, and nothing
+// strips them before they reach the writer, which distinguishes null from absent
+// in places (`{depends_on: [], ...t}` lets a null override the default). So a
+// null `depends_on` from a codex role reads as a ticket with no dependencies.
+// The read half is a verb that does not exist yet; it is named here rather than
+// carried as an unreachable export that reads like coverage.
 export function strictify(node: any): any {
   if (Array.isArray(node)) return node.map(strictify);
   if (!node || typeof node !== 'object') return node;
@@ -92,24 +99,4 @@ function nullable(node: any): any {
   const t = node.type;
   if (Array.isArray(t)) return t.includes('null') ? node : { ...node, type: [...t, 'null'] };
   return t === 'null' ? node : { ...node, type: [t, 'null'] };
-}
-
-// The read half of the same adaptation: `strictify` forces every optional key to
-// be present, so codex returns it as null. Dropping those nulls makes the parsed
-// object shape-identical to what Claude returns — the writer distinguishes null
-// from absent in places (`{depends_on: [], ...t}` lets a null override the
-// default), so the boundary has to erase the difference rather than pass it on.
-//
-// KNOWN LIMIT: no verb serves this yet, so a coordinator running codex applies
-// the write half of the adaptation and not the read half. It is exported for the
-// verb that should exist rather than deleted, because the argument for sharing
-// `strictify` is the same argument, and the failure it prevents is quieter — a
-// null `depends_on` that overrides a default reads as a ticket with no
-// dependencies rather than as a 400.
-export function stripNulls(v: any): any {
-  if (Array.isArray(v)) return v.map(stripNulls);
-  if (!v || typeof v !== 'object') return v;
-  const out: any = {};
-  for (const [k, val] of Object.entries(v)) if (val !== null) out[k] = stripNulls(val);
-  return out;
 }
