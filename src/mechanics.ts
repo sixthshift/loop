@@ -24,15 +24,14 @@
 //     separate verb invocations, so no verb ever took one — and the lock that sat
 //     unused in state.ts is now gone rather than standing there looking like
 //     coverage. Nothing stops two coordinators from opening one campaign except
-//     the producer stamp (see assertSkillSeat) and the fact that a human is
-//     watching.
+//     the fact that a human is watching.
 //   • stdout carries a result, never narration. The caller parses stdout, so
-//     commentary goes to stderr — see runtime/narrate.ts, where that is now
-//     structural rather than a mode.
+//     every verb's commentary goes to stderr — structural rather than a mode,
+//     since the one caller that owned stdout for its own progress is gone.
 
 import fs from 'node:fs';
 import type { Command } from 'commander';
-import { backlog, backlogWrite, campaignExists, renumber, wantsStdinPayload } from './campaign/backlog.ts';
+import { backlogWrite, renumber, wantsStdinPayload } from './campaign/backlog.ts';
 import { currentRef } from './campaign/checkout.ts';
 import { frontier } from './campaign/frontier.ts';
 import type { Check, TicketDraft } from './campaign/agents/schemas.ts';
@@ -58,23 +57,6 @@ import { strictify } from './campaign/agents/engines.ts';
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
 const emit = (value: unknown): void => { console.log(JSON.stringify(value, null, 2)); };
-
-// A campaign stamped `cli` was opened by the drive loop that no longer ships.
-// Its live worktrees answered to a process that is gone and its in-flight
-// tickets were measured against arms these verbs don't have, so continuing it is
-// not a thing this binary can honestly do. Say that, rather than mutate it into
-// a state half-owned by two coordinators — one of which no longer exists.
-// A `skill` campaign without a recorded mainline is refused on the same
-// grounds: it was opened before serial checkouts, and its state describes
-// worktrees these verbs no longer have.
-function assertSkillSeat(): void {
-  if (!campaignExists()) return; // `init` legitimately runs before one exists
-  const b = backlog();
-  if ((b.coordinator ?? 'cli') === 'cli')
-    fail('this campaign was opened by `loop campaign` (coordinator: cli), the deterministic drive loop, which was removed. Nothing here can continue it: archive `.ailoop/campaign/` with `loop postmortem --out <file>` and start fresh, or install the last release that still had that seat (v0.5.0).');
-  if (!b.mainline)
-    fail('this campaign predates serial checkouts — no mainline recorded in backlog.json. Nothing here can continue it: archive `.ailoop/campaign/` with `loop postmortem --out <file>` (postmortem still reads it), or continue with the last worktree release (v0.6).');
-}
 
 // `init` records the branch the campaign builds on. The writer demands the
 // name and stays git-free; resolving it from HEAD is this layer's one git
@@ -130,7 +112,6 @@ export function registerMechanics(program: Command): void {
       // writer command under an inherited pipe that never closes must not
       // block on EOF it will never use.
       const input = wantsStdinPayload(args) ? await stdinJson() : undefined;
-      assertSkillSeat();
       try { console.log(backlogWrite(withMainline(args), input)); }
       catch (e: any) { fail(e.message); }
     });
@@ -154,7 +135,6 @@ export function registerMechanics(program: Command): void {
       const drafts = await stdinJson();
       if (drafts === undefined) fail('renumber needs the proposed tickets as JSON on stdin');
       if (!Array.isArray(drafts)) fail('renumber takes an array of ticket drafts');
-      assertSkillSeat();
       try { emit(renumber(drafts as TicketDraft[])); }
       catch (e: any) { fail(e.message); }
     });
@@ -185,7 +165,6 @@ export function registerMechanics(program: Command): void {
     .requiredOption('--ticket <id>', 'the ticket about to be dispatched')
     .option('--dir <path>', 'the checkout to measure in', '.')
     .action(async (opts: { ticket: string; dir: string }) => {
-      assertSkillSeat();
       try { emit(await vet({ id: opts.ticket, dir: opts.dir })); }
       catch (e: any) { fail(e.message); }
     });
@@ -194,7 +173,6 @@ export function registerMechanics(program: Command): void {
     .description('run the campaign gate on the merged tree and stamp its own verdict — refuses off-mainline or a dirty tree')
     .option('--dir <path>', 'the checkout to measure in', '.')
     .action(async (opts: { dir: string }) => {
-      assertSkillSeat();
       try { emit(await runGate({ dir: opts.dir })); }
       catch (e: any) { fail(e.message); }
     });
@@ -214,7 +192,6 @@ export function registerMechanics(program: Command): void {
     .option('--accept-vacuous', 'proceed although some acceptance checks already pass on the base — only for a ticket that legitimately adds proof for shipped behaviour')
     .option('--schema-out <file>', 'also write the worker output schema here, for codex --output-schema')
     .action(async (opts: { ticket: string; context: string; dir: string; acceptVacuous?: boolean; schemaOut?: string }) => {
-      assertSkillSeat();
       const context = opts.context === '-' ? await stdinText() : opts.context;
       try {
         const plan = await dispatch({ id: opts.ticket, context, dir: opts.dir, acceptVacuous: !!opts.acceptVacuous });
@@ -228,7 +205,6 @@ export function registerMechanics(program: Command): void {
     .requiredOption('--cmd <cmd>', 'the failing check, verbatim')
     .option('--dir <path>', 'the checkout to measure in', '.')
     .action(async (opts: { cmd: string; dir: string }) => {
-      assertSkillSeat();
       try { emit(await bisect({ cmd: opts.cmd, dir: opts.dir })); }
       catch (e: any) { fail(e.message); }
     });
@@ -237,11 +213,10 @@ export function registerMechanics(program: Command): void {
     .description("amend the campaign gate under the authority its anomaly grants (checks on stdin)")
     .requiredOption('--by <who>', 'the arm proposing the amendment, for the audit record')
     .requiredOption('--note <why>', 'the rationale — the record is worthless without it')
-    .requiredOption('--anomaly <kind>', `the anomaly being answered; only \`${GATE_RED}\` may replace a live command`)
+    .requiredOption('--anomaly <kind>', `the anomaly being answered; replacing a live command takes \`${GATE_RED}\` AND a gate whose last run went red`)
     .action(async (opts: { by: string; note: string; anomaly: string }) => {
       const checks = await stdinJson();
       if (!Array.isArray(checks)) fail('gate-amend takes an array of {name, cmd} on stdin');
-      assertSkillSeat();
       try {
         emit({
           authority: gateAuthority(opts.anomaly),
@@ -259,7 +234,6 @@ export function registerMechanics(program: Command): void {
     .action(async (opts: { by: string; note: string }) => {
       const checks = await stdinJson();
       if (!Array.isArray(checks)) fail('fastcheck-amend takes an array of {name, cmd} on stdin');
-      assertSkillSeat();
       try { emit({ result: await amendFastChecks(checks as Check[], { by: opts.by, note: opts.note }) }); }
       catch (e: any) { fail(e.message); }
     });
@@ -272,7 +246,6 @@ export function registerMechanics(program: Command): void {
     .description('cut the ticket branch from mainline and check it out — refuses off-mainline or unclean trees')
     .argument('<id>', 'ticket id')
     .action((id: string) => {
-      assertSkillSeat();
       try { emit(createBranch(id)); } catch (e: any) { fail(e.message); }
     });
 
@@ -281,7 +254,6 @@ export function registerMechanics(program: Command): void {
     .description('check a surviving branch back out (resume); null when the branch is gone')
     .argument('<id>', 'ticket id')
     .action((id: string) => {
-      assertSkillSeat();
       try { emit(attachBranch(id)); } catch (e: any) { fail(e.message); }
     });
 
@@ -289,7 +261,6 @@ export function registerMechanics(program: Command): void {
     .command('discard')
     .description('erase worker litter and return the checkout to mainline, keeping the branch (bisection needs it until the gate is green)')
     .action(() => {
-      assertSkillSeat();
       try { emit(discardCheckout()); } catch (e: any) { fail(e.message); }
     });
 
@@ -297,13 +268,13 @@ export function registerMechanics(program: Command): void {
     .command('land')
     .description('return to mainline and fast-forward it onto the ticket branch; a non-ff result is interference, classified not resolved')
     .argument('<id>', 'ticket id')
-    .action((id: string) => { assertSkillSeat(); emit(landBranch(id)); });
+    .action((id: string) => { emit(landBranch(id)); });
 
   branch
     .command('delete')
     .description('reap a landed branch once the campaign gate is green')
     .argument('<id>', 'ticket id')
-    .action((id: string) => { assertSkillSeat(); deleteBranch(id); emit({ deleted: id }); });
+    .action((id: string) => { deleteBranch(id); emit({ deleted: id }); });
 
   const jurisdiction = mechanic('jurisdiction')
     .description("recover's enforced product-code boundary: snapshot before it runs, revert after");
@@ -313,7 +284,6 @@ export function registerMechanics(program: Command): void {
     .description('record the checkout recover is about to be trusted with')
     .requiredOption('--out <file>', 'where to persist the snapshot')
     .action((opts: { out: string }) => {
-      assertSkillSeat();
       try {
         const snapshot = snapshotTree();
         fs.writeFileSync(opts.out, JSON.stringify(snapshot, null, 2) + '\n');
@@ -326,7 +296,6 @@ export function registerMechanics(program: Command): void {
     .description('undo any tracked, non-manifest file the run changed; run it BEFORE reading the verdict')
     .requiredOption('--in <file>', 'the snapshot taken before the run')
     .action((opts: { in: string }) => {
-      assertSkillSeat();
       emit(revertOutOfBounds(readJsonFile(opts.in) as TreeSnapshot));
     });
 
@@ -347,7 +316,6 @@ export function registerMechanics(program: Command): void {
     .requiredOption('--campaign <name>', 'the campaign being harvested')
     .option('--in <file>', 'harvest JSON {checks?, flakes?}; stdin when omitted')
     .action(async (opts: { campaign: string; in?: string }) => {
-      assertSkillSeat();
       const harvest = opts.in ? readJsonFile(opts.in) : await stdinJson();
       if (harvest === undefined) fail('learn needs a harvest: --in <file>, or JSON on stdin');
       emit(mergeLearnings({ harvest: harvest as Harvest, campaign: opts.campaign }));

@@ -41,7 +41,7 @@ async function inCampaign(ids: string[], breakAt: string | null, body: () => Pro
     }
 
     fs.writeFileSync('.ailoop/campaign/backlog.json', JSON.stringify({
-      project: 't', coordinator: 'skill', mainline: 'main',
+      project: 't', mainline: 'main',
       tickets: ids.map(id => ({ id, status: 'closed' })),
     }));
     fs.writeFileSync('.ailoop/campaign/journal.jsonl',

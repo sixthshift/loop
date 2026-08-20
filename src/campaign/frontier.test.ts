@@ -276,36 +276,6 @@ describe('coverage', () => {
   });
 });
 
-// `idle` names the stalled-coordinator shape: work available, nothing running,
-// every other reading healthy. Its mirror (nothing dispatchable, nothing moving)
-// belongs to recover(`stalled`) and must NOT trip this flag.
-describe('idle', () => {
-  test('dispatchable work with nothing in flight is idle', () => {
-    const f = onScratch([buildTicket({ id: 'T001' })], NO_WALLS);
-    expect(f.dispatchable).toEqual(['T001']);
-    expect(f.idle).toBe(true);
-  });
-
-  test('a live worker clears it — serial dispatch offers nothing while one runs', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', status: 'in-flight' }),
-      buildTicket({ id: 'T002' }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual([]);
-    expect(f.idle).toBe(false);
-  });
-
-  test('nothing dispatchable is not idle — that is recover(stalled), not this', () => {
-    const f = onScratch([
-      buildTicket({ id: 'T001', status: 'closed' }),
-      buildTicket({ id: 'T002', depends_on: ['T003'] }),
-      buildTicket({ id: 'T003', status: 'in-flight' }),
-    ], NO_WALLS);
-    expect(f.dispatchable).toEqual([]);
-    expect(f.idle).toBe(false);
-  });
-});
-
 // The sweep trigger. A milestone is the spec's own claim that a coherent slice
 // of the product now exists — the moment worth reflecting at, and the only one:
 // there is no count-based fallback to paper over a spec that named none.

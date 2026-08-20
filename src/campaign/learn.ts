@@ -6,8 +6,8 @@
 // landmines) can't be mechanically deduped and stay coordinator-authored.
 //
 // Runs at termination, before .ailoop/campaign/ is deleted; learnings/ is a
-// sibling that survives — and the one store both coordinator seats write, so a
-// campaign feeds its priors to whichever seat runs next (`loop learn`).
+// sibling that survives, so a campaign feeds its priors to the next one
+// (`loop learn`).
 //
 // Keyed by `name` (checks) / `test` (flakes): present this campaign → bump
 // evidence + reset staleness + refresh mutable fields; absent → staleness++.

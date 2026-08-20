@@ -68,7 +68,7 @@ function enter(seed: Seed): { dir: string; cwd: string } {
   fs.mkdirSync(run, { recursive: true });
 
   if (seed.backlog) {
-    const b: Backlog = { project: 'scratch', tickets: [], ...seed.backlog };
+    const b: Backlog = { project: 'scratch', mainline: 'main', tickets: [], ...seed.backlog };
     fs.writeFileSync(path.join(run, 'backlog.json'), JSON.stringify(b, null, 2) + '\n');
   }
   if (seed.journal) {

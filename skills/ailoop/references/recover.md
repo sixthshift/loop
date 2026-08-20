@@ -126,11 +126,13 @@ Three rules on the actions you accept:
 - **You own ticket ids.** Renumber every ticket in an `add` against the current
   backlog before writing it, remapping internal `depends_on` edges — recover
   proposes ids blind to concurrent work.
-- **Gate replacement authority is yours to grant, once.** A reused gate name
+- **Gate replacement authority is measured, not granted.** A reused gate name
   replaces the command deciding correctness, so it is accepted only when this
   anomaly is `campaign-gate-red` — the one invocation that held the failure and
-  could re-run the correction green. Every other anomaly may only *add* a gate
-  check; the refusal is journaled. That same invocation is also the only one that
+  could re-run the correction green — **and** the gate's last run is on record
+  as red. A kind is a string anyone can pass; the recorded verdict is not. Every
+  other anomaly, and every gate that is green or has never run, may only *add* a
+  gate check; the refusal is journaled. That same invocation is also the only one that
   may pass `--release-latch`: the authority to replace a gate command and the
   authority to answer a parked gate are the same fact about the caller. An arm
   that merely widens coverage leaves the latch where the human left it.

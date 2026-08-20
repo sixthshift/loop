@@ -52,7 +52,7 @@ async function inRepo(
     git('add -A && git commit -qm base');
     fs.mkdirSync('.ailoop/campaign', { recursive: true });
     fs.writeFileSync('.ailoop/campaign/backlog.json', JSON.stringify({
-      project: 't', coordinator: 'skill', mainline: 'main',
+      project: 't', mainline: 'main',
       fastChecks: [{ name: 'unit', cmd: 'true' }],
       outOfScope: ['a login UI appears'],
       requirements: [{ id: 'R1', clause: 'the session survives a restart' }],

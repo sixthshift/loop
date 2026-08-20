@@ -7,13 +7,14 @@
 // timing, returns a verdict. Flake mode: run one command N times and classify
 // real-red vs flaky.
 //
-// The only measurement either coordinator seat has: the skill reaches it through
-// `loop verify` (mechanics.ts). Checks run through shAsync so the live display
+// The coordinator's only measurement, reached through `loop verify`
+// (mechanics.ts). Checks run through shAsync so the live display
 // keeps breathing while a suite grinds, each streaming under its own label.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { shAsync, SH_TIMEOUT } from './state.ts';
+import { shAsync } from './state.ts';
+import { runChecks, evidenceLog, failedNames, runFacts } from './checks.ts';
 import { dirtyText } from './checkout.ts';
 import { RUN } from './paths.ts';
 import { backlog, backlogWrite, ticket } from './backlog.ts';
@@ -41,23 +42,15 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   // 2. run every fast check + the ticket's acceptance checks in the checkout.
   const startedAt = Date.now();
   const checks = [...(backlog().fastChecks ?? []), ...(t.acceptanceChecks ?? [])];
-  const failing: string[] = [];
-  const log: string[] = [];
-  // Per-check status and duration, journaled alongside the verdict. The evidence
-  // log has always carried the exit code, but evidence is deleted with the
-  // campaign — so a check killed by shAsync's hang backstop (124) was
+  // Per-check status and duration are journaled alongside the verdict. The
+  // evidence log has always carried the exit code, but evidence is deleted with
+  // the campaign — so a check killed by the hang backstop (124) was
   // indistinguishable, forever after, from a suite that is merely slow. Which of
   // those it was decides whether the answer is a flake probe, a scoped check, or
   // a hung command nobody has noticed.
-  const runs: { name: string; status: number | null; ms: number; timedOut: boolean }[] = [];
-  for (const c of checks) {
-    const at = Date.now();
-    const r = await shAsync(c.cmd, dir, { label: `verify:${id} · ${c.name}`, ticketId: id });
-    const ok = r.status === 0;
-    if (!ok) failing.push(c.name);
-    runs.push({ name: c.name, status: r.status, ms: Date.now() - at, timedOut: r.status === SH_TIMEOUT });
-    log.push(`### ${c.name} — ${ok ? 'PASS' : `FAIL (exit ${r.status})`}\n$ ${c.cmd}\n${r.stdout + r.stderr}`);
-  }
+  const runs = await runChecks(checks, { dir, label: `verify:${id}`, ticketId: id });
+  const failing = failedNames(runs);
+  const log = evidenceLog(runs);
 
   // 3. scope check: every committed path must live inside a declared module (∪
   //    the manifest allowlist). A file the decomposer never foresaw is in scope
@@ -80,7 +73,7 @@ export async function verify({ id, dir, base }: { id: string; dir: string; base:
   appendJournal({
     kind: 'verify', subject: id,
     body: `${pass ? 'pass' : `fail [${failing.join(', ')}]`} in ${Math.round((Date.now() - startedAt) / 1000)}s`,
-    data: { durationMs: Date.now() - startedAt, pass, failing, runs,
+    data: { durationMs: Date.now() - startedAt, pass, failing, runs: runFacts(runs),
       ...(runs.some(r => r.timedOut) ? { timedOut: runs.filter(r => r.timedOut).map(r => r.name) } : {}) },
   });
 

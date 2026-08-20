@@ -40,17 +40,13 @@ export function frontier(): Frontier {
   const dispatchable = pickDispatchable(ready.filter(id => !walled.has(id)), b, byId);
 
   const inFlight = b.tickets.filter(t => t.status === 'in-flight').map(t => t.id);
-  // Serial dispatch makes the second clause structural — dispatchable is
-  // empty whenever anything is in flight — so idle reads directly: work was
-  // available and the coordinator's pass ended without dispatching it.
-  const idle = dispatchable.length > 0;
   // parked/open/in-flight tickets all block completion, deliberately.
   const complete = b.tickets.length > 0 && b.tickets.every(t => !isLive(t));
   const counts = b.tickets.reduce<Record<string, number>>(
     (m, t) => (m[t.status] = (m[t.status] ?? 0) + 1, m), {});
 
   const cov = coverage(b);
-  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, idle, complete, counts,
+  return { problems, cycles, ready, waiting, dispatchable, capped, stuck, inFlight, complete, counts,
     gateGreen: gateGreen(), coverage: cov, sweepDue: sweepDue(b, cov) };
 }
 

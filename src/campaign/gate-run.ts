@@ -29,7 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { backlog, backlogWrite } from './backlog.ts';
 import { assertOnMainline, dirtyText } from './checkout.ts';
-import { shAsync, SH_TIMEOUT } from './state.ts';
+import { runChecks, evidenceLog, failedNames, runFacts } from './checks.ts';
 import { EVIDENCE } from './paths.ts';
 
 export type GateRunResult = {
@@ -48,22 +48,14 @@ export async function runGate({ dir = '.' }: { dir?: string } = {}): Promise<Gat
     throw new Error(`gate-run: the checkout is dirty, so the gate would measure work no review has read:\n${dirty}`);
 
   const checks = backlog().gate ?? [];
-  const runs: GateRunResult['runs'] = [];
-  const log: string[] = [];
-  for (const c of checks) {
-    const startedAt = Date.now();
-    const r = await shAsync(c.cmd, dir, { label: `gate · ${c.name}` });
-    const ok = r.status === 0;
-    runs.push({ name: c.name, status: r.status, ms: Date.now() - startedAt, timedOut: r.status === SH_TIMEOUT });
-    log.push(`### ${c.name} — ${ok ? 'PASS' : `FAIL (exit ${r.status})`}\n$ ${c.cmd}\n${r.stdout + r.stderr}`);
-  }
-
-  const failing = runs.filter(r => r.status !== 0).map(r => r.name);
+  const measured = await runChecks(checks, { dir, label: 'gate' });
+  const runs = runFacts(measured);
+  const failing = failedNames(measured);
   const result: 'green' | 'red' = failing.length ? 'red' : 'green';
 
   fs.mkdirSync(EVIDENCE, { recursive: true });
   const evidence = path.join(EVIDENCE, `gate-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
-  fs.writeFileSync(evidence, log.join('\n\n') || 'no gate commands are configured for this campaign\n');
+  fs.writeFileSync(evidence, evidenceLog(measured).join('\n\n') || 'no gate commands are configured for this campaign\n');
 
   // The note becomes `gateState.lastRun.evidence`, so it has to carry what ran
   // rather than merely what was decided — a bare "green" in the record is the

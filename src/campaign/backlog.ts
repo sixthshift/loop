@@ -82,24 +82,13 @@ export type GateState = {
   parked?: { reason: string };
 };
 
-// Which coordinator seat opened this campaign. Only `skill` is reachable now —
-// `cli` was this program's own deterministic drive loop, removed once the model
-// in the seat won the argument. The value is kept, and still refused by the
-// mechanics verbs, because a campaign left in flight by that loop is real state
-// on someone's disk: it deserves an explanation rather than a coordinator half
-// its size quietly picking it up. Absent means `cli`, from before the stamp.
-export type Seat = 'cli' | 'skill';
-
 export type Backlog = {
   project: string;
-  coordinator?: Seat;
   // The branch the campaign builds on: ticket branches are cut from it,
   // landings fast-forward it, and nothing measures or amends off it. Recorded
   // at init because HEAD stopped being the answer — under serial checkouts
-  // HEAD spends most of a campaign on a ticket branch. Doubles as the seat's
-  // second compat stamp: a backlog without it predates serial checkouts, and
-  // the verbs refuse it (assertSkillSeat) rather than drive worktree-era state.
-  mainline?: string;
+  // HEAD spends most of a campaign on a ticket branch.
+  mainline: string;
   // When `init` ran. The campaign clock has to live here rather than in the
   // process that renders it: a skill-driven campaign spans many separate verb
   // invocations and any number of sessions, so a clock started by the display
@@ -141,12 +130,12 @@ export type Backlog = {
 export const requirementIds = (b: Backlog): Set<string> =>
   new Set((b.requirements ?? []).map(r => r.id));
 
-// The recorded mainline, for every verb that resolves against it. Absence is
-// unreachable through the CLI — assertSkillSeat refuses a backlog without the
-// stamp — so a throw here means a direct caller skipped that gate.
+// The recorded mainline, for every verb that resolves against it. `init`
+// demands it, so a throw here means the snapshot was hand-edited — which is
+// worth failing loudly over, since every measurement resolves against this ref.
 export const mainline = (): string => {
   const m = backlog().mainline;
-  if (!m) throw new Error('no mainline recorded in backlog.json (pre-serial campaign?)');
+  if (!m) throw new Error('no mainline recorded in backlog.json — the snapshot is corrupt');
   return m;
 };
 
@@ -307,8 +296,6 @@ export function backlogWrite(args: string[], input?: unknown): string {
       if (fs.existsSync(BACKLOG)) refuse(`${BACKLOG} already exists — a campaign is in flight`);
       if ((opts['spec-path'] === undefined) !== (opts['spec-sha'] === undefined))
         refuse('init takes --spec-path and --spec-sha together');
-      const seat = (opts.coordinator as string | undefined) ?? 'skill';
-      if (seat !== 'cli' && seat !== 'skill') refuse(`--coordinator must be cli or skill, got ${JSON.stringify(seat)}`);
       // The writer demands the branch name rather than reading git itself —
       // this file's imports stay git-free, and the CLI resolves HEAD before
       // delegating (mechanics.ts), so a refusal here means a direct caller
@@ -319,7 +306,6 @@ export function backlogWrite(args: string[], input?: unknown): string {
       fs.mkdirSync(path.join(RUN, 'evidence'), { recursive: true });
       save({
         project: (opts.project as string) || 'unnamed',
-        coordinator: seat,
         mainline,
         startedAt: new Date().toISOString(),
         ...(opts['spec-path'] && opts['spec-sha']
@@ -332,7 +318,7 @@ export function backlogWrite(args: string[], input?: unknown): string {
         recoveries: {},
         tickets: [],
       });
-      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (coordinator: ${seat}, mainline: ${mainline})`);
+      journal('init', 'campaign', `campaign initialized for project ${(opts.project as string) || 'unnamed'} (mainline: ${mainline})`);
       return `initialized ${BACKLOG}`;
     }
     case 'seed': {

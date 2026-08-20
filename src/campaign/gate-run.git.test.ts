@@ -27,7 +27,7 @@ async function inRepo(gate: Check[], body: () => Promise<void>): Promise<void> {
     git('add -A && git commit -qm base');
     fs.mkdirSync('.ailoop/campaign', { recursive: true });
     fs.writeFileSync('.ailoop/campaign/backlog.json', JSON.stringify({
-      project: 't', coordinator: 'skill', mainline: 'main', gate, tickets: [],
+      project: 't', mainline: 'main', gate, tickets: [],
     }));
     await body();
   } finally {

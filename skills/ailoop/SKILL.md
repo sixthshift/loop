@@ -125,11 +125,10 @@ ticket settles. Your context will be compacted during long runs: the files are
 the loop's memory, not the conversation. A fact that matters and isn't in a
 ticket or the journal is lost — write it down now rather than remember harder.
 
-`backlog.json` is stamped `coordinator: skill` and `mainline: <branch>` at
-init. A campaign stamped `cli` was opened by the drive loop that has since
-been removed; one without a recorded mainline was opened by a worktree-era
-release. The verbs refuse both and tell the human why rather than
-half-adopting state they cannot honestly drive.
+`backlog.json` is stamped `mainline: <branch>` at init — the branch every
+ticket branch is cut from and lands back onto, resolved from HEAD so you never
+type a name the repository disagrees with. A detached HEAD refuses init rather
+than recording nothing.
 
 ## The verbs
 
@@ -140,10 +139,10 @@ side — read it and fix the call, never route around it.
 | Verb | What it owns |
 |---|---|
 | `loop backlog <cmd> …` | **the sole writer.** `init seed add update fast-checks gate gate-run gate-park set-status phase attempt close decompose recover-resolution sweep-run note`. JSON payloads on stdin. It validates the ticket schema, enforces legal transitions, and journals every mutation. |
-| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `idle`, `complete`, `gateGreen`, `counts`, `coverage`, `sweepDue`. Four guarantees you never re-derive: deps-closed is what makes a ticket ready, `dispatchable` is at most one ticket and empty while anything is in flight, a green gate goes stale the moment the ticket or closed count moves, and `sweepDue` names the milestone owed a reflective pass — reached when every clause it delivers is proven, which is a join you never do by eye. |
+| `loop frontier` | `problems`, `cycles`, `ready`, `waiting`, `dispatchable`, `capped`, `stuck`, `inFlight`, `complete`, `gateGreen`, `counts`, `coverage`, `sweepDue`. Four guarantees you never re-derive: deps-closed is what makes a ticket ready, `dispatchable` is at most one ticket and empty while anything is in flight, a green gate goes stale the moment the ticket or closed count moves, and `sweepDue` names the milestone owed a reflective pass — reached when every clause it delivers is proven, which is a join you never do by eye. |
 | `loop renumber` | id allocation for proposed drafts (stdin → stdout), rewiring edges between them. Every prompt that asks an agent for tickets promises this — use it, never renumber by eye. |
 | `loop recovery-budget --kind … [--ticket …]` | whether a recover may be spent on this anomaly: the scoped key, what it has spent, and the prior fixes a park cites. The scoping rule is not yours to infer. |
-| `loop gate-amend --by … --note … --anomaly …` | the gate under the authority its anomaly grants. Replacing a live command is granted by `campaign-gate-red` alone; every other kind may only add, and the refusal is journaled. |
+| `loop gate-amend --by … --note … --anomaly …` | the gate, under an authority it measures rather than takes on your word. Replacing a live command needs `campaign-gate-red` **and** a gate whose last run is on record as red; every other kind, and every green or never-run gate, may only add — and the refusal is journaled. |
 | `loop fastcheck-amend --by … --note …` | the fast tier, admitting only candidates that exit 0 at the repo root. It runs them — you never attest to having done that yourself. |
 | `loop branch create\|attach\|discard\|land\|delete` | the serial checkout lifecycle. `create <id>` cuts `ailoop/<id>` from mainline and checks it out, refusing an off-mainline or unclean tree (it names the litter — resolve it, never route around it). `attach <id>` checks a surviving branch back out for resume. `discard` erases worker litter and returns the checkout to mainline, keeping the branch. `land <id>` returns to mainline and fast-forwards it onto the branch; a non-ff result is interference, infra. `delete <id>` reaps a branch once the gate is green. |
 | `loop vet --ticket <id>` | the pre-dispatch vacuity measurement: runs the ticket's `acceptanceChecks` at the root on the base and reports which already pass. A check green before the work exists cannot be observing the work. It never refuses — a check-only ticket claiming a delivered clause is legitimately green — so the finding is yours to rule on, but it is a measurement, not your recollection of having thought about it. |
@@ -267,11 +266,11 @@ order**, never on your own reading of the backlog:
 7. **Otherwise `dispatchable`** is the next ticket, singular — one worker, in
    the primary checkout, at a time. The moment it returns and you finish
    settling it, re-run frontier and dispatch what that unblocked; the
-   dependency graph is the only ordering bound. `idle: true` is this branch
-   stated as a fault: dispatchable work with nothing in flight means the next
-   action is a dispatch, **this turn** — a pass that reads `idle` and ends
-   without dispatching or journaling why is the one coordinator stall no
-   downstream check can see.
+   dependency graph is the only ordering bound. Read this branch as a fault
+   when you are the one idling: a non-empty `dispatchable` means the next
+   action is a dispatch, **this turn** — a pass that reads one and ends without
+   dispatching or journaling why is the one coordinator stall no downstream
+   check can see.
 
 None of the seven is a fault handler. Anything the frontier reports that you can
 resolve yourself — a dangling edge, a ticket whose contract you can see is wrong,
@@ -570,9 +569,12 @@ green). Neither → `loop backlog gate-park --reason "…"`.
 enforced there and not in the writer. A name not in force only *adds* coverage, so
 any anomaly may propose it. Reusing a live name *replaces* the command deciding
 correctness, which can turn a real escaped bug into a green gate; no comparison of
-two shell strings can prove that is a tightening. So a replacement is applied for
-exactly one kind — `campaign-gate-red`, the recover that held the failure and could
-re-run its correction green — and refused, journaled, for every other. The verb
+two shell strings can prove that is a tightening. So a replacement takes two
+things: the kind must be `campaign-gate-red`, the recover that held the failure
+and could re-run its correction green, **and** `gateState.lastRun` must be on
+record as red. The kind is a word you pass; the verdict is one `gate-run`
+stamped from its own measurement, and without it there is no failure for a
+replacement to answer. Every other case is refused and journaled. The verb
 reports which authority it used; you do not assert it.
 
 The fast tier is `loop fastcheck-amend --by <arm> --note <why>`, on a different

@@ -391,11 +391,11 @@ export const HARVEST = {
   additionalProperties: false,
 };
 
-// The output contract per role, keyed exactly as the prompt registry in run.ts:
-// a role is its prompt plus its schema, and the two halves belong together. The
-// other coordinator seat reads both (`loop prompt`, `loop schema`), so its agents
-// answer in the same shape ours do — otherwise a seat comparison quietly becomes
-// a comparison of how loosely each side parses a verdict.
+// The output contract per role, keyed exactly as the prompt registry
+// (agents/prompt.ts): a role is its prompt plus its schema, and the two halves
+// belong together. The coordinator reads both (`loop prompt`, `loop schema`), so
+// every agent answers in the shape the writer and the verbs expect — a verdict
+// parsed loosely is a verdict the mechanics below cannot refuse.
 // One finding per ticket, and the finding must arrive as a fix or as a risk the
 // judge will be handed — a bare complaint at this stage would cost a read and
 // change nothing, which is what got the original pre-dispatch pass deleted.

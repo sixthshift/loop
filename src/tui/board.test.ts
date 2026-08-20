@@ -16,7 +16,7 @@ const ticket = (id: string, over: Partial<Ticket> = {}): Ticket => ({
   acceptanceChecks: [], status: 'open', ...over,
 });
 const backlog = (tickets: Ticket[], over: Partial<Backlog> = {}): Backlog =>
-  ({ project: 'p', tickets, ...over });
+  ({ project: 'p', mainline: 'main', tickets, ...over });
 const run = (label: string, over: Partial<LiveRun> = {}): LiveRun =>
   ({ label, cmd: 'x', startedAt: 0, tail: [], partial: '', ...over });
 

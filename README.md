@@ -114,7 +114,7 @@ loop verify --ticket … --base …    # the measurement; --cmd … for a flake 
 loop branch create|attach|discard|land|delete   # the serial checkout lifecycle
 loop renumber             # allocate real ticket ids to proposed drafts (stdin → stdout)
 loop recovery-budget --kind … [--ticket …]  # may a recover be spent here, and what did the last two say
-loop gate-amend --by … --note … --anomaly … # the gate, under the authority its anomaly grants
+loop gate-amend --by … --note … --anomaly … # the gate, under an authority measured against its own last run
 loop fastcheck-amend --by … --note …        # the fast tier, admitting only what exits 0 at the root
 loop jurisdiction snapshot|revert         # recover's enforced product-code boundary
 loop prompt <role> [--vars -]             # the role prompt, rendered
@@ -125,13 +125,9 @@ loop learn --campaign …   # merge a harvest into .ailoop/learnings/
 ```
 
 None of these takes a lock, because the seat they serve is a conversation rather
-than a process: a model cannot hold a pidfile across separate verb invocations. The
-only thing standing between two coordinators and one backlog is
-`backlog.coordinator`, stamped at `init`, plus a human paying attention.
-
-A campaign stamped `cli` came from the deterministic drive loop this project used
-to ship (≤ v0.5.0). The verbs refuse it and say so — see [Why the coordinator is a
-model](#why-the-coordinator-is-a-model).
+than a process: a model cannot hold a pidfile across separate verb invocations.
+Nothing stands between two coordinators and one backlog except a human paying
+attention — a scar, and it is stated as one.
 
 ## The spec
 
@@ -492,7 +488,7 @@ bun run typecheck   # tsc --noEmit, strict
 | `src/index.ts` | CLI shell — verb wiring only |
 | `src/mechanics.ts` | the mechanics verbs: the whole surface the coordinator drives through |
 | `src/campaign/backlog.ts`, `frontier.ts`, `journal.ts` | authoritative snapshot writer and id allocation, pure derived scheduler facts, audit record |
-| `src/campaign/verify.ts`, `branch.ts` | the measurement and its scope check; the serial checkout lifecycle |
+| `src/campaign/verify.ts`, `checks.ts`, `branch.ts` | the measurement and its scope check; the one loop that runs a tier of checks for all four callers; the serial checkout lifecycle |
 | `src/campaign/gate.ts`, `fastcheck.ts`, `jurisdiction.ts`, `recovery-budget.ts` | the enforced authority boundaries: who may replace a live check, what must be measured before admission, what recover may touch, when it stops being believed |
 | `src/campaign/paths.ts`, `state.ts`, `live.ts` | where campaign state lives (a leaf); shell execution and spec hashing; the live-run window a verb publishes for the dashboard |
 | `src/campaign/agents/` | the judgment layer: role prompts, output schemas, model chains, engine naming and codex's schema adaptation |
@@ -582,7 +578,7 @@ instructions because a plausible wrong answer to each is invisible downstream:
 | `frontier.sweep` | reaching a milestone is permanent, so a trigger the coordinator counts by eye either fires forever or never — and a sweep that never fires is a campaign with no reflective pass at all, which nothing downstream reports |
 | `renumber` | a draft's edge onto its sibling silently becomes an edge onto whatever live ticket holds that number now |
 | `recovery-budget` | guess the scoping rule loose and the budget never trips, which looks exactly like a budget with room left |
-| `gate-amend` | no comparison of two shell strings proves a replacement is a tightening, so the authority comes from the anomaly |
+| `gate-amend` | no comparison of two shell strings proves a replacement is a tightening, so the authority takes the anomaly kind *and* a gate whose last run is stamped red |
 | `fastcheck-amend` | "I ran it at the repo root and it passed" is a claim; the verb runs it |
 | `verify` | a worker's report is testimony. Exit codes and `git diff` are evidence |
 | `vet` | "this check would fail before the work exists" is a claim about a command nobody ran; the verb runs it |

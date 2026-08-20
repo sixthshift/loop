@@ -21,7 +21,7 @@
 // check nobody noticed, not a green one, and only the coordinator can tell them
 // apart — so this reports and journals, and the decision stays a seat's.
 
-import { shAsync, SH_TIMEOUT } from './state.ts';
+import { runChecks } from './checks.ts';
 import { ticket } from './backlog.ts';
 import { appendJournal } from './journal.ts';
 
@@ -31,15 +31,11 @@ export type VetVerdict = { ticket: string; vacuous: string[]; red: string[]; run
 export async function vet({ id, dir }: { id: string; dir: string }): Promise<VetVerdict> {
   const t = ticket(id);
   const checks = t.acceptanceChecks ?? [];
-  const runs: VetRun[] = [];
-  for (const c of checks) {
-    const at = Date.now();
-    const r = await shAsync(c.cmd, dir, { label: `vet:${id} · ${c.name}`, ticketId: id });
-    runs.push({
-      name: c.name, status: r.status, ms: Date.now() - at,
-      vacuous: r.status === 0, timedOut: r.status === SH_TIMEOUT,
-    });
-  }
+  // A check that PASSES here is the finding, which is why this reads the runs
+  // itself rather than asking checks.ts for the failing names: vacuity is the
+  // inverse of every other caller's question.
+  const runs: VetRun[] = (await runChecks(checks, { dir, label: `vet:${id}`, ticketId: id }))
+    .map(({ name, status, ms, timedOut }) => ({ name, status, ms, timedOut, vacuous: status === 0 }));
   const vacuous = runs.filter(r => r.vacuous).map(r => r.name);
   const red = runs.filter(r => !r.vacuous).map(r => r.name);
 

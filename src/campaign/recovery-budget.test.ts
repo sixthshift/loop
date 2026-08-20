@@ -138,20 +138,41 @@ describe('the recover budget', () => {
 });
 
 // One recover seat serves every anomaly, but only one of them arrives holding a
-// gate's own failure. The authority to replace a live gate command tracks that
-// distinction rather than the seat.
+// gate's own failure — and the kind naming it is a string the caller passes, so
+// the gate's own stamped verdict has to agree before a live command may be
+// replaced. Both halves are exercised here: the kind alone never suffices, and
+// neither does a red gate under some other anomaly.
 describe('gateAuthority', () => {
-  test('the gate\'s own red run may replace the command that produced it', () => {
-    expect(gateAuthority(GATE_RED)).toBe('apply');
+  const authority = (kind: string, lastRun?: 'green' | 'red') => {
+    let out!: string;
+    withScratchCampaign({ backlog: {
+      gate: [{ name: 'e2e', cmd: 'bun test:e2e' }],
+      ...(lastRun ? { gateState: { lastRun: { result: lastRun, tickets: 0, closed: 0, evidence: 'e' } } } : {}),
+    } }, () => { out = gateAuthority(kind); });
+    return out;
+  };
+
+  test("the gate's own red run may replace the command that produced it", () => {
+    expect(authority(GATE_RED, 'red')).toBe('apply');
   });
 
   test('every other anomaly reaches recover without having run the gate, so it may only add', () => {
     for (const kind of ['stalled', 'attempt-wall', 'dirty-mainline', 'worker-blocked', 'coordinator-error']) {
-      expect(gateAuthority(kind)).toBe('refuse');
+      expect(authority(kind, 'red')).toBe('refuse');
     }
   });
 
   test('a kind that merely mentions the gate is not the gate anomaly', () => {
-    expect(gateAuthority('gate-red')).toBe('refuse');
+    expect(authority('gate-red', 'red')).toBe('refuse');
+  });
+
+  // The half a passed string cannot carry: with no red verdict on record there
+  // is nothing for a replacement to answer, whatever the caller calls itself.
+  test('the right kind over a green gate may not replace — there is no failure to answer', () => {
+    expect(authority(GATE_RED, 'green')).toBe('refuse');
+  });
+
+  test('the right kind over a gate that never ran may not replace either', () => {
+    expect(authority(GATE_RED)).toBe('refuse');
   });
 });

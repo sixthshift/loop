@@ -1,12 +1,6 @@
-// The producer stamp, which now guards one direction rather than two. It used to
-// separate two live coordinator seats; the `cli` seat — this program's own drive
-// loop — is gone, so what the stamp protects is a campaign that seat left in
-// flight on someone's disk. Its worktrees answered to a process that no longer
-// exists and its tickets were measured against arms these verbs don't have, so
-// the verbs refuse it and say why instead of half-adopting it.
-//
-// Exercised through the real CLI in a child process, because the guard lives at
-// the argv boundary.
+// What `init` stamps into a new campaign, exercised through the real CLI in a
+// child process because the mainline resolution lives at the argv boundary —
+// the writer stays git-free and is handed a branch name it never reads HEAD for.
 
 import { describe, expect, test } from 'bun:test';
 import fs from 'node:fs';
@@ -19,14 +13,7 @@ const CLI = path.join(import.meta.dir, 'index.ts');
 const loop = (dir: string, ...args: string[]) =>
   spawnSync(process.execPath, [CLI, ...args], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
-describe('the coordinator seat stamp', () => {
-  test('the seat a new campaign gets is the only one that still exists', () => {
-    withRepository(dir => {
-      expect(loop(dir, 'backlog', 'init', '--project', 'p').status).toBe(0);
-      expect(seatOf(dir)).toBe('skill');
-    });
-  });
-
+describe('what init records', () => {
   // The campaign clock is stamped here rather than started by whatever renders it:
   // a skill-driven campaign spans many verb invocations and any number of
   // sessions, so a clock owned by the dashboard would measure the dashboard.
@@ -39,22 +26,7 @@ describe('the coordinator seat stamp', () => {
     });
   });
 
-  test('a mechanics verb refuses a campaign the removed CLI seat left behind', () => {
-    withRepository(dir => {
-      expect(loop(dir, 'backlog', 'init', '--project', 'p', '--coordinator', 'cli').status).toBe(0);
-      expect(seatOf(dir)).toBe('cli');
-
-      const refused = loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b');
-      expect(refused.status).toBe(1);
-      expect(refused.stderr).toContain('coordinator: cli');
-      // Refused before the write, not after: the journal must not carry an event
-      // the guard was supposed to prevent.
-      expect(fs.existsSync(path.join(dir, '.ailoop/campaign/journal.jsonl'))).toBe(true);
-      expect(fs.readFileSync(path.join(dir, '.ailoop/campaign/journal.jsonl'), 'utf8')).not.toContain('"kind":"k"');
-    });
-  });
-
-  test('a skill campaign accepts the mechanics verbs, and a read keeps stdout clean', () => {
+  test('a mutation lands and a read keeps stdout clean', () => {
     withRepository(dir => {
       loop(dir, 'backlog', 'init', '--project', 'p');
       expect(loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b').status).toBe(0);
@@ -66,19 +38,11 @@ describe('the coordinator seat stamp', () => {
       expect(JSON.parse(read.stdout)).toMatchObject({ problems: [], dispatchable: [], complete: false });
     });
   });
-
-  test('an unknown seat is refused rather than stored', () => {
-    withRepository(dir => {
-      const refused = loop(dir, 'backlog', 'init', '--project', 'p', '--coordinator', 'bogus');
-      expect(refused.status).toBe(1);
-      expect(fs.existsSync(path.join(dir, '.ailoop/campaign/backlog.json'))).toBe(false);
-    });
-  });
 });
 
-// The mainline record is both the ref the checkout lifecycle resolves against
-// and the second compat stamp: a backlog without one was opened by a worktree
-// release, whose state these verbs no longer know how to drive.
+// The mainline record is the ref the whole checkout lifecycle resolves against:
+// branches are cut from it, landings fast-forward it, and every measurement
+// refuses to run anywhere else.
 describe('the mainline stamp', () => {
   test('init resolves the campaign mainline from HEAD', () => {
     withRepository(dir => {
@@ -106,29 +70,13 @@ describe('the mainline stamp', () => {
       expect(fs.existsSync(path.join(dir, '.ailoop/campaign/backlog.json'))).toBe(false);
     });
   });
-
-  test('a mechanics verb refuses a campaign with no recorded mainline', () => {
-    withRepository(dir => {
-      loop(dir, 'backlog', 'init', '--project', 'p');
-      const file = path.join(dir, '.ailoop/campaign/backlog.json');
-      const b = JSON.parse(fs.readFileSync(file, 'utf8'));
-      delete b.mainline;
-      fs.writeFileSync(file, JSON.stringify(b));
-
-      const refused = loop(dir, 'backlog', 'note', '--kind', 'k', '--subject', 's', '--body', 'b');
-      expect(refused.status).toBe(1);
-      expect(refused.stderr).toContain('no mainline recorded');
-    });
-  });
 });
 
 const backlogOf = (dir: string): any =>
   JSON.parse(fs.readFileSync(path.join(dir, '.ailoop/campaign/backlog.json'), 'utf8'));
 
-const seatOf = (dir: string): string => backlogOf(dir).coordinator;
-
 function withRepository(body: (dir: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-seat-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loop-init-'));
   spawnSync('git', ['init', '-q', dir]);
   try {
     body(dir);

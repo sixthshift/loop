@@ -10,9 +10,8 @@
 // turn a real escaped bug into a green campaign. Nothing mechanical separates
 // the two kinds of replacement: `bun test --filter smoke` and `bun test && bun
 // run lint` are both just "the cmd changed". So the split is by name, which IS
-// decidable, and the authority to replace belongs to the caller — recover has
-// run the corrected command green and self-audited; sweep holds a read-only
-// toolset and cannot run anything.
+// decidable, and the authority to replace is measured against the gate's own
+// recorded verdict rather than taken on the caller's word (gateAuthority).
 //
 // Rejected: parking every replacement for the human. Re-scoping a gate that
 // runs the wrong things or contends on shared state is an enumerated recover
@@ -35,17 +34,29 @@ export const GATE_RED = 'campaign-gate-red';
 // What a caller may do with a command that is already deciding correctness.
 export type GateAuthority = 'apply' | 'refuse';
 
-// Replacing a live gate command is granted by the anomaly, not claimed by the
-// caller — which is why this derives the authority from the kind rather than
-// taking it as an argument. Exactly one invocation may replace: a recover
-// answering that gate's own red run, the one caller that held the failure and
+// Replacing a live gate command takes two things, and neither is sufficient
+// alone.
+//
+// The kind names the arm: exactly one invocation may replace, a recover
+// answering that gate's own red run — the one caller that held the failure and
 // could re-run its correction green. Every other arm reaches a gate amendment
 // without having run the gate, so for them a reused name is refused and
-// journaled. Asking the caller to self-report its authority would make the rule
-// advisory, and the rule is the only thing standing between an escaped bug and a
-// gate quietly edited into agreeing with it.
+// journaled. But a kind is a string the caller passes, so on its own the rule is
+// advisory: anything that types `campaign-gate-red` gets the authority.
+//
+// So the gate's own recorded verdict has to agree. A replacement is only ever
+// meaningful while the gate is red — that is the state the enumerated repair
+// (narrow a mis-scoped command, serialize a contending one) exists to answer —
+// and `gateState.lastRun` is a verdict `gate-run` stamped from its own
+// measurement, not a claim any caller can make. Green or never-run, a reused
+// name is refused whatever it calls itself.
+//
+// The residual scar, stated rather than dressed up: while the gate IS red, the
+// kind is still the only thing separating recover from another arm typing the
+// same word. What the state check removes is the far larger window in which
+// nothing was red at all.
 export const gateAuthority = (anomalyKind: string): GateAuthority =>
-  anomalyKind === GATE_RED ? 'apply' : 'refuse';
+  anomalyKind === GATE_RED && backlog().gateState?.lastRun?.result === 'red' ? 'apply' : 'refuse';
 
 export type GateEdit = {
   added: Check[];

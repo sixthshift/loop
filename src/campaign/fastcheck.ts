@@ -29,7 +29,7 @@
 
 import { backlog, backlogWrite } from './backlog.ts';
 import { assertOnMainline } from './checkout.ts';
-import { shAsync } from './state.ts';
+import { runChecks } from './checks.ts';
 import type { Check } from './agents/schemas.ts';
 
 export type FastCheckEdit = {
@@ -69,12 +69,15 @@ export async function amendFastChecks(
   const { added, replaced } = classifyFastCheckEdit(proposed);
   const candidates = [...added, ...replaced.map(r => r.check)];
 
-  const admitted: Check[] = [];
-  for (const c of candidates) {
-    const r = await shAsync(c.cmd, '.', { label: `fast-check:${c.name}` });
-    if (r.status === 0) { admitted.push(c); continue; }
-    backlogWrite(['note', '--kind', 'fast-check-refused', '--subject', c.name,
-      '--body', `${opts.by} proposed \`${c.cmd}\` for the fast tier and it exited ${r.status} on the mainline — the tier's one invariant is that it is green there. ${opts.note}\n${(r.stdout + r.stderr).slice(-1500)}`]);
+  const measured = await runChecks(candidates, { label: 'fast-check' });
+  // Keyed by name, like the tier itself — classify puts a name in exactly one
+  // bucket, so a name is a candidate's identity here as much as anywhere else.
+  const green = new Set(measured.filter(r => r.status === 0).map(r => r.name));
+  const admitted = candidates.filter(c => green.has(c.name));
+  for (const r of measured) {
+    if (r.status === 0) continue;
+    backlogWrite(['note', '--kind', 'fast-check-refused', '--subject', r.name,
+      '--body', `${opts.by} proposed \`${r.cmd}\` for the fast tier and it exited ${r.status} on the mainline — the tier's one invariant is that it is green there. ${opts.note}\n${r.output.slice(-1500)}`]);
   }
 
   if (admitted.length) backlogWrite(['fast-checks', '-', '--note', opts.note], admitted);

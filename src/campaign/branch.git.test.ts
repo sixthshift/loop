@@ -33,7 +33,7 @@ function inRepo(body: (repo: string) => void): void {
     write('node_modules/dep/index.js', 'module.exports = 1;\n');
     write('dist/bundle.js', 'built\n');
     write('.ailoop/campaign/backlog.json', JSON.stringify({
-      project: 't', coordinator: 'skill', mainline: 'main', tickets: [],
+      project: 't', mainline: 'main', tickets: [],
     }));
     body(repo);
   } finally {

@@ -28,12 +28,6 @@ export type Frontier = {
   capped: { ticket: string; attempts: number }[];
   stuck: { ticket: string; window: number }[];
   inFlight: string[];
-  // Dispatchable work with nothing running. Derived because a stalled
-  // coordinator — one that initialised a campaign or settled a wave and then
-  // stopped without dispatching — leaves a backlog byte-identical to a healthy
-  // paused one: no check goes red, no verb refuses. This names that state so
-  // the drive branches on a field instead of having to remember to look.
-  idle: boolean;
   complete: boolean;
   // `complete` says ticket work has drained; this says the slow suite's verdict
   // still describes the tree as it stands. Two facts, deliberately separate — a

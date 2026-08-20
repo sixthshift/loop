@@ -194,6 +194,6 @@ to dispatch is not a dispatch: a coordinator that ends its turn here leaves a
 fully initialised campaign with zero workers running, and that state reads
 healthy from every angle — `open:N in-flight:0`, no red check, no refused verb —
 until a human notices nothing has happened, which is exactly the supervision the
-loop exists to remove. The frontier reports it as `idle: true`. The only
-legitimate stop before the first dispatch is a genuine kickoff blocker, and step
-2 already handled those.
+loop exists to remove. The frontier shows it as a non-empty `dispatchable` with
+an empty `inFlight`. The only legitimate stop before the first dispatch is a
+genuine kickoff blocker, and step 2 already handled those.

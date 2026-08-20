@@ -32,7 +32,7 @@ function inRepo(body: () => void): void {
     git('add -A && git commit -qm base');
     fs.mkdirSync('.ailoop/campaign', { recursive: true });
     fs.writeFileSync('.ailoop/campaign/backlog.json', JSON.stringify({
-      project: 't', coordinator: 'skill', mainline: 'main', tickets: [],
+      project: 't', mainline: 'main', tickets: [],
     }));
     body();
   } finally {
